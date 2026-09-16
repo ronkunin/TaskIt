@@ -5124,7 +5124,7 @@ const WeekView = ({
       animation: "fadeIn 0.25s ease"
     }
   }, navBar, (() => {
-    const HOUR_PX = 56;
+    const HOUR_PX = 38;
     const pxPerMin = HOUR_PX / 60;
     const nowD = new Date();
     const nowMinutes = nowD.getHours() * 60 + nowD.getMinutes();
@@ -5410,7 +5410,7 @@ const WeekView = ({
           height: gridHeight,
           cursor: "pointer",
           borderInlineStart: `1px solid ${C.border3}`,
-          background: isT ? "rgba(59,130,246,0.035)" : "transparent",
+          backgroundColor: isT ? "rgba(59,130,246,0.035)" : "transparent",
           backgroundImage: `repeating-linear-gradient(to bottom, ${C.border3} 0, ${C.border3} 1px, transparent 1px, transparent ${HOUR_PX}px)`
         }
       }, nowLine, blocks);
@@ -10071,6 +10071,219 @@ const Dashboard = ({
   }), " ", t("addFilterChart"))));
 };
 
+// ─── iCalendar (.ics) import ────────────────────────────────────────────────
+// Minimal RFC-5545 reader: unfolds continuation lines, walks VEVENT blocks and
+// turns each one into a task. Times carrying a TZID other than the device zone
+// are read as local time — good enough for personal calendar exports.
+const icsUnescape = s => String(s)
+  .replace(/\\n/gi, " ")
+  .replace(/\\,/g, ",")
+  .replace(/\\;/g, ";")
+  .replace(/\\\\/g, "\\")
+  .trim();
+
+const parseICS = text => {
+  const raw = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const lines = [];
+  for (const ln of raw.split("\n")) {
+    if (/^[ \t]/.test(ln) && lines.length) lines[lines.length - 1] += ln.slice(1);
+    else lines.push(ln);
+  }
+  const events = [];
+  let cur = null;
+  for (const ln of lines) {
+    const trimmed = ln.trim();
+    if (trimmed.toUpperCase() === "BEGIN:VEVENT") { cur = {}; continue; }
+    if (trimmed.toUpperCase() === "END:VEVENT") { if (cur) events.push(cur); cur = null; continue; }
+    if (!cur) continue;
+    const ci = ln.indexOf(":");
+    if (ci < 0) continue;
+    const left = ln.slice(0, ci);
+    const val = ln.slice(ci + 1);
+    const parts = left.split(";");
+    const name = (parts[0] || "").trim().toUpperCase();
+    const params = {};
+    parts.slice(1).forEach(p => {
+      const eq = p.indexOf("=");
+      if (eq < 0) return;
+      params[p.slice(0, eq).trim().toUpperCase()] = p.slice(eq + 1).replace(/"/g, "").trim();
+    });
+    if (name === "UID") cur.uid = val.trim();
+    else if (name === "SUMMARY") cur.summary = icsUnescape(val);
+    else if (name === "DESCRIPTION") cur.description = icsUnescape(val);
+    else if (name === "LOCATION") cur.location = icsUnescape(val);
+    else if (name === "STATUS") cur.status = val.trim().toUpperCase();
+    else if (name === "DTSTART") { cur.start = val.trim(); cur.startParams = params; }
+    else if (name === "DTEND") { cur.end = val.trim(); cur.endParams = params; }
+    else if (name === "DURATION") cur.duration = val.trim();
+    else if (name === "RRULE") cur.rrule = val.trim();
+    else if (name === "EXDATE") {
+      cur.exdates = cur.exdates || [];
+      val.split(",").forEach(v => {
+        const p = icsParseDT(v.trim());
+        if (p) cur.exdates.push(p.ds);
+      });
+    }
+  }
+  return events;
+};
+
+const icsParseDT = val => {
+  if (!val) return null;
+  const v = String(val).trim();
+  let m = /^(\d{4})(\d{2})(\d{2})$/.exec(v);
+  if (m) {
+    const d = new Date(+m[1], +m[2] - 1, +m[3]);
+    if (Number.isNaN(d.getTime())) return null;
+    return { ds: localDs(d), time: "", ms: d.getTime(), allDay: true };
+  }
+  m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/.exec(v);
+  if (!m) return null;
+  const Y = +m[1], Mo = +m[2] - 1, D = +m[3], H = +m[4], Mi = +m[5], S = +(m[6] || 0);
+  const d = m[7] ? new Date(Date.UTC(Y, Mo, D, H, Mi, S)) : new Date(Y, Mo, D, H, Mi, S);
+  if (Number.isNaN(d.getTime())) return null;
+  return {
+    ds: localDs(d),
+    time: `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
+    ms: d.getTime(),
+    allDay: false
+  };
+};
+
+// ISO-8601 duration → minutes (PT1H30M, P1D, PT45M …)
+const icsDurationMins = v => {
+  const m = /^-?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(v || "").trim());
+  if (!m) return null;
+  const mins = (+(m[1] || 0)) * 10080 + (+(m[2] || 0)) * 1440 + (+(m[3] || 0)) * 60 + (+(m[4] || 0)) + Math.round((+(m[5] || 0)) / 60);
+  return mins > 0 ? mins : null;
+};
+
+// Recurring events are flattened into one plain task per occurrence rather than
+// being stored as a repeating task, so each date can be ticked off on its own.
+const ICS_MAX_OCCURRENCES = 200;          // hard ceiling per event
+const ICS_HORIZON_DAYS = 366;             // and never further than a year out
+const ICS_WEEKDAYS = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+
+// Returns the list of start Dates an RRULE produces, first occurrence included.
+const icsExpandRRule = (startDate, rrule) => {
+  if (!rrule) return [startDate];
+  const parts = {};
+  String(rrule).split(";").forEach(p => {
+    const eq = p.indexOf("=");
+    if (eq > 0) parts[p.slice(0, eq).trim().toUpperCase()] = p.slice(eq + 1).trim().toUpperCase();
+  });
+  const freq = parts.FREQ;
+  if (!freq || !["DAILY", "WEEKLY", "MONTHLY", "YEARLY"].includes(freq)) return [startDate];
+  const iv = Math.max(1, parseInt(parts.INTERVAL || "1", 10) || 1);
+  const count = parts.COUNT ? Math.max(1, parseInt(parts.COUNT, 10) || 1) : null;
+  const untilParsed = parts.UNTIL ? icsParseDT(parts.UNTIL) : null;
+  const untilMs = untilParsed ? untilParsed.ms : null;
+
+  const horizon = new Date();
+  horizon.setHours(23, 59, 59, 999);
+  horizon.setDate(horizon.getDate() + ICS_HORIZON_DAYS);
+  const horizonMs = horizon.getTime();
+
+  const H = startDate.getHours(), Mi = startDate.getMinutes();
+  const out = [];
+  const push = d => {
+    if (d.getTime() < startDate.getTime()) return true;
+    if (untilMs != null && d.getTime() > untilMs) return false;
+    if (d.getTime() > horizonMs) return false;
+    out.push(new Date(d));
+    return !(count != null && out.length >= count) && out.length < ICS_MAX_OCCURRENCES;
+  };
+
+  if (freq === "WEEKLY") {
+    const byday = (parts.BYDAY || "")
+      .split(",")
+      .map(x => ICS_WEEKDAYS[x.trim().slice(-2)])
+      .filter(x => x != null);
+    const days = byday.length ? [...new Set(byday)].sort((a, b) => a - b) : [startDate.getDay()];
+    const weekAnchor = new Date(startDate);
+    weekAnchor.setDate(weekAnchor.getDate() - weekAnchor.getDay()); // Sunday of week 1
+    weekAnchor.setHours(H, Mi, 0, 0);
+    let guard = 0;
+    outer: while (guard++ < ICS_MAX_OCCURRENCES * 2) {
+      for (const dw of days) {
+        const d = new Date(weekAnchor);
+        d.setDate(d.getDate() + dw);
+        if (d.getTime() > (untilMs != null ? Math.min(untilMs, horizonMs) : horizonMs)) break outer;
+        if (!push(d)) break outer;
+      }
+      weekAnchor.setDate(weekAnchor.getDate() + 7 * iv);
+    }
+  } else {
+    const d = new Date(startDate);
+    let guard = 0;
+    while (guard++ < ICS_MAX_OCCURRENCES) {
+      if (!push(d)) break;
+      if (freq === "DAILY") d.setDate(d.getDate() + iv);
+      else if (freq === "MONTHLY") d.setMonth(d.getMonth() + iv);
+      else d.setFullYear(d.getFullYear() + iv);
+      d.setHours(H, Mi, 0, 0);
+    }
+  }
+  return out.length ? out : [startDate];
+};
+
+const icsStableId = seed => {
+  let h = 5381;
+  const s = String(seed);
+  for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0;
+  return "ics_" + h.toString(36) + "_" + (s.length.toString(36));
+};
+
+// Turn raw .ics text into tasks of the given type. `existingIds` is mutated so a
+// re-import of the same file (or a second file sharing UIDs) adds nothing twice.
+const icsToTasks = (text, type, existingIds) => {
+  const events = parseICS(text);
+  const out = [];
+  let skipped = 0;
+  let expanded = 0;
+  for (const ev of events) {
+    const st = icsParseDT(ev.start);
+    const name = String(ev.summary || "").trim();
+    if (!st || !name) { skipped++; continue; }
+    let length = null;
+    if (!st.allDay) {
+      const en = ev.end ? icsParseDT(ev.end) : null;
+      if (en && en.ms > st.ms) length = Math.round((en.ms - st.ms) / 60000);
+      else if (ev.duration) length = icsDurationMins(ev.duration);
+      if (length != null && length > 1440) length = null;
+    }
+    const note = ev.description || (ev.location ? (getLang() === "he" ? "מיקום: " : "Location: ") + ev.location : null) || null;
+    const excluded = new Set(ev.exdates || []);
+    // One independent, non-repeating task per occurrence.
+    const occurrences = icsExpandRRule(new Date(st.ms), ev.rrule);
+    if (occurrences.length > 1) expanded++;
+    for (const occ of occurrences) {
+      const ds = localDs(occ);
+      if (excluded.has(ds)) continue;
+      const time = st.allDay ? "" : `${String(occ.getHours()).padStart(2, "0")}:${String(occ.getMinutes()).padStart(2, "0")}`;
+      const id = icsStableId(ev.uid ? ev.uid + "|" + ds + "|" + time : name + "|" + ds + "|" + time);
+      if (existingIds.has(id)) continue;
+      existingIds.add(id);
+      out.push({
+        id,
+        name,
+        type,
+        date: ds,
+        time,
+        length,
+        note,
+        recur: null,
+        done: false,
+        cancelled: ev.status === "CANCELLED",
+        created: Date.now(),
+        ics: true
+      });
+    }
+  }
+  return { tasks: out, skipped, total: events.length, expanded };
+};
+// ────────────────────────────────────────────────────────────────────────────
+
 //  DATA MODAL (import / export JSON) 
 const SettingsModal = ({
   open,
@@ -10100,10 +10313,70 @@ const SettingsModal = ({
   onFixDuplicatesGCal,
   onForcePushGCal,
   gcalStats,
-  gcalReady
+  gcalReady,
+  onImportIcs
 }) => {
   const isHe = getLang() === "he";
   const [jsonText, setJsonText] = useState("");
+  // ── iCalendar import state ──
+  const icsFileRef = useRef(null);
+  const [icsFiles, setIcsFiles] = useState([]); // [{name, text}]
+  const [icsType, setIcsType] = useState("");
+  const [icsMsg, setIcsMsg] = useState("");
+  const [icsBusy, setIcsBusy] = useState(false);
+  const knownTypes = React.useMemo(() => {
+    const fromTasks = [...new Set((tasks || []).map(tk => tk.type).filter(Boolean))];
+    return [...new Set([...fromTasks, "regular", "general"])].filter(x => x !== "calendar").sort();
+  }, [tasks]);
+  const handleIcsPick = async e => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setIcsMsg("");
+    try {
+      const read = await Promise.all(files.map(f => f.text().then(text => ({ name: f.name, text }))));
+      setIcsFiles(read);
+    } catch (err) {
+      setIcsMsg(isHe ? "לא הצלחתי לקרוא את הקובץ" : "Couldn't read that file");
+    }
+    e.target.value = "";
+  };
+  const runIcsImport = () => {
+    const type = icsType.trim().toLowerCase();
+    if (!type) {
+      setIcsMsg(isHe ? "בחר או הקלד סוג קודם" : "Pick or type a type first");
+      return;
+    }
+    if (type === "calendar") {
+      setIcsMsg(isHe ? "‘calendar’ שמור לחגים — בחר שם אחר" : "'calendar' is reserved for holidays — pick another name");
+      return;
+    }
+    setIcsBusy(true);
+    try {
+      const existing = new Set((tasks || []).map(tk => tk.id));
+      let added = [], skipped = 0, total = 0, expanded = 0;
+      for (const f of icsFiles) {
+        const r = icsToTasks(f.text, type, existing);
+        added = added.concat(r.tasks);
+        skipped += r.skipped;
+        total += r.total;
+        expanded += r.expanded;
+      }
+      if (!added.length) {
+        setIcsMsg(total === 0
+          ? (isHe ? "לא נמצאו אירועים בקובץ" : "No events found in that file")
+          : (isHe ? "כל האירועים כבר מיובאים" : "All of those events are already imported"));
+      } else {
+        onImportIcs && onImportIcs(added);
+        setIcsMsg(isHe
+          ? `נוצרו ${added.length} משימות כ־“${type}” מתוך ${total} אירועים${expanded > 0 ? ` · ${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : ""}${skipped > 0 ? ` · ${skipped} דולגו` : ""}`
+          : `Created ${added.length} tasks as "${type}" from ${total} events${expanded > 0 ? ` · ${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates` : ""}${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
+        setIcsFiles([]);
+      }
+    } catch (err) {
+      setIcsMsg((isHe ? "שגיאה: " : "Error: ") + (err.message || String(err)));
+    }
+    setIcsBusy(false);
+  };
   const [loadSaving, setLoadSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [pasted, setPasted] = useState(false);
@@ -10667,7 +10940,126 @@ const SettingsModal = ({
         : pr.reason === "badtime" ? (isHe ? "שעה לא תקינה" : "invalid time")
         : pr.reason === "noname" ? (isHe ? "אין שם" : "no title")
         : (pr.detail || (isHe ? "שגיאה" : "error"))
-      )))), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      )))), /*#__PURE__*/React.createElement(Row, {
+    icon: "📥",
+    label: isHe ? "ייבוא iCalendar (.ics)" : "Import iCalendar (.ics)",
+    sub: icsFiles.length
+      ? (isHe ? `נבחרו ${icsFiles.length} קבצים` : `${icsFiles.length} file${icsFiles.length > 1 ? "s" : ""} selected`)
+      : (isHe ? "האירועים יקבלו סוג לבחירתך ויסונכרנו ל-Google" : "Events get a type you choose, then sync to Google")
+  }, /*#__PURE__*/React.createElement("input", {
+    ref: icsFileRef,
+    type: "file",
+    accept: ".ics,text/calendar",
+    multiple: true,
+    onChange: handleIcsPick,
+    style: { display: "none" }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => icsFileRef.current && icsFileRef.current.click(),
+    style: {
+      padding: "6px 14px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: "pointer",
+      flexShrink: 0,
+      transition: "all 0.15s"
+    }
+  }, isHe ? "בחר קובץ" : "Choose file")), icsFiles.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "10px 0 0",
+      padding: "12px",
+      borderRadius: 12,
+      background: C.card2,
+      border: `1px solid ${C.border2}`,
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: C.text4, marginBottom: 8, wordBreak: "break-all" }
+  }, icsFiles.map(f => f.name).join(" · ")), /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, fontWeight: 700, color: C.text2, marginBottom: 6 }
+  }, isHe ? "איזה סוג להקצות לאירועים האלה?" : "What type should these events get?"), /*#__PURE__*/React.createElement("input", {
+    value: icsType,
+    onChange: e => setIcsType(e.target.value),
+    placeholder: isHe ? "לדוגמה: work, school, gym" : "e.g. work, school, gym",
+    list: "ics-type-options",
+    style: {
+      width: "100%",
+      boxSizing: "border-box",
+      padding: "8px 10px",
+      borderRadius: 9,
+      border: `1px solid ${C.border2}`,
+      background: C.card,
+      color: C.text,
+      fontSize: 13,
+      fontWeight: 600,
+      outline: "none",
+      direction: "ltr",
+      textAlign: isHe ? "right" : "left"
+    }
+  }), /*#__PURE__*/React.createElement("datalist", {
+    id: "ics-type-options"
+  }, knownTypes.map(tp => /*#__PURE__*/React.createElement("option", { key: tp, value: tp }))), knownTypes.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
+  }, knownTypes.slice(0, 8).map(tp => {
+    const active = icsType.trim().toLowerCase() === tp;
+    const m = getTypeMeta(tp);
+    return /*#__PURE__*/React.createElement("button", {
+      key: tp,
+      onClick: () => setIcsType(tp),
+      style: {
+        padding: "4px 10px",
+        borderRadius: 20,
+        border: `1.5px solid ${active ? m.dot : C.border2}`,
+        background: active ? m.bg : "transparent",
+        color: active ? m.color : C.text3,
+        fontSize: 11.5,
+        fontWeight: 700,
+        cursor: "pointer"
+      }
+    }, m.label);
+  })), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 8, marginTop: 10 }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: runIcsImport,
+    disabled: icsBusy,
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: icsBusy ? "default" : "pointer",
+      opacity: icsBusy ? 0.6 : 1
+    }
+  }, icsBusy ? (isHe ? "מייבא…" : "Importing…") : (isHe ? "ייבא וסנכרן" : "Import & sync")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => { setIcsFiles([]); setIcsMsg(""); },
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.border2}`,
+      background: "transparent",
+      color: C.text3,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, isHe ? "ביטול" : "Cancel")), /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: C.text4, marginTop: 8, lineHeight: 1.6 }
+  }, gcalConnected
+    ? (isHe ? "האירועים ייכנסו ללוח Google בשם הסוג שתבחר." : "Events land in the Google calendar named after that type.")
+    : (isHe ? "חבר את Google Calendar כדי שהאירועים יסונכרנו גם לשם." : "Connect Google Calendar above and these will sync there too."))), icsMsg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      padding: isHe ? "8px 50px 10px 0" : "8px 0 10px 50px",
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, icsMsg), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -15018,6 +15410,14 @@ function App() {
     onForcePushGCal: handleForcePushGCal,
     gcalStats: gcalStats,
     gcalReady: gcalReady,
+    onImportIcs: newTasks => {
+      if (!newTasks || !newTasks.length) return;
+      setTasks(prev => {
+        const have = new Set(prev.map(t => t.id));
+        const fresh = newTasks.filter(t => !have.has(t.id));
+        return fresh.length ? [...prev, ...fresh] : prev;
+      });
+    },
     onLoad: ({
       tasks: lt,
       archive: la,
