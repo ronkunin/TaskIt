@@ -384,7 +384,7 @@ const T = {
     dir: "ltr"
   },
   he: {
-    home: "ראשי",
+    home: "בית",
     month: "חודש",
     week: "שבוע",
     byDate: "תאריך",
@@ -544,6 +544,15 @@ const useWindowWidth = () => {
     return () => window.removeEventListener('resize', h);
   }, []);
   return width;
+};
+const useWindowHeight = () => {
+  const [height, setHeight] = useState(typeof window !== 'undefined' ? window.innerHeight : 800);
+  useEffect(() => {
+    const h = () => setHeight(window.innerHeight);
+    window.addEventListener('resize', h);
+    return () => window.removeEventListener('resize', h);
+  }, []);
+  return height;
 };
 const useDarkMode = () => {
   const [dark, setDark] = useState(() => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -1166,6 +1175,7 @@ const buildIntlHolidays = existingTasks => {
     add(`intl_${yr}_piday`, "Pi Day", "יום הפאי", ds(yr, 3, 14));
     add(`intl_${yr}_womensday`, "International Women's Day", "יום האישה", ds(yr, 3, 8));
     add(`intl_${yr}_holocaust`, "International Holocaust Remembrance Day", "יום השואה הבינלאומי", ds(yr, 1, 27));
+    add(`intl_${yr}_sept11`, "September 11th", "ה-11 בספטמבר", ds(yr, 9, 11));
     add(`intl_${yr}_oct7`, "October 7th", "ה-7 באוקטובר", ds(yr, 10, 7));
     add(`intl_${yr}_halloween`, "Halloween", "ליל כל הקדושים", ds(yr, 10, 31));
     add(`intl_${yr}_july4`, "Independence Day", "יום העצמאות האמריקאי", ds(yr, 7, 4));
@@ -1397,8 +1407,8 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
 html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:4px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-@keyframes noteReveal{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
-.task-note-reveal{animation:noteReveal 0.18s ease forwards}
+@keyframes noteReveal{from{transform:translateY(-100%)}to{transform:translateY(0)}}
+.task-note-reveal{animation:noteReveal 0.24s cubic-bezier(0.4,0,0.2,1) forwards;position:relative;z-index:0;overflow:hidden}
 @keyframes slideInLeft{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:translateX(0)}}
 @keyframes slideInRight{from{opacity:0;transform:translateX(-32px)}to{opacity:1;transform:translateX(0)}}
 @keyframes particleFadeOut{0%{opacity:1}100%{opacity:0}}
@@ -1979,6 +1989,7 @@ const TaskCard = ({
   const cancelled = isCancelled(task);
   const over = isOverdue(task);
   const [hovered, setHovered] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [delaying, setDelaying] = useState(false);
@@ -1991,6 +2002,7 @@ const TaskCard = ({
   const [renameVal, setRenameVal] = useState(taskDisplayName(task));
   const renameRef = useRef();
   const cardRef = useRef();
+  const noteRef = useRef();
 
   // Dismiss when another card becomes active
   useEffect(() => {
@@ -2149,7 +2161,25 @@ const TaskCard = ({
       document.removeEventListener("click", onOutside);
     };
   }, [hovered]);
-  return /*#__PURE__*/React.createElement("div", {
+  const _noteText = task.note != null && String(task.note).trim() ? String(task.note) : "";
+  const _showNote = (hovered || noteOpen) && !!_noteText;
+
+  // Close noteOpen when clicking outside card or note
+  useEffect(() => {
+    if (!noteOpen) return;
+    const handler = e => {
+      if (cardRef.current && cardRef.current.contains(e.target)) return;
+      if (noteRef.current && noteRef.current.contains(e.target)) return;
+      setNoteOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [noteOpen]);
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     ref: cardRef,
     "data-taskid": task.id,
     onMouseEnter: e => {
@@ -2159,6 +2189,7 @@ const TaskCard = ({
     onMouseLeave: () => setHovered(false),
     onClick: () => {
       if (!hovered && !done && !cancelled) activateCard();
+      if (_noteText) setNoteOpen(v => !v);
     },
     tabIndex: -1,
     className: (completing ? "task-completing" : cancelling ? "task-cancelling" : delaying ? "task-delaying" : isNew ? "task-new" : "") + (justSynced ? " task-slide-in" : ""),
@@ -2175,7 +2206,8 @@ const TaskCard = ({
       transition: completing || cancelling || delaying || justSynced || isNew ? "none" : "all 0.2s ease",
       opacity: done ? 0.55 : cancelled ? 0.6 : 1,
       animation: completing || cancelling || delaying || isNew ? undefined : justSynced ? undefined : `fadeIn 0.3s ease ${delay}s forwards`,
-      marginBottom: 8
+      marginBottom: _showNote ? 0 : 8,
+      zIndex: 1
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2248,9 +2280,7 @@ const TaskCard = ({
   }) : (() => {
     const visualCancelled = cancelled || cancelling;
     const visualDone = done || completing;
-    const noteText = task.note != null && String(task.note).trim() ? String(task.note) : "";
-    const showNote = hovered && !!noteText;
-    const hasTags = !hideTypeBadge || over || visualCancelled || task.date && !hideDateTag || task.time || task.length != null && task.length !== "" || !!noteText || isRecurring(task);
+    const hasTags = !hideTypeBadge || over || visualCancelled || task.date && !hideDateTag || task.time || task.length != null && task.length !== "" || !!_noteText || isRecurring(task);
     return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       onClick: handleNameClick,
       style: {
@@ -2337,7 +2367,7 @@ const TaskCard = ({
       name: "repeat",
       size: 10,
       color: "#6366F1"
-    }), task.recur === "month" ? getLang() === "he" ? "כל חודש" : "Every month" : task.recur === "year" ? getLang() === "he" ? "כל שנה" : "Every year" : t("everyXDays", task.recur)), noteText && /*#__PURE__*/React.createElement("span", {
+    }), task.recur === "month" ? getLang() === "he" ? "כל חודש" : "Every month" : task.recur === "year" ? getLang() === "he" ? "כל שנה" : "Every year" : t("everyXDays", task.recur)), _noteText && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -2349,26 +2379,7 @@ const TaskCard = ({
       name: "noteIcon",
       size: 10,
       color: "#94A3B8"
-    }), " ", t("note"))), showNote && /*#__PURE__*/React.createElement("div", {
-      onClick: e => e.stopPropagation(),
-      className: "task-note-reveal",
-      style: {
-        marginTop: 8,
-        paddingTop: 8,
-        paddingInlineStart: 8,
-        paddingInlineEnd: 76,
-        borderTop: `1px solid ${C.border3}`,
-        borderInlineStart: `2px solid ${C.border2}`,
-        fontSize: 12,
-        lineHeight: 1.55,
-        color: C.text3,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-        userSelect: "text",
-        WebkitUserSelect: "text",
-        textAlign: "start"
-      }
-    }, noteText));
+    }), " ", t("note"))));
   })()), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
@@ -2498,7 +2509,30 @@ const TaskCard = ({
     name: "x",
     size: 13,
     color: "#BE123C"
-  })))));
+  }))))), _showNote && /*#__PURE__*/React.createElement("div", {
+    ref: noteRef,
+    onClick: e => e.stopPropagation(),
+    className: "task-note-reveal",
+    style: {
+      marginTop: -10,
+      marginBottom: 8,
+      marginInlineStart: 10,
+      marginInlineEnd: 10,
+      paddingTop: 14,
+      paddingBottom: 10,
+      paddingInlineStart: 12,
+      paddingInlineEnd: 12,
+      borderInlineStart: "2px solid rgba(59,130,246,0.3)",
+      borderRadius: "0 0 10px 10px",
+      fontSize: 12,
+      lineHeight: 1.6,
+      color: C.text3,
+      background: C.card,
+      boxShadow: "0 4px 10px rgba(0,0,0,0.07)"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: { whiteSpace: "pre-wrap", wordBreak: "break-word", userSelect: "text", WebkitUserSelect: "text", textAlign: "start", display: "block" }
+  }, _noteText)));
 };
 
 //  DELETE BUTTON (double-click confirm) 
@@ -2607,8 +2641,12 @@ const Modal = ({
     length: "",
     note: ""
   });
+  const _modalWidth = useWindowWidth();
+  const _modalHeight = useWindowHeight();
+  const modalNarrow = _modalHeight > _modalWidth;
   const [showNote, setShowNote] = useState(false);
   const noteRef = useRef();
+  const dateInputRef = useRef();
   const [suggestions, setSuggestions] = useState([]);
   const [showSugg, setShowSugg] = useState(false);
   const [showTypeSugg, setShowTypeSugg] = useState(false);
@@ -2727,6 +2765,10 @@ const Modal = ({
       recur: form.recur
     })) {
       setError(t("dateRequired"));
+      return;
+    }
+    if (form.length && !form.time) {
+      setError(getLang() === "he" ? "יש להגדיר שעה לפני הגדרת משך" : "Please set a time before setting a duration.");
       return;
     }
     setError("");
@@ -3273,9 +3315,8 @@ const Modal = ({
   }, /*#__PURE__*/React.createElement("label", {
     style: lbl
   }, t("date")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "relative"
-    }
+    style: { position: "relative", cursor: "pointer" },
+    onClick: () => { try { dateInputRef.current?.showPicker(); } catch(e) {} }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       ...inp({
@@ -3298,6 +3339,7 @@ const Modal = ({
     const [y, m, d] = form.date.split("-");
     return `${d}/${m}/${y}`;
   })() : ""), /*#__PURE__*/React.createElement("input", {
+    ref: dateInputRef,
     type: "date",
     style: {
       position: "absolute",
@@ -3305,7 +3347,7 @@ const Modal = ({
       width: "100%",
       height: "100%",
       opacity: 0,
-      cursor: "pointer",
+      pointerEvents: "none",
       zIndex: 2
     },
     value: form.date,
@@ -3315,7 +3357,7 @@ const Modal = ({
     }
   }), form.date && /*#__PURE__*/React.createElement("button", {
     type: "button",
-    onClick: () => set("date", ""),
+    onClick: e => { e.stopPropagation(); set("date", ""); },
     style: {
       position: "absolute",
       right: 6,
@@ -3453,7 +3495,7 @@ const Modal = ({
       key: mins,
       value: String(mins)
     }, fmtLength(mins))))));
-  })(), showNote && /*#__PURE__*/React.createElement("div", {
+  })(), (showNote || modalNarrow) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
     }
@@ -3515,7 +3557,7 @@ const Modal = ({
       cursor: "pointer",
       boxShadow: "0 2px 8px rgba(59,130,246,0.3)"
     }
-  }, editTask ? t("save") : t("create")), noteBtn, /*#__PURE__*/React.createElement("div", {
+  }, editTask ? t("save") : t("create")), !modalNarrow && noteBtn, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -3594,7 +3636,7 @@ const Modal = ({
       size: 12,
       color: "#BE123C"
     }), " ", t("cancel")));
-  })(), editTask && onDelete && !isDone(editTask) && !isCancelled(editTask) && /*#__PURE__*/React.createElement(DeleteButton, {
+  })(), editTask && onDelete && /*#__PURE__*/React.createElement(DeleteButton, {
     onConfirm: () => {
       onDelete(editTask.id);
       onClose();
@@ -3606,7 +3648,7 @@ const Modal = ({
       alignItems: "center",
       flexWrap: "wrap"
     }
-  }, editTask && onDelete && !isDone(editTask) && !isCancelled(editTask) && /*#__PURE__*/React.createElement(DeleteButton, {
+  }, editTask && onDelete && /*#__PURE__*/React.createElement(DeleteButton, {
     onConfirm: () => {
       onDelete(editTask.id);
       onClose();
@@ -3690,7 +3732,7 @@ const Modal = ({
       flexWrap: "wrap",
       marginLeft: "auto"
     }
-  }, noteBtn, /*#__PURE__*/React.createElement("button", {
+  }, !modalNarrow && noteBtn, /*#__PURE__*/React.createElement("button", {
     onClick: handleSave,
     style: {
       padding: "9px 18px",
@@ -3815,7 +3857,10 @@ const DayChip = ({
       marginBottom: 2,
       cursor: "pointer",
       opacity: donOnDay ? 0.75 : cancelOnDay ? 0.65 : 1,
-      flexDirection: "row"
+      flexDirection: "row",
+      minWidth: 0,
+      maxWidth: "100%",
+      overflow: "hidden"
     }
   }, nameChip);
 };
@@ -3829,7 +3874,8 @@ const MonthView = ({
   onResetRef
 }) => {
   const width = useWindowWidth();
-  const narrow = width < 640;
+  const height = useWindowHeight();
+  const narrow = height > width;
   // Compute fresh "today" each render so the view stays correct if the app runs past midnight
   const realToday = new Date();
   realToday.setHours(0, 0, 0, 0);
@@ -3880,6 +3926,7 @@ const MonthView = ({
       return;
     }
     const compute = () => {
+      if (window.scrollY < 1) { setStickyDay(null); return; }
       const headerBottom = stickyHeaderRef.current ? stickyHeaderRef.current.getBoundingClientRect().bottom : 48;
       let best = null;
       let bestTop = -Infinity;
@@ -3904,7 +3951,7 @@ const MonthView = ({
     document.addEventListener("touchmove", onTouch, {
       passive: true
     });
-    compute();
+    setStickyDay(null);
     return () => {
       document.removeEventListener("scroll", compute);
       document.removeEventListener("touchmove", onTouch);
@@ -4747,11 +4794,13 @@ const MonthView = ({
         minHeight: 100,
         padding: "8px 6px",
         background: isT ? C.blueBg : C.card,
-        borderRight: i % 7 !== 6 ? "1px solid #F0F7FF" : "none",
+        borderRight: (isHe ? i % 7 !== 0 : i % 7 !== 6) ? "1px solid #F0F7FF" : "none",
         borderBottom: i < cells.length - 7 ? "1px solid #F0F7FF" : "none",
         opacity: cell.other ? 0.1 : isCellPast ? 0.9 : 1,
         cursor: "pointer",
-        transition: "background 0.15s"
+        transition: "background 0.15s",
+        overflow: "hidden",
+        minWidth: 0
       },
       onMouseEnter: e => !isT && (e.currentTarget.style.background = "#F8FAFF"),
       onMouseLeave: e => !isT && (e.currentTarget.style.background = "var(--card)")
@@ -4843,7 +4892,8 @@ const WeekView = ({
   onDayClick
 }) => {
   const width = useWindowWidth();
-  const narrow = width < 640;
+  const height = useWindowHeight();
+  const narrow = height > width;
   const scrollRef = useRef();
   const isHe = getLang() === "he";
   // ── Swipe state for left/right → previous/next week (wide grid only) ──
@@ -4938,7 +4988,7 @@ const WeekView = ({
     month: "short",
     day: "numeric",
     year: "numeric"
-  })), narrow && /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6
@@ -4957,181 +5007,16 @@ const WeekView = ({
     name: getLang() === "he" ? "chevLeft" : "chevRight",
     size: 14
   }))));
-  if (narrow) {
-    return /*#__PURE__*/React.createElement("div", {
-      style: {
-        animation: "fadeIn 0.25s ease"
-      }
-    }, navBar, days.map((day, i) => {
-      const ds = localDs(day);
-      const isT = day.toDateString() === TODAY.toDateString();
-      const dayTasks = sortForByType(tasks.filter(t => t.date === ds || isT && !t.date && (isDone(t) || isCancelled(t))));
-      return /*#__PURE__*/React.createElement("div", {
-        key: i,
-        style: {
-          marginBottom: 10
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          marginBottom: 6,
-          paddingBottom: 6,
-          borderBottom: `1px solid ${isT ? "#BFDBFE" : "#DBEAFE"}`
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          width: 32,
-          height: 32,
-          borderRadius: 9,
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: isT ? C.blue : "transparent",
-          border: isT ? "none" : "1px solid #E2E8F0",
-          fontSize: 13,
-          fontWeight: 700,
-          color: isT ? "#fff" : C.text2
-        }
-      }, day.getDate()), /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 12,
-          fontWeight: 600,
-          color: isT ? "#2563EB" : "#64748B"
-        }
-      }, day.toLocaleDateString(t("dateLocale"), {
-        weekday: "short",
-        month: "short",
-        day: "numeric"
-      })), isT && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 10,
-          fontWeight: 700,
-          padding: "1px 7px",
-          borderRadius: 20,
-          background: "#DBEAFE",
-          color: C.blue
-        }
-      }, t("today")), /*#__PURE__*/React.createElement("button", {
-        onClick: () => onDayClick && onDayClick(ds),
-        style: {
-          [getLang() === "he" ? "marginRight" : "marginLeft"]: "auto",
-          width: 24,
-          height: 24,
-          borderRadius: 6,
-          border: `1px solid ${C.border}`,
-          background: C.blueBg,
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center"
-        }
-      }, /*#__PURE__*/React.createElement(Icon, {
-        name: "plus",
-        size: 11,
-        color: "#3B82F6"
-      }))), /*#__PURE__*/React.createElement("div", {
-        style: {
-          paddingLeft: getLang() === "he" ? 0 : 42,
-          paddingRight: getLang() === "he" ? 42 : 0
-        }
-      }, dayTasks.length === 0 && /*#__PURE__*/React.createElement("div", {
-        style: {
-          fontSize: 11,
-          color: C.text5,
-          fontStyle: "italic"
-        }
-      }, t("noTasks")), dayTasks.map(t => {
-        const donOnDay = isDone(t),
-          cancelOnDay = isCancelled(t),
-          over = isOverdue(t),
-          m = getTypeMeta(t.type);
-        return /*#__PURE__*/React.createElement("div", {
-          key: t.id,
-          onClick: () => onTaskClick(t),
-          style: {
-            padding: "6px 8px",
-            borderRadius: 7,
-            marginBottom: 5,
-            cursor: "pointer",
-            fontSize: 12,
-            fontWeight: 500,
-            background: donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : m.bg,
-            color: donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : m.color,
-            borderLeft: `2px solid ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}`,
-            opacity: donOnDay ? 0.78 : cancelOnDay ? 0.7 : 1,
-            textDecoration: cancelOnDay ? "line-through" : "none"
-          }
-        }, /*#__PURE__*/React.createElement("div", {
-          style: {
-            display: "flex",
-            alignItems: "center",
-            gap: 4
-          }
-        }, donOnDay && /*#__PURE__*/React.createElement("svg", {
-          width: "9",
-          height: "9",
-          viewBox: "0 0 24 24",
-          fill: "none",
-          stroke: "currentColor",
-          strokeWidth: "3.5",
-          strokeLinecap: "round",
-          strokeLinejoin: "round",
-          style: {
-            flexShrink: 0
-          }
-        }, /*#__PURE__*/React.createElement("polyline", {
-          points: "20 6 9 17 4 12"
-        })), cancelOnDay && /*#__PURE__*/React.createElement("svg", {
-          width: "9",
-          height: "9",
-          viewBox: "0 0 24 24",
-          fill: "none",
-          stroke: "currentColor",
-          strokeWidth: "3.5",
-          strokeLinecap: "round",
-          strokeLinejoin: "round",
-          style: {
-            flexShrink: 0
-          }
-        }, /*#__PURE__*/React.createElement("line", {
-          x1: "18",
-          y1: "6",
-          x2: "6",
-          y2: "18"
-        }), /*#__PURE__*/React.createElement("line", {
-          x1: "6",
-          y1: "6",
-          x2: "18",
-          y2: "18"
-        })), /*#__PURE__*/React.createElement("span", {
-          style: {
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap"
-          }
-        }, taskDisplayName(t))), t.time && /*#__PURE__*/React.createElement("div", {
-          style: {
-            fontSize: 10,
-            opacity: 0.7,
-            marginTop: 2
-          }
-        }, t.time));
-      })));
-    }));
-  }
   return /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.25s ease"
     }
   }, navBar, (() => {
-    const HOUR_PX = 38;
+    const HOUR_PX = narrow ? 32 : 38;
     const pxPerMin = HOUR_PX / 60;
     const nowD = new Date();
     const nowMinutes = nowD.getHours() * 60 + nowD.getMinutes();
-    const gutterCol = "50px";
+    const gutterCol = narrow ? "28px" : "50px";
     const gridTemplate = `${gutterCol} repeat(7,1fr)`;
 
     const dayData = days.map(day => {
@@ -5268,8 +5153,8 @@ const WeekView = ({
         display: "grid",
         gridTemplateColumns: gridTemplate,
         gap: 0,
-        marginBottom: 4,
-        paddingBottom: 4
+        marginBottom: 1,
+        paddingBottom: 0
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -5290,12 +5175,12 @@ const WeekView = ({
       style: {
         position: "absolute",
         top: (h - DAY_START) * HOUR_PX - 6,
-        insetInlineEnd: 6,
-        fontSize: 10,
+        insetInlineEnd: narrow ? 2 : 6,
+        fontSize: narrow ? 8 : 10,
         color: C.text5,
         fontWeight: 600
       }
-    }, `${String(h).padStart(2, "0")}:00`));
+    }, narrow ? String(h) : `${String(h).padStart(2, "0")}:00`));
     const hourGutter = /*#__PURE__*/React.createElement("div", {
       style: {
         position: "relative",
@@ -5317,17 +5202,31 @@ const WeekView = ({
         m = getTypeMeta(tk.type);
       const top = (start - DAY_START * 60) * pxPerMin;
       const rawHeight = (end - start) * pxPerMin;
-      const height = Math.max(rawHeight, 20);
+      // Shrink slightly so back-to-back tasks (one ending exactly when the next
+      // starts) always show a tiny visible gap instead of touching edges.
+      const height = Math.max(rawHeight - 1, 20);
       const widthPct = 100 / laneCount;
       const leftPct = lane * widthPct;
+      const vPad = height < 30 ? 4 : 8;
+      const hasSubLine = height >= 34;
+      const titleLineH = 13; // ~10.5px font * 1.25 line-height
+      const availForTitle = height - vPad - (hasSubLine ? 12 : 0);
+      const maxTitleLines = Math.max(1, Math.min(3, Math.floor(availForTitle / titleLineH)));
       const nameLine = /*#__PURE__*/React.createElement("div", {
-        style: {
+        style: maxTitleLines > 1 ? {
+          display: "-webkit-box",
+          WebkitLineClamp: maxTitleLines,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+          wordBreak: "break-word",
+          lineHeight: 1.25
+        } : {
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis"
         }
       }, taskDisplayName(tk));
-      const subLine = height >= 34 ? /*#__PURE__*/React.createElement("div", {
+      const subLine = hasSubLine ? /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 9,
           opacity: 0.75,
@@ -5347,8 +5246,8 @@ const WeekView = ({
           position: "absolute",
           top,
           height,
-          insetInlineStart: `calc(${leftPct}% + 2px)`,
-          width: `calc(${widthPct}% - 4px)`,
+          insetInlineStart: `calc(${leftPct}% + 1.5px)`,
+          width: `calc(${widthPct}% - 3px)`,
           borderRadius: 6,
           padding: height < 30 ? "2px 5px" : "4px 6px",
           fontSize: 10.5,
@@ -5401,8 +5300,8 @@ const WeekView = ({
           const rect = e.currentTarget.getBoundingClientRect();
           const offsetY = e.clientY - rect.top;
           let mins = DAY_START * 60 + offsetY / pxPerMin;
-          mins = Math.round(mins / 15) * 15; // snap to nearest 15 minutes
-          mins = Math.max(DAY_START * 60, Math.min(DAY_END * 60 - 15, mins));
+          mins = Math.round(mins / 30) * 30; // snap to nearest 30 minutes (full/half hours only)
+          mins = Math.max(DAY_START * 60, Math.min(DAY_END * 60 - 30, mins));
           const hh = Math.floor(mins / 60),
             mm = mins % 60;
           const clickedTime = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
@@ -5429,7 +5328,7 @@ const WeekView = ({
       style: {
         border: `1px solid ${C.border3}`,
         borderRadius: 10,
-        paddingTop: 8
+        paddingTop: 3
       }
     }, gridBody);
     const swipeWrap = /*#__PURE__*/React.createElement("div", {
@@ -5547,6 +5446,7 @@ const ListByDate = ({
   // Sticky date header — synchronous, works on iOS via touchmove + rAF
   useEffect(() => {
     const compute = () => {
+      if (window.scrollY < 1) { setStickyDate(null); return; }
       const barBottom = stickyBarRef.current ? stickyBarRef.current.getBoundingClientRect().bottom : 48;
       let best = null;
       for (const [k, el] of Object.entries(dateSentinelRefs.current)) {
@@ -5566,7 +5466,7 @@ const ListByDate = ({
     document.addEventListener("touchmove", onTouch, {
       passive: true
     });
-    compute();
+    setStickyDate(null);
     return () => {
       document.removeEventListener("scroll", compute);
       document.removeEventListener("touchmove", onTouch);
@@ -5647,11 +5547,11 @@ const ListByDate = ({
       overflow: "hidden",
       maxHeight: stickyDate ? 50 : 0,
       opacity: stickyDate ? 1 : 0,
-      transition: "max-height 0.18s ease, opacity 0.18s ease",
+      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease",
       background: "var(--card)",
       backdropFilter: "blur(12px)",
       WebkitBackdropFilter: "blur(12px)",
-      borderBottom: `1px solid ${C.border}`,
+      borderBottom: stickyDate ? `1px solid ${C.border}` : "none",
       transform: "translateZ(0)",
       WebkitTransform: "translateZ(0)"
     }
@@ -5934,6 +5834,7 @@ const ListByType = ({
   const typeSentinels = useRef({});
   useEffect(() => {
     const compute = () => {
+      if (window.scrollY < 1) { setStickyType(null); return; }
       const barBottom = stickyBarRef.current ? stickyBarRef.current.getBoundingClientRect().bottom : 48;
       let best = null;
       for (const [type, el] of Object.entries(typeSentinels.current)) {
@@ -5953,7 +5854,7 @@ const ListByType = ({
     document.addEventListener("touchmove", onTouch, {
       passive: true
     });
-    compute();
+    setStickyType(null);
     return () => {
       document.removeEventListener("scroll", compute);
       document.removeEventListener("touchmove", onTouch);
@@ -6081,11 +5982,11 @@ const ListByType = ({
       overflow: "hidden",
       maxHeight: stickyType ? 44 : 0,
       opacity: stickyType ? 1 : 0,
-      transition: "max-height 0.18s ease, opacity 0.18s ease",
+      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease",
       background: "var(--card)",
       backdropFilter: "blur(12px)",
       WebkitBackdropFilter: "blur(12px)",
-      borderBottom: `1px solid ${C.border}`,
+      borderBottom: stickyType ? `1px solid ${C.border}` : "none",
       transform: "translateZ(0)",
       WebkitTransform: "translateZ(0)"
     }
@@ -9496,7 +9397,8 @@ const Dashboard = ({
     document.addEventListener("touchmove", onTouch, {
       passive: true
     });
-    compute();
+    setStickySection(null);
+    setStickyDay(null);
     return () => {
       document.removeEventListener("scroll", compute);
       document.removeEventListener("touchmove", onTouch);
@@ -9543,11 +9445,11 @@ const Dashboard = ({
       overflow: "hidden",
       maxHeight: stickySection ? 100 : 0,
       opacity: stickySection ? 1 : 0,
-      transition: "max-height 0.18s ease, opacity 0.18s ease",
+      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease",
       background: "var(--card)",
       backdropFilter: "blur(12px)",
       WebkitBackdropFilter: "blur(12px)",
-      borderBottom: `1px solid ${C.border}`,
+      borderBottom: stickySection ? `1px solid ${C.border}` : "none",
       transform: "translateZ(0)",
       WebkitTransform: "translateZ(0)"
     }
@@ -10422,22 +10324,7 @@ const SettingsModal = ({
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
   const sheetRef = useRef(null);
-  const [handlePressed, setHandlePressed] = useState(false);
-  const dragRef = useRef({
-    startY: 0,
-    curY: 0,
-    dragging: false,
-    lastY: 0,
-    lastT: 0,
-    velY: 0
-  });
   const handleRef = useRef(null);
-  const sheetDragActive = useRef(false);
-  // Sheet position: fraction of screen height from top (0=full screen, 0.35=default bottom sheet)
-  const SHEET_DEFAULT = 0.06; // opens at 6% from top = 94% of screen
-  const SHEET_MIN_TOP = 0.03; // can pull up to 3% from top
-  const [sheetTopFrac, setSheetTopFrac] = useState(SHEET_DEFAULT);
-  const sheetTopFracRef = useRef(SHEET_DEFAULT); // imperative ref for during drag
   // ── Copy JSON: let the person pick which types to include first ──
   const [copyPickerOpen, setCopyPickerOpen] = useState(false);
   const [copyTypes, setCopyTypes] = useState(null); // Set of selected types, or null before opened
@@ -10454,8 +10341,6 @@ const SettingsModal = ({
     if (open) {
       setVisible(true);
       setClosing(false);
-      setSheetTopFrac(SHEET_DEFAULT);
-      sheetTopFracRef.current = SHEET_DEFAULT;
       setJsonText("");
       setCopied(false);
       setPasted(false);
@@ -10491,11 +10376,6 @@ const SettingsModal = ({
     const scopedTasks = (tasks || []).filter(tk => chosen.has(tk.type || "general"));
     const compressed = LZString.compressToEncodedURIComponent(JSON.stringify({
       tasks: scopedTasks,
-      charts,
-      prefs: {
-        il: getPref(PREF_IL),
-        intl: getPref(PREF_INTL)
-      },
       searchHistory: loadSearchHistory(),
       _v: 2
     }));
@@ -10530,22 +10410,16 @@ const SettingsModal = ({
         }
         parsed = JSON.parse(decompressed);
       }
-      let loadedTasks, loadedCharts, loadedPrefs;
+      let loadedTasks;
       if (Array.isArray(parsed)) {
         loadedTasks = parsed.map(migrateTask);
-        loadedCharts = null;
-        loadedPrefs = null;
       } else if (parsed && Array.isArray(parsed.tasks)) {
         loadedTasks = parsed.tasks.map(migrateTask);
-        loadedCharts = parsed.charts || null;
-        loadedPrefs = parsed._v >= 2 ? parsed.prefs || null : null;
       } else {
         setLoadError(t("mustBeArray"));
         return;
       }
-      if (!loadedPrefs) {
-        loadedTasks = loadedTasks.filter(tk => tk.type !== "calendar" && !tk.hebcal && !tk.intl || isDone(tk) || isCancelled(tk));
-      }
+      loadedTasks = loadedTasks.filter(tk => tk.type !== "calendar" && !tk.hebcal && !tk.intl || isDone(tk) || isCancelled(tk));
 
       // ── Merge, never replace: keep every existing task and only add the
       // ones from this import that aren't already here. `tasks` here is the
@@ -10572,18 +10446,10 @@ const SettingsModal = ({
       _rawSave(STORAGE_KEY, newMain);
       _rawSave(ARCHIVE_KEY, newArchive);
 
-      // Merge charts by id too, rather than overwriting the existing set.
-      let mergedCharts = null;
-      if (Array.isArray(loadedCharts) && loadedCharts.length) {
-        const haveChartIds = new Set((charts || []).map(c => c && c.id));
-        const newCharts = loadedCharts.filter(c => c && !haveChartIds.has(c.id));
-        mergedCharts = newCharts.length ? [...(charts || []), ...newCharts] : null;
-      }
-
       onLoad({
         tasks: newMain,
         archive: newArchive,
-        charts: mergedCharts,
+        charts: null,
         keepPrefs: true // this is an add, not a restore — leave holiday prefs untouched
       });
       setLoadMsg(fresh.length
@@ -10594,81 +10460,6 @@ const SettingsModal = ({
       setJsonText("");
     } catch {
       setLoadError(t("invalidJson"));
-    }
-  };
-  // ── Draggable sheet handlers ──
-  const onHandleTouchStart = e => {
-    const sh = sheetRef.current;
-    if (!sh) return;
-    const t0 = e.touches[0];
-    dragRef.current = {
-      startY: t0.clientY,
-      startFrac: sheetTopFracRef.current,
-      dragging: true,
-      lastY: t0.clientY,
-      lastT: Date.now(),
-      velY: 0
-    };
-    sh.style.transition = "none";
-    setHandlePressed(true);
-    if (e.cancelable) e.preventDefault();
-  };
-  const onHandleTouchMove = e => {
-    const d = dragRef.current;
-    if (!d.dragging) return;
-    const y = e.touches[0].clientY;
-    const now = Date.now();
-    const dt = Math.max(now - d.lastT, 1);
-    d.velY = (y - d.lastY) / dt;
-    d.lastY = y;
-    d.lastT = now;
-    const H = window.innerHeight;
-    // Convert finger Y directly to sheet top fraction
-    let frac = y / H;
-    // Clamp: can't go above SHEET_MIN_TOP (with rubber band), can't go below 95%
-    if (frac < SHEET_MIN_TOP) {
-      // rubber band above max
-      const over = SHEET_MIN_TOP - frac;
-      frac = SHEET_MIN_TOP - over * 0.3;
-    }
-    frac = Math.min(frac, 0.95);
-    sheetTopFracRef.current = frac;
-    // Imperative update — no setState during drag (too slow)
-    const sh = sheetRef.current;
-    if (sh) sh.style.top = `${frac * 100}%`;
-    if (frac > 8) setHandlePressed(false);
-    if (e.cancelable) e.preventDefault();
-  };
-  const onHandleTouchEnd = e => {
-    const d = dragRef.current;
-    if (!d.dragging) return;
-    d.dragging = false;
-    const sh = sheetRef.current;
-    const frac = sheetTopFracRef.current;
-    const vel = d.velY; // px/ms, positive = downward
-    setHandlePressed(false);
-    // Dismiss if dragged past 70% OR fast flick down
-    if (frac > 0.70 || vel > 0.6) {
-      if (sh) {
-        sh.style.transition = "top 0.28s cubic-bezier(0.4,0,1,1)";
-        sh.style.top = "105%";
-      }
-      setTimeout(onClose, 260);
-    } else {
-      // Snap to nearest anchor: top (0.05) or default (SHEET_DEFAULT)
-      const snapTo = frac < (SHEET_MIN_TOP + SHEET_DEFAULT) / 2 ? SHEET_MIN_TOP : SHEET_DEFAULT;
-      sheetTopFracRef.current = snapTo;
-      setSheetTopFrac(snapTo);
-      if (sh) {
-        // Spring bounce
-        sh.style.transition = "top 0.45s cubic-bezier(0.34,1.56,0.64,1)";
-        sh.style.top = `${snapTo * 100}%`;
-      }
-      setTimeout(() => {
-        if (sh) {
-          sh.style.transition = "";
-        }
-      }, 480);
     }
   };
   const handleReset = async () => {
@@ -10792,11 +10583,11 @@ const SettingsModal = ({
     ref: sheetRef,
     className: closing ? "settings-sheet-out" : "settings-sheet-in",
     style: {
-      position: "absolute",
-      top: `${sheetTopFrac * 100}%`,
+      position: "fixed",
+      bottom: 0,
       left: 0,
       right: 0,
-      bottom: 0,
+      height: "85%",
       background: "var(--card)",
       borderRadius: "24px 24px 0 0",
       boxShadow: "0 -8px 40px rgba(0,0,0,0.22)",
@@ -10804,33 +10595,25 @@ const SettingsModal = ({
       borderBottom: "none",
       display: "flex",
       flexDirection: "column",
-      willChange: "top",
       overflow: "hidden"
     }
   }, /*#__PURE__*/React.createElement("div", {
     ref: handleRef,
-    onTouchStart: onHandleTouchStart,
-    onTouchMove: onHandleTouchMove,
-    onTouchEnd: onHandleTouchEnd,
     style: {
       flexShrink: 0,
       padding: "16px 0 10px",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      cursor: "grab",
-      touchAction: "none",
-      WebkitUserSelect: "none",
       background: "var(--card)",
       zIndex: 1
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      width: handlePressed ? 52 : 36,
-      height: handlePressed ? 5 : 4,
+      width: 36,
+      height: 4,
       borderRadius: 3,
-      background: handlePressed ? "var(--text3)" : "var(--border2)",
-      transition: "width 0.2s cubic-bezier(0.34,1.56,0.64,1), background 0.2s ease"
+      background: "var(--border2)"
     }
   })), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -12236,7 +12019,8 @@ const SearchView = ({
     },
     onFocus: e => e.target.style.borderColor = "#93C5FD",
     onBlur: e => e.target.style.borderColor = "var(--border)",
-    autoComplete: "off"
+    autoComplete: "off",
+    autoFocus: true
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -13339,7 +13123,7 @@ function App() {
   const [view, setView] = useState("home");
   const [slideDir, setSlideDir] = useState("");
   const slideKey = React.useRef(0);
-  const SLIDE_ORDER = ["home", "month", "search", "all-tasks", "week"];
+  const SLIDE_ORDER = ["home", "month", "week", "all-tasks", "search"];
   const navigateTo = nextView => {
     if (nextView === view) {
       setTappedTab(nextView);
@@ -13453,7 +13237,7 @@ function App() {
   };
   const resetMonthViewRef = useRef(null); // set by MonthView; called when tapping active month tab
   const [pullDist, setPullDist] = useState(0);
-  const [filteredCharts, setFilteredCharts] = useState(() => loadCharts());
+  const [filteredCharts, setFilteredCharts] = useState(() => DEFAULT_CHARTS.map(c => ({...c})));
   const [newlyAddedIds, setNewlyAddedIds] = useState(() => new Set());
   const [prefIL, setPrefIL] = useState(() => getPref(PREF_IL));
   const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL));
@@ -13844,12 +13628,20 @@ function App() {
     setActiveTileNote(null);
   }, [view]);
   useEffect(() => {
-    persistCharts(filteredCharts);
-  }, [filteredCharts]);
-  useEffect(() => {
     const pruned = persistTasks(tasks, setArchiveTasks);
     if (pruned.length !== tasks.length) setTasks(pruned);
   }, [tasks]);
+  // Auto-detect holidays from loaded tasks on a new device (same account, no prefs yet)
+  useEffect(() => {
+    if (getPref(PREF_IL) === null && tasks.some(tk => tk.hebcal && !tk.intl)) {
+      setPref(PREF_IL, "yes");
+      setPrefIL("yes");
+    }
+    if (getPref(PREF_INTL) === null && tasks.some(tk => tk.intl)) {
+      setPref(PREF_INTL, "yes");
+      setPrefIntl("yes");
+    }
+  }, [tasks]); // eslint-disable-line react-hooks/exhaustive-deps
   const acceptIL = () => {
     setPref(PREF_IL, "yes");
     setPrefIL("yes");
@@ -14381,7 +14173,14 @@ function App() {
   const overdueCount = tasks.filter(t => isOverdue(t)).length;
   const todayTaskCount = tasks.filter(t => isPending(t) && t.date && t.date <= todayStr()).length;
   const appWidth = useWindowWidth();
-  const narrow = appWidth < 640;
+  const appHeight = useWindowHeight();
+  const narrow = appHeight > appWidth;
+  // Re-position bottom nav pill when narrow/view changes (after narrow is defined)
+  useEffect(() => {
+    if (!narrow) return;
+    const t = setTimeout(() => updatePillToTab(view), 60);
+    return () => clearTimeout(t);
+  }, [narrow, view]);
   // Wide month/week views show prev/today/next as circular buttons in the
   // bottom-left corner (where the new-task FAB normally sits) instead of in
   // the header, and the FAB itself is hidden there since it'd overlap.
@@ -14489,9 +14288,6 @@ function App() {
     document.documentElement.dir = lang === "he" ? "rtl" : "ltr";
     document.documentElement.lang = lang;
   }, [lang]);
-  useEffect(() => {
-    if (narrow && view === "week") setView("month");
-  }, [narrow]);
   const views = [{
     id: "home",
     icon: "home",
@@ -14504,10 +14300,6 @@ function App() {
     id: "week",
     icon: "columns",
     label: t("week")
-  }, {
-    id: "search",
-    icon: "search",
-    label: t("searchView")
   }, {
     id: "all-tasks",
     icon: "list",
@@ -14837,6 +14629,35 @@ function App() {
       gap: 8
     }
   }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => navigateTo("search"),
+    title: getLang() === "he" ? "חיפוש" : "Search",
+    "aria-label": getLang() === "he" ? "חיפוש" : "Search",
+    style: {
+      width: 34,
+      height: 34,
+      borderRadius: 10,
+      border: `1px solid ${view === "search" ? C.blueBorder : C.border2}`,
+      background: view === "search" ? C.blueBg : C.card2,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      transition: "all 0.15s"
+    },
+    onMouseEnter: e => {
+      e.currentTarget.style.background = "var(--blue-bg)";
+      e.currentTarget.style.borderColor = "var(--blue-border)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.background = view === "search" ? "var(--blue-bg)" : "var(--card2)";
+      e.currentTarget.style.borderColor = view === "search" ? "var(--blue-border)" : "var(--border2)";
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "search",
+    size: 16,
+    color: view === "search" ? C.blue : C.text3
+  })), /*#__PURE__*/React.createElement("button", {
     onClick: () => setDataModalOpen(true),
     title: getLang() === "he" ? "הגדרות" : "Settings",
     "aria-label": getLang() === "he" ? "הגדרות" : "Settings",
@@ -14887,6 +14708,7 @@ function App() {
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
+      flexDirection: lang === "he" ? "row-reverse" : "row",
       gap: 5,
       background: view === v.id ? dark ? "#1E3A5F" : C.blueBg : "transparent",
       color: view === v.id ? dark ? "#93C5FD" : "#2563EB" : C.text3,
@@ -15043,43 +14865,27 @@ function App() {
       alignItems: "center",
       gap: 8
     }
-  }, (() => {
-    const isHePill = getLang() === "he";
-    const pillInfo = getSyncPillInfo(isHePill);
-    return /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        flexDirection: isHePill ? "row-reverse" : "row",
-        gap: 4,
-        padding: "3px 8px",
-        borderRadius: 20,
-        background: pillInfo.bg,
-        border: `1px solid ${pillInfo.border}`,
-        transition: "background 0.3s ease, border-color 0.3s ease",
-        overflow: "hidden"
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 6,
-        height: 6,
-        borderRadius: "50%",
-        background: pillInfo.color,
-        flexShrink: 0,
-        transition: "background 0.3s ease",
-        animation: pillInfo.pulse ? "syncPillPulse 1s ease-in-out infinite" : "none"
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10,
-        fontWeight: 600,
-        color: pillInfo.color,
-        letterSpacing: "0.03em",
-        transition: "color 0.3s ease",
-        whiteSpace: "nowrap"
-      }
-    }, pillInfo.label));
-  })(), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => navigateTo("search"),
+    title: getLang() === "he" ? "חיפוש" : "Search",
+    "aria-label": getLang() === "he" ? "חיפוש" : "Search",
+    style: {
+      width: 32,
+      height: 32,
+      borderRadius: 9,
+      border: `1px solid ${view === "search" ? C.blueBorder : C.border2}`,
+      background: view === "search" ? C.blueBg : C.card2,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "search",
+    size: 15,
+    color: view === "search" ? C.blue : C.text3
+  })), /*#__PURE__*/React.createElement("button", {
     onClick: () => setDataModalOpen(true),
     style: {
       width: 32,
@@ -15147,7 +14953,7 @@ function App() {
       const rect = bar.getBoundingClientRect();
       const x = touch.clientX;
       // Map x across bar width to one of the 4 tabs (skip FAB slot)
-      const TABS = ["home", "month", "search", "all-tasks"];
+      const TABS = ["home", "month", "week", "all-tasks"];
       const slotW = rect.width / 4;
       const relX = Math.max(0, Math.min(x - rect.left, rect.width - 1));
       const slotIdx = Math.floor(relX / slotW);
@@ -15333,9 +15139,9 @@ function App() {
       color: "#fff",
       strokeWidth: 2.5
     }))), [{
-      id: "search",
-      icon: "search",
-      label: t("searchView")
+      id: "week",
+      icon: "columns",
+      label: t("week")
     }, {
       id: "all-tasks",
       icon: "list",
@@ -15457,20 +15263,23 @@ function App() {
     weekday: "long",
     month: "long",
     day: "numeric",
-  })), !narrow && (() => {
+  })), (() => {
     const isHeW = getLang() === "he";
     const pillInfoW = getSyncPillInfo(isHeW);
     return /*#__PURE__*/React.createElement("div", {
+      onClick: () => { if (gcalConnected) gcalPullNow(); },
       style: {
         display: "flex",
         alignItems: "center",
+        direction: "ltr",
         flexDirection: isHeW ? "row-reverse" : "row",
         gap: 5,
         padding: "4px 10px",
         borderRadius: 20,
         background: pillInfoW.bg,
         border: `1px solid ${pillInfoW.border}`,
-        transition: "all 0.3s ease"
+        transition: "all 0.3s ease",
+        cursor: gcalConnected ? "pointer" : "default"
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
