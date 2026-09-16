@@ -3328,8 +3328,7 @@ const Modal = ({
       }),
       fontSize: 16,
       minHeight: 40,
-      cursor: "pointer",
-      colorScheme: dark ? "dark" : "light"
+      cursor: "pointer"
     },
     value: form.date,
     onChange: e => {
@@ -4775,15 +4774,15 @@ const MonthView = ({
         minHeight: 100,
         padding: "8px 6px",
         background: isT ? C.blueBg : C.card,
-        borderRight: (isHe ? i % 7 !== 0 : i % 7 !== 6) ? "1px solid #F0F7FF" : "none",
-        borderBottom: i < cells.length - 7 ? "1px solid #F0F7FF" : "none",
+        borderRight: (isHe ? i % 7 !== 0 : i % 7 !== 6) ? `1px solid ${C.border}` : "none",
+        borderBottom: i < cells.length - 7 ? `1px solid ${C.border}` : "none",
         opacity: cell.other ? 0.1 : isCellPast ? 0.9 : 1,
         cursor: "pointer",
         transition: "background 0.15s",
         overflow: "hidden",
         minWidth: 0
       },
-      onMouseEnter: e => !isT && (e.currentTarget.style.background = "#F8FAFF"),
+      onMouseEnter: e => !isT && (e.currentTarget.style.background = "var(--card2)"),
       onMouseLeave: e => !isT && (e.currentTarget.style.background = "var(--card)")
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -4969,7 +4968,7 @@ const WeekView = ({
     month: "short",
     day: "numeric",
     year: "numeric"
-  })), /*#__PURE__*/React.createElement("div", {
+  })), narrow && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6
@@ -4997,7 +4996,7 @@ const WeekView = ({
     const pxPerMin = HOUR_PX / 60;
     const nowD = new Date();
     const nowMinutes = nowD.getHours() * 60 + nowD.getMinutes();
-    const gutterCol = narrow ? "28px" : "50px";
+    const gutterCol = narrow ? "22px" : "50px";
     const gridTemplate = `${gutterCol} repeat(7,1fr)`;
 
     const dayData = days.map(day => {
@@ -5308,7 +5307,8 @@ const WeekView = ({
       ref: scrollRef,
       style: {
         border: `1px solid ${C.border3}`,
-        borderRadius: 10,
+        borderTop: "none",
+        borderRadius: "0 0 10px 10px",
         paddingTop: 3
       }
     }, gridBody);
@@ -13095,15 +13095,19 @@ const GCal = (() => {
 function App() {
   const [tasks, setTasks] = useState(() => {
     try {
-      // When GCal was connected last session, don't seed from localStorage —
-      // GCal is the source of truth. Start empty; gcalPullNow() fills it.
-      // If the pull fails we fall back to localStorage in the catch block.
-      if (localStorage.getItem("taskit_gcal_connected") === "1") return [];
       return _applyMigrations(loadTasks());
     } catch {
       return [];
     }
   });
+  // Track which task IDs came from localStorage at startup.
+  // On the first complete GCal pull, any of these not found in GCal were
+  // deleted on another device and should be removed locally.
+  const initialLocalIds = useRef(new Set());
+  // Seed the initial local IDs ref once, synchronously, from the same localStorage read.
+  if (initialLocalIds.current.size === 0) {
+    try { loadTasks().forEach(t => initialLocalIds.current.add(t.id)); } catch {}
+  }
   const [archiveTasks, setArchiveTasks] = useState([]); // loaded in background after first paint
   const [view, setView] = useState("home");
   const [slideDir, setSlideDir] = useState("");
@@ -13334,13 +13338,17 @@ function App() {
             next = (next === ts ? [...ts] : next).map(t => t.id === tid ? { ...t, ...patch } : t);
           }
         }
-        // A task that Google no longer has, but that a previous complete pull did
-        // have, was deleted from the calendar on some device. Only a complete pull
-        // may conclude this; a partial read never deletes anything locally.
+        // A task that Google no longer has was deleted on another device.
+        // Only a complete pull may conclude this; a partial read never deletes locally.
+        // On the very first pull (hadBefore is empty) we use initialLocalIds to tell
+        // apart "was in localStorage at startup → deleted elsewhere → remove" from
+        // "created in this session, not pushed yet → keep".
         if (complete) {
+          const isFirstPull = Object.keys(hadBefore).length === 0;
           next = (next === ts ? [...ts] : next).filter(t => {
             if (!GCal.shouldSync(t)) return true;
             if (byId[t.id]) return true;
+            if (isFirstPull) return !initialLocalIds.current.has(t.id);
             return !(t.id in hadBefore);
           });
         }
@@ -13351,12 +13359,6 @@ function App() {
       if (complete) { setGcalReady(true); setGcalError(""); }
     } catch (e) {
       setGcalError(e.message || String(e));
-      // Fallback: if startup pull failed and we have no tasks yet, load from localStorage
-      // so the user isn't left with an empty screen.
-      setTasks(ts => {
-        if (ts.length > 0) return ts;
-        try { return _applyMigrations(loadTasks()); } catch { return ts; }
-      });
     } finally {
       gcalSyncing.current = false;
       setGcalPulling(false);
@@ -15262,8 +15264,8 @@ function App() {
       style: {
         display: "flex",
         alignItems: "center",
-        direction: "ltr",
-        flexDirection: isHeW ? "row-reverse" : "row",
+        direction: isHeW ? "rtl" : "ltr",
+        flexDirection: "row",
         gap: 5,
         padding: "4px 10px",
         borderRadius: 20,
