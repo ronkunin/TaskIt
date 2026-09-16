@@ -7515,7 +7515,15 @@ const LineChart = ({
     style: {
       overflowX: "auto",
       WebkitOverflowScrolling: "touch",
-      position: "relative"
+      position: "relative",
+      // Cap how wide the chart can stretch relative to its height — on wide
+      // containers (tablet/desktop) an unconstrained 100%-wide, fixed-height
+      // SVG gets flattened and hard to read. Keeping it near its native
+      // ~2.2:1 aspect ratio (and centering it) keeps the plot legible instead
+      // of squeezed, while still shrinking/scrolling fine on narrow screens.
+      maxWidth: Math.round(H * 2.2),
+      marginLeft: "auto",
+      marginRight: "auto"
     },
     ref: el => el && (el._lineRef = true)
   }, /*#__PURE__*/React.createElement("svg", {
@@ -12745,10 +12753,19 @@ const GCal = (() => {
   // to tell apart (and easy to hide) in Google Calendar itself.
   const HOLIDAYS_KEY = "holidays";
 
-  // The ONLY thing still kept on the device: a local "the user pressed Connect here"
-  // flag, so we know whether to attempt a silent token restore. It holds no sync
-  // state, so it can never make one device disagree with another.
+  // The local "the user pressed Connect here" flag, so we know whether to attempt
+  // a silent token restore. It holds no sync state, so it can never make one
+  // device disagree with another.
   const LS_CONNECTED = "taskit_gcal_connected";
+
+  // The access token itself, persisted so a page refresh doesn't have to ask
+  // Google for a new one while the old one is still perfectly valid. This is
+  // still just the same short-lived (~1hr) token Google issued — nothing more
+  // powerful is ever stored here, and it's cleared on disconnect like everything
+  // else. It only ever removes the *unnecessary* re-auth prompts caused by a
+  // reload wiping an in-memory variable, not the real expiry-driven ones.
+  const LS_TOKEN = "taskit_gcal_token";
+  const LS_TOKEN_EXP = "taskit_gcal_token_exp";
 
   // Purge the old per-device sync state. These three keys are exactly why every
   // device saw something different: each browser had its own private idea of which
@@ -12759,8 +12776,19 @@ const GCal = (() => {
       .forEach(k => localStorage.removeItem(k));
   } catch {}
 
+  // Restore a still-valid token from a previous page load, if there is one, so
+  // the very first ensureToken() call of this session can skip Google entirely.
   let accessToken = null;
   let tokenExpiresAt = 0;
+  try {
+    const savedExp = parseInt(localStorage.getItem(LS_TOKEN_EXP) || "0", 10);
+    const savedToken = localStorage.getItem(LS_TOKEN);
+    if (savedToken && savedExp && Date.now() < savedExp - 120000) {
+      accessToken = savedToken;
+      tokenExpiresAt = savedExp;
+    }
+  } catch {}
+
   let tokenClient = null;
   let gisLoaded = false;
   let calMap = null;      // in-memory only, rebuilt from Google each session
@@ -12772,6 +12800,13 @@ const GCal = (() => {
 
   const isConnected = () => { try { return localStorage.getItem(LS_CONNECTED) === "1"; } catch { return false; } };
   const setConnected = v => { try { v ? localStorage.setItem(LS_CONNECTED, "1") : localStorage.removeItem(LS_CONNECTED); } catch {} };
+
+  const saveToken = (token, expiresAt) => {
+    try { localStorage.setItem(LS_TOKEN, token); localStorage.setItem(LS_TOKEN_EXP, String(expiresAt)); } catch {}
+  };
+  const clearSavedToken = () => {
+    try { localStorage.removeItem(LS_TOKEN); localStorage.removeItem(LS_TOKEN_EXP); } catch {}
+  };
 
   // ── Deterministic event IDs ───────────────────────────────────────────────
   // Google lets the client choose an event's id. It must be base32hex: characters
@@ -12838,6 +12873,7 @@ const GCal = (() => {
           if (resp.error) { finish(false, Object.assign(new Error(resp.error_description || resp.error), { code: resp.error })); return; }
           accessToken = resp.access_token;
           tokenExpiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
+          saveToken(accessToken, tokenExpiresAt);
           finish(true, accessToken);
         };
         tokenClient.error_callback = err => finish(false, Object.assign(new Error(err?.message || "Google sign-in was dismissed"), { code: err?.type || "popup_failed" }));
@@ -12864,6 +12900,7 @@ const GCal = (() => {
     }
     if (res.status === 401 && attempt < 1) {
       accessToken = null; tokenExpiresAt = 0;
+      clearSavedToken();
       return apiFetch(path, opts, attempt + 1);
     }
     if ((res.status === 403 || res.status === 429 || res.status >= 500) && attempt < 3) {
@@ -12887,6 +12924,7 @@ const GCal = (() => {
     }
     accessToken = null; tokenExpiresAt = 0; calMap = null; calMapAt = 0;
     setConnected(false);
+    clearSavedToken();
   }
 
   async function tryRestoreSilently() {
@@ -14349,6 +14387,11 @@ function App() {
   // the header, and the FAB itself is hidden there since it'd overlap.
   const isCalNavView = view === "month" || view === "week";
   const showCalNavFab = !narrow && isCalNavView;
+  // Scale the prev/today/next circular buttons up on wider screens (they were
+  // a fixed 44px, which reads as tiny on an iPad-sized viewport) — grows
+  // linearly from 44px at the 640px narrow breakpoint up to 64px by ~1400px.
+  const calNavBtnSize = Math.round(Math.min(64, Math.max(44, 44 + (appWidth - 640) * (20 / 760))));
+  const calNavIconSize = Math.round(calNavBtnSize * (16 / 44));
   const calNavIsHe = getLang() === "he";
   const calNavOnNav = view === "week" ? handleWeekNav : handleMonthNav;
   const calNavStep = view === "week" ? 7 : 1;
@@ -14919,8 +14962,8 @@ function App() {
     title: btn.label,
     "aria-label": btn.label,
     style: {
-      width: 44,
-      height: 44,
+      width: calNavBtnSize,
+      height: calNavBtnSize,
       borderRadius: "50%",
       border: `1px solid ${C.border}`,
       background: C.card,
@@ -14930,7 +14973,7 @@ function App() {
       alignItems: "center",
       justifyContent: "center",
       boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
-      transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.15s"
+      transition: "width 0.15s ease, height 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease, background 0.15s"
     },
     onMouseEnter: e => {
       e.currentTarget.style.transform = "scale(1.07)";
@@ -14942,7 +14985,7 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement(Icon, {
     name: btn.icon,
-    size: 16,
+    size: calNavIconSize,
     strokeWidth: 2
   })))), narrow && /*#__PURE__*/React.createElement("div", {
     className: "sticky-header",
