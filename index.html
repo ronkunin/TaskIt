@@ -1467,7 +1467,7 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes newTaskSlide{from{opacity:0;transform:translateY(-12px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 .task-new{animation:newTaskSlide 0.35s cubic-bezier(0.34,1.56,0.64,1) forwards,newTaskGlow 0.7s ease 0.1s forwards;background:var(--blue-bg)!important;border-color:var(--blue-border)!important}
 input[type="date"],input[type="time"]{box-sizing:border-box;max-width:100%;min-width:0;min-height:40px}
-input[type="date"]{-webkit-appearance:none;appearance:none}
+input[type="date"]{-webkit-appearance:auto;appearance:auto;color-scheme:light dark}
 input[type="time"]{-webkit-appearance:none;appearance:none}
 `;
 const Icon = ({
@@ -3315,9 +3315,10 @@ const Modal = ({
   }, /*#__PURE__*/React.createElement("label", {
     style: lbl
   }, t("date")), /*#__PURE__*/React.createElement("div", {
-    style: { position: "relative", cursor: "pointer" },
-    onClick: () => { try { dateInputRef.current?.showPicker(); } catch(e) {} }
-  }, /*#__PURE__*/React.createElement("div", {
+    style: { position: "relative" }
+  }, /*#__PURE__*/React.createElement("input", {
+    ref: dateInputRef,
+    type: "date",
     style: {
       ...inp({
         minWidth: 0,
@@ -3325,30 +3326,10 @@ const Modal = ({
         maxWidth: "100%",
         paddingRight: form.date ? "28px" : "12px"
       }),
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      pointerEvents: "none",
       fontSize: 16,
       minHeight: 40,
-      color: form.date ? "var(--text)" : "var(--text5)",
-      userSelect: "none",
-      WebkitUserSelect: "none"
-    }
-  }, form.date ? (() => {
-    const [y, m, d] = form.date.split("-");
-    return `${d}/${m}/${y}`;
-  })() : ""), /*#__PURE__*/React.createElement("input", {
-    ref: dateInputRef,
-    type: "date",
-    style: {
-      position: "absolute",
-      inset: 0,
-      width: "100%",
-      height: "100%",
-      opacity: 0,
-      pointerEvents: "none",
-      zIndex: 2
+      cursor: "pointer",
+      colorScheme: dark ? "dark" : "light"
     },
     value: form.date,
     onChange: e => {
@@ -13114,6 +13095,10 @@ const GCal = (() => {
 function App() {
   const [tasks, setTasks] = useState(() => {
     try {
+      // When GCal was connected last session, don't seed from localStorage —
+      // GCal is the source of truth. Start empty; gcalPullNow() fills it.
+      // If the pull fails we fall back to localStorage in the catch block.
+      if (localStorage.getItem("taskit_gcal_connected") === "1") return [];
       return _applyMigrations(loadTasks());
     } catch {
       return [];
@@ -13366,6 +13351,12 @@ function App() {
       if (complete) { setGcalReady(true); setGcalError(""); }
     } catch (e) {
       setGcalError(e.message || String(e));
+      // Fallback: if startup pull failed and we have no tasks yet, load from localStorage
+      // so the user isn't left with an empty screen.
+      setTasks(ts => {
+        if (ts.length > 0) return ts;
+        try { return _applyMigrations(loadTasks()); } catch { return ts; }
+      });
     } finally {
       gcalSyncing.current = false;
       setGcalPulling(false);
