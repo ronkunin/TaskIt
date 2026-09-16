@@ -25,7 +25,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#F0F7FF" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0F172A" media="(prefers-color-scheme: dark)" />
-  <title>TaskIt G</title>
+  <title>TaskIt</title>
 
   <!-- ── Critical splash: painted immediately before ANY script runs ── -->
   <style>
@@ -10093,6 +10093,8 @@ const SettingsModal = ({
   gcalBusy,
   gcalError,
   gcalStatus,
+  gcalDupMsg,
+  gcalSyncMsg,
   onConnectGCal,
   onDisconnectGCal,
   onFixDuplicatesGCal,
@@ -10614,7 +10616,15 @@ const SettingsModal = ({
       opacity: gcalBusy ? 0.6 : 1,
       transition: "all 0.15s"
     }
-  }, gcalBusy ? (isHe ? "בודק…" : "Checking…") : (isHe ? "תקן" : "Fix"))), gcalConnected && /*#__PURE__*/React.createElement(Row, {
+  }, gcalBusy ? (isHe ? "בודק…" : "Checking…") : (isHe ? "תקן" : "Fix"))), gcalConnected && gcalDupMsg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      padding: isHe ? "0 50px 10px 0" : "0 0 10px 50px",
+      marginTop: -8,
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, gcalDupMsg), gcalConnected && /*#__PURE__*/React.createElement(Row, {
     icon: gcalStats && gcalStats.pending === 0 && gcalStats.failed === 0 ? "✅" : "🔄",
     label: isHe ? "מצב סנכרון" : "Sync status",
     sub: !gcalReady
@@ -10632,7 +10642,15 @@ const SettingsModal = ({
       cursor: gcalBusy ? "default" : "pointer", flexShrink: 0,
       opacity: gcalBusy ? 0.6 : 1, transition: "all 0.15s"
     }
-  }, isHe ? "סנכרן" : "Sync now")), gcalConnected && gcalReady && gcalStats.problems.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, isHe ? "סנכרן" : "Sync now")), gcalConnected && gcalSyncMsg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      padding: isHe ? "0 50px 10px 0" : "0 0 10px 50px",
+      marginTop: -8,
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, gcalSyncMsg), gcalConnected && gcalReady && gcalStats.problems.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       margin: "4px 0 0", padding: "10px 12px", borderRadius: 12,
       background: C.card2, border: `1px solid ${C.border2}`,
@@ -12078,6 +12096,18 @@ const SearchView = ({
 // ════════════════════════════════════════════════════════════════════════
 // Google Calendar sync module (client-only, no backend)
 // ════════════════════════════════════════════════════════════════════════
+// A home-screen / installed web app runs in its own isolated storage container —
+// on iOS in particular it does not share Safari's regular browsing session, so a
+// silent Google sign-in restore that would work fine in a normal browser tab can
+// legitimately fail there even though nothing was actually signed out. Used to
+// decide whether to gate the app behind an explicit, interactive login screen
+// instead of quietly showing a "disconnected" banner the user may not notice.
+function isStandaloneApp() {
+  try {
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  } catch { return false; }
+}
+
 const GCal = (() => {
   const CLIENT_ID = "524595139539-bfgctn3aak51v38ua94m553v44ppg2ve.apps.googleusercontent.com";
   const SCOPE = "https://www.googleapis.com/auth/calendar";
@@ -12091,6 +12121,10 @@ const GCal = (() => {
   const UNSCHEDULED_KEY = "unscheduled";
   const ANCHOR_DATE = "2001-01-01";
   const ANCHOR_END = "2001-01-02";
+  // Auto-generated Hebrew/international holiday entries go into their own calendar,
+  // same idea as unscheduled — kept out of the per-type calendars so they're easy
+  // to tell apart (and easy to hide) in Google Calendar itself.
+  const HOLIDAYS_KEY = "holidays";
 
   // The ONLY thing still kept on the device: a local "the user pressed Connect here"
   // flag, so we know whether to attempt a silent token restore. It holds no sync
@@ -12286,7 +12320,8 @@ const GCal = (() => {
 
   // Dateless tasks always go to the unscheduled calendar, whatever their type, so
   // the anchor-date events sit in exactly one place the user can hide in one click.
-  const calendarKeyFor = task => isDateless(task) ? UNSCHEDULED_KEY : (task.type || "regular");
+  const isHolidayTask = task => !!(task.hebcal || task.intl || task.type === "calendar");
+  const calendarKeyFor = task => isDateless(task) ? UNSCHEDULED_KEY : isHolidayTask(task) ? HOLIDAYS_KEY : (task.type || "regular");
 
   async function ensureCalendarId(typeOrTask) {
     const key = typeOrTask && typeof typeOrTask === "object"
@@ -12329,13 +12364,14 @@ const GCal = (() => {
   };
 
   // Returns null when the task is syncable, otherwise a short machine-readable
-  // reason. Note that "no date" is no longer a reason — those go to the anchor
-  // calendar. A *malformed* date still is, because Google answers such an event with
-  // HTTP 400, and nothing used to mark those tasks as unsyncable, so the same
-  // rejected request fired again on every single edit.
+  // reason. Auto-generated holiday entries (hebcal/intl/type "calendar") are now
+  // synced too, into their own calendar — see calendarKeyFor. "No date" is not a
+  // reason either — those go to the anchor calendar. A *malformed* date still is,
+  // because Google answers such an event with HTTP 400, and nothing used to mark
+  // those tasks as unsyncable, so the same rejected request fired again on every
+  // single edit.
   function syncSkipReason(task) {
     if (!task) return "missing";
-    if (task.hebcal || task.intl || task.type === "calendar") return "holiday";
     if (isDateless(task)) return String(task.name || "").trim() ? null : "noname";
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(task.date))) return "baddate";
     if (Number.isNaN(new Date(String(task.date) + "T00:00:00").getTime())) return "baddate";
@@ -12373,10 +12409,18 @@ const GCal = (() => {
           cancelled: task.cancelled ? "1" : "0",
           length: task.length == null ? "" : String(task.length),
           noDate: isDateless(task) ? "1" : "0",
+          // Round-tripped so a device that pulls one of these back — before it has
+          // regenerated the same holiday locally itself — reconstructs a proper
+          // holiday task instead of a generic one that then shows an incongruous
+          // delete button and loses its English name.
+          hebcal: task.hebcal ? "1" : "0",
+          intl: task.intl ? "1" : "0",
+          nameEn: task.nameEn ? String(task.nameEn).slice(0, 300) : "",
           sig: taskSignature(task).slice(0, 1000)
         }
       }
     };
+    if (isHolidayTask(task)) body.transparency = "transparent"; // a marker, not a commitment
     if (isDateless(task)) {
       body.start = { date: ANCHOR_DATE };
       body.end = { date: ANCHOR_END };
@@ -12415,6 +12459,9 @@ const GCal = (() => {
       updated: event.updated ? new Date(event.updated).getTime() : Date.now()
     };
     if (p.seriesId) patch.seriesId = p.seriesId;
+    if (p.hebcal === "1") patch.hebcal = true;
+    if (p.intl === "1") patch.intl = true;
+    if (p.nameEn) patch.nameEn = p.nameEn;
     if (p.noDate === "1") { patch.date = ""; patch.time = ""; return patch; }
     if (event.start?.dateTime) {
       const d = new Date(event.start.dateTime);
@@ -12430,39 +12477,48 @@ const GCal = (() => {
   const remoteSigOf = event => event.extendedProperties?.private?.sig || null;
 
   // ── Push ──────────────────────────────────────────────────────────────────
-  // Update-first, insert-on-404, patch-on-409. Because the id is derived from the
-  // task, this is idempotent: running it twice, on two devices, at the same time,
-  // converges on one event.
-  //
   // knownLoc, when given, is the calendar id the caller last saw this task's event
-  // sitting in (from a real pull, not a guess). It is the ONLY thing that can trigger
-  // a cleanup delete elsewhere. The previous version deleted the event from every
-  // other known calendar after every single insert — which, with several calendars,
-  // meant one real write plus a wall of guaranteed 404s on every new task. A first
-  // sync now costs exactly one request.
+  // sitting in (from a real pull, not a guess). It decides two things: whether an
+  // update should be attempted before an insert, and whether a cleanup delete runs
+  // afterward. Because the id is derived from the task, all of this is idempotent —
+  // running it twice, on two devices, at the same time, converges on one event.
+  //
+  // Known location → update first (the common case: editing a task you've already
+  // synced). No known location → insert first instead of update-first. Genuinely
+  // new tasks are far more common in bulk than moved ones, and update-first would
+  // mean a guaranteed failed request for every single one of them before the real
+  // insert — exactly what turned enabling holiday sync into a hundred red lines in
+  // the console the first time it imports a year of holidays. Insert-first makes
+  // that a hundred plain successes instead.
   async function pushTask(task, knownLoc) {
     const skip = syncSkipReason(task);
     if (skip) return { skipped: skip };
     const calendarId = await ensureCalendarId(task);
     const eventId = eventIdForTask(task.id);
     const body = taskToEventBody(task);
+    const doUpdate = () => apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, {
+      method: "PATCH", body: JSON.stringify({ ...body, status: "confirmed" })
+    });
+    const doInsert = () => apiFetch(`/calendars/${enc(calendarId)}/events`, {
+      method: "POST", body: JSON.stringify({ ...body, id: eventId })
+    });
     let event;
-    try {
-      event = await apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, {
-        method: "PATCH", body: JSON.stringify({ ...body, status: "confirmed" })
-      });
-    } catch (e) {
-      if (e.status !== 404 && e.status !== 410) throw e;
+    if (knownLoc === calendarId) {
       try {
-        event = await apiFetch(`/calendars/${enc(calendarId)}/events`, {
-          method: "POST", body: JSON.stringify({ ...body, id: eventId })
-        });
-      } catch (e2) {
-        if (e2.status !== 409) throw e2;
-        // id already taken here (usually a previously deleted event) — revive it
-        event = await apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, {
-          method: "PATCH", body: JSON.stringify({ ...body, status: "confirmed" })
-        });
+        event = await doUpdate();
+      } catch (e) {
+        if (e.status !== 404 && e.status !== 410) throw e;
+        try { event = await doInsert(); }
+        catch (e2) { if (e2.status !== 409) throw e2; event = await doUpdate(); }
+      }
+    } else {
+      try {
+        event = await doInsert();
+      } catch (e) {
+        if (e.status !== 409) throw e;
+        // id already taken here (usually a previously deleted event, or the task
+        // moved calendars and we're seeing it for the first time) — revive it.
+        event = await doUpdate();
       }
     }
     // Only clean up a location we actually know held this task (a real type change),
@@ -12749,9 +12805,27 @@ function App() {
 
   // ── Google Calendar sync state ──────────────────────────────────────────
   const [gcalConnected, setGcalConnected] = useState(false);
+  // Whether to keep the splash up until we've actually tried to restore the Google
+  // session. iPad Safari (and iOS generally) blocks the silent, non-interactive
+  // token renewal that Chrome allows — its tracking protection treats it the same
+  // as third-party auth iframes. So a device that was connected can come back from
+  // a reload looking disconnected, purely because the browser refused the quiet
+  // check, not because anything was actually signed out. Rather than flash the app
+  // in that misleading "not connected" state, hold the loader — that was signed
+  // into on this device before — until the attempt has actually resolved.
+  const [gcalGate, setGcalGate] = useState(() => {
+    try { return GCal.isConnected() && navigator.onLine; } catch { return false; }
+  });
+  // True once we've established (via a failed silent restore, in a standalone/
+  // installed web app) that we need an explicit, interactive sign-in before the
+  // app can be trusted to sync. See isStandaloneApp() above for why this only
+  // comes up there.
+  const [gcalNeedsLogin, setGcalNeedsLogin] = useState(false);
   const [gcalBusy, setGcalBusy] = useState(false);
   const [gcalError, setGcalError] = useState("");
   const [gcalStatus, setGcalStatus] = useState(""); // transient status text
+  const [gcalDupMsg, setGcalDupMsg] = useState(""); // last "fix duplicates" result, shown under that row
+  const [gcalSyncMsg, setGcalSyncMsg] = useState(""); // last "sync now" result, shown under that row
   const [gcalReady, setGcalReady] = useState(false); // true once one full pull has landed
   const [gcalStats, setGcalStats] = useState({ synced: 0, pending: 0, skipped: 0, failed: 0, lastPull: 0, problems: [] });
 
@@ -12780,7 +12854,7 @@ function App() {
     for (const t of taskList) {
       const reason = GCal.syncSkipReason(t);
       if (reason) {
-        if (reason !== "holiday") { skipped++; problems.push({ id: t.id, name: t.name || "", reason }); }
+        skipped++; problems.push({ id: t.id, name: t.name || "", reason });
         continue;
       }
       if (gcalFailed.current[t.id]) { problems.push({ id: t.id, name: t.name || "", reason: "failed", detail: gcalFailed.current[t.id] }); continue; }
@@ -12856,6 +12930,7 @@ function App() {
     try {
       await GCal.connect();
       setGcalConnected(true);
+      setGcalNeedsLogin(false);
       // Repair first, then read, then push only what actually differs.
       await GCal.reconcileAndDedupe().catch(() => {});
       await gcalPullNow();
@@ -12867,6 +12942,18 @@ function App() {
     }
   };
 
+  // Same interactive sign-in as handleConnectGCal, used from the full-screen login
+  // gate a standalone/installed web app shows when its silent restore failed.
+  const handleLoginGateSignIn = () => handleConnectGCal();
+
+  // "Not now" on the login gate: don't force it, just fall back to the same small
+  // reconnect banner a normal browser tab would show, so the person can still get
+  // into the app and try again later without losing their place.
+  const handleLoginGateSkip = () => {
+    setGcalNeedsLogin(false);
+    setGcalError("");
+  };
+
   const handleDisconnectGCal = () => {
     GCal.disconnect();
     setGcalConnected(false);
@@ -12875,19 +12962,21 @@ function App() {
     gcalLoc.current = {};
     gcalFailed.current = {};
     setGcalStatus("");
+    setGcalDupMsg("");
+    setGcalSyncMsg("");
   };
 
   const handleFixDuplicatesGCal = async () => {
-    setGcalBusy(true); setGcalError(""); setGcalStatus("");
+    setGcalBusy(true); setGcalError(""); setGcalDupMsg("");
     try {
       const { removedCount, migratedCount, calendarsRemoved } = await GCal.reconcileAndDedupe();
       const he = getLang() === "he";
       const total = removedCount + migratedCount + (calendarsRemoved || 0);
-      setGcalStatus(total > 0
+      setGcalDupMsg(total > 0
         ? (he
             ? `נוקו ${removedCount + migratedCount} אירועים${calendarsRemoved ? ` והוסרו ${calendarsRemoved} יומנים כפולים` : ""}`
             : `Cleaned up ${removedCount + migratedCount} event${removedCount + migratedCount === 1 ? "" : "s"}${calendarsRemoved ? ` and removed ${calendarsRemoved} duplicate calendar${calendarsRemoved === 1 ? "" : "s"}` : ""}`)
-        : (he ? "הכול תקין" : "Nothing to fix"));
+        : (he ? "הכול תקין — לא נמצאו כפילויות" : "All clean — no duplicates found"));
       gcalFailed.current = {};
       await gcalPullNow();
     } catch (e) {
@@ -12899,7 +12988,7 @@ function App() {
 
   // Push everything that differs from Google, on demand.
   const handleForcePushGCal = async () => {
-    setGcalBusy(true); setGcalError(""); setGcalStatus("");
+    setGcalBusy(true); setGcalError(""); setGcalSyncMsg("");
     try {
       gcalRemote.current = {};
       gcalLoc.current = {};
@@ -12915,7 +13004,9 @@ function App() {
         } catch (e) { gcalFailed.current[task.id] = e.message || String(e); }
       }
       const he = getLang() === "he";
-      setGcalStatus(he ? `נשלחו ${n} משימות` : `Pushed ${n} task${n === 1 ? "" : "s"}`);
+      setGcalSyncMsg(n > 0
+        ? (he ? `נשלחו ${n} משימות` : `Pushed ${n} task${n === 1 ? "" : "s"}`)
+        : (he ? "הכול כבר מסונכרן" : "Everything was already in sync"));
       gcalRecomputeStats(tasks, gcalRemote.current);
     } catch (e) {
       setGcalError(e.message || String(e));
@@ -12925,7 +13016,26 @@ function App() {
   };
 
   useEffect(() => {
-    GCal.tryRestoreSilently().then(ok => { if (ok) setGcalConnected(true); });
+    const standalone = isStandaloneApp();
+    const restore = GCal.tryRestoreSilently().then(ok => {
+      if (ok) { setGcalConnected(true); return ok; }
+      // Only the installed/standalone app needs this: a normal browser tab that
+      // fails a silent restore still gets the small reconnect banner further down,
+      // which is enough since the browser chrome is there to give it context. An
+      // installed app has no chrome, so surface the same situation as an explicit
+      // login screen instead of a banner that's easy to miss.
+      if (standalone && GCal.isConnected()) setGcalNeedsLogin(true);
+      return ok;
+    });
+    if (gcalGate) {
+      // Cap how long the loader waits. A real silent restore is fast; if Safari is
+      // going to refuse it, it typically hangs rather than failing quickly, and
+      // nothing is worse than a splash screen that never goes away. 8s is well
+      // short of the 45s token timeout, so a stuck attempt still resolves in the
+      // background afterward and connects the app live if it does succeed.
+      const capped = Promise.race([restore, new Promise(r => setTimeout(r, 8000))]);
+      capped.then(() => setGcalGate(false));
+    }
   }, []);
 
   // Keep the counters honest whenever either side of the comparison moves.
@@ -13004,8 +13114,26 @@ function App() {
     };
   }, []);
 
-  // App is ready — reveal it immediately, and fade out the HTML splash on top of it.
+  // Load archive in background — never blocks first paint, independent of the
+  // Google Calendar restore check below.
   useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        setArchiveTasks(_applyMigrations(loadArchiveTasks()));
+      } catch {}
+    }, 100);
+    return () => clearTimeout(t);
+  }, []);
+
+  // App is ready — reveal it once we're not holding for the Google Calendar restore
+  // check (see gcalGate above). For a device that was never connected, or is
+  // offline at load, gcalGate starts false and this fires immediately as before.
+  useEffect(() => {
+    if (gcalGate) {
+      const el = document.getElementById('html-splash-sub');
+      if (el) el.textContent = getLang() === "he" ? "מתחבר…" : "Reconnecting…";
+      return;
+    }
     setLoading(false);
     const splash = document.getElementById('html-splash');
     if (splash) {
@@ -13013,13 +13141,7 @@ function App() {
       splash.style.opacity = '0';
       setTimeout(() => splash.remove(), 250);
     }
-    // Load archive in background — never blocks first paint
-    setTimeout(() => {
-      try {
-        setArchiveTasks(_applyMigrations(loadArchiveTasks()));
-      } catch {}
-    }, 100);
-  }, []);
+  }, [gcalGate]);
   useEffect(() => {
     if (!loading) setTimeout(() => updatePillToTab(view), 80);
   }, [loading]);
@@ -13169,7 +13291,7 @@ function App() {
 
   // Title update (icons already set by inline PWA script in <head>)
   useEffect(() => {
-    document.title = "TaskIt G";
+    document.title = "TaskIt";
   }, []);
   const openNew = (dateStr = null, timeStr = null) => {
     resetFabIdle();
@@ -13784,12 +13906,125 @@ function App() {
     // render here.
     return null;
   }
+  if (gcalNeedsLogin) {
+    // Standalone/installed web app whose silent Google sign-in restore failed.
+    // Block on an explicit, interactive login instead of quietly dropping the
+    // person into the app "disconnected" — see isStandaloneApp() for why this
+    // is needed there but not in a normal browser tab.
+    const isDarkSplash = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const he = getLang() === "he";
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "fixed",
+        inset: 0,
+        background: isDarkSplash ? "linear-gradient(160deg,#0F172A 0%,#1E293B 60%,#0F172A 100%)" : "linear-gradient(160deg,#EFF6FF 0%,#DBEAFE 50%,#EFF6FF 100%)",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 20,
+        padding: 24,
+        textAlign: "center",
+        direction: he ? "rtl" : "ltr"
+      }
+    }, /*#__PURE__*/React.createElement("style", null, `
+          @keyframes splashFadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+        `), /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 64,
+        height: 64,
+        borderRadius: 18,
+        background: "linear-gradient(135deg,#3B82F6,#2563EB)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: "0 4px 20px rgba(59,130,246,0.4)",
+        animation: "splashFadeIn 0.4s ease both"
+      }
+    }, /*#__PURE__*/React.createElement("svg", {
+      width: "28", height: "28", viewBox: "0 0 24 24", fill: "none",
+      stroke: "#fff", strokeWidth: "2.2", strokeLinecap: "round", strokeLinejoin: "round"
+    }, /*#__PURE__*/React.createElement("path", { d: "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" }),
+       /*#__PURE__*/React.createElement("polyline", { points: "10 17 15 12 10 7" }),
+       /*#__PURE__*/React.createElement("line", { x1: "15", y1: "12", x2: "3", y2: "12" }))),
+    /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 8, animation: "splashFadeIn 0.4s ease both", maxWidth: 320 }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em",
+        color: isDarkSplash ? "#F1F5F9" : "#1E3A5F",
+        fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+      }
+    }, he ? "נדרשת התחברות מחדש" : "Sign-in needed"),
+       /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13, lineHeight: 1.5,
+        color: isDarkSplash ? "#94A3B8" : "#64748B",
+        fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+      }
+    }, he
+      ? "אפליקציה מותקנת לא שומרת את החיבור ל-Google בין פתיחות. יש להתחבר שוב כדי שהסנכרון ימשיך."
+      : "An installed app doesn't keep your Google connection between launches. Sign in again to keep syncing."),
+       gcalError && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12, color: "#EF4444", marginTop: 2,
+        fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+      }
+    }, (he ? "שגיאה: " : "Error: ") + gcalError)),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: gcalBusy ? undefined : handleLoginGateSignIn,
+      disabled: gcalBusy,
+      style: {
+        padding: "12px 28px",
+        borderRadius: 24,
+        border: "none",
+        background: "linear-gradient(135deg,#3B82F6,#2563EB)",
+        color: "#fff",
+        fontSize: 15,
+        fontWeight: 700,
+        cursor: gcalBusy ? "default" : "pointer",
+        opacity: gcalBusy ? 0.7 : 1,
+        boxShadow: "0 4px 14px rgba(59,130,246,0.35)",
+        fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+        marginTop: 4
+      }
+    }, gcalBusy ? (he ? "מתחבר…" : "Signing in…") : (he ? "התחבר עם Google" : "Sign in with Google")),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: gcalBusy ? undefined : handleLoginGateSkip,
+      disabled: gcalBusy,
+      style: {
+        border: "none",
+        background: "none",
+        color: isDarkSplash ? "#64748B" : "#94A3B8",
+        fontSize: 13,
+        fontWeight: 600,
+        cursor: gcalBusy ? "default" : "pointer",
+        padding: "6px 12px",
+        fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
+      }
+    }, he ? "לא עכשיו" : "Not now"));
+  }
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("style", null, css), /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
       background: "var(--gradient)"
     }
-  }, /*#__PURE__*/React.createElement("header", {
+  }, (!gcalGate && !gcalConnected && GCal.isConnected()) && /*#__PURE__*/React.createElement("div", {
+    onClick: gcalBusy ? undefined : handleConnectGCal,
+    style: {
+      background: "#FEF3C7",
+      color: "#92400E",
+      fontSize: 13,
+      fontWeight: 600,
+      textAlign: "center",
+      padding: "8px 12px",
+      cursor: gcalBusy ? "default" : "pointer",
+      direction: getLang() === "he" ? "rtl" : "ltr"
+    }
+  }, gcalBusy
+    ? (getLang() === "he" ? "מתחבר מחדש…" : "Reconnecting…")
+    : (getLang() === "he" ? "⚠️ Google Calendar מנותק — הקש כדי להתחבר מחדש" : "⚠️ Google Calendar disconnected — tap to reconnect")
+  ), /*#__PURE__*/React.createElement("header", {
     ref: appHeaderRef,
     style: {
       background: C.header,
@@ -13856,7 +14091,7 @@ function App() {
       color: C.text,
       letterSpacing: "-0.02em"
     }
-  }, "TaskIt G"))), /*#__PURE__*/React.createElement("div", {
+  }, "TaskIt"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -13965,7 +14200,7 @@ function App() {
       color: C.text,
       letterSpacing: "-0.02em"
     }
-  }, "TaskIt G")), /*#__PURE__*/React.createElement("div", {
+  }, "TaskIt")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -14775,6 +15010,8 @@ function App() {
     gcalBusy: gcalBusy,
     gcalError: gcalError,
     gcalStatus: gcalStatus,
+    gcalDupMsg: gcalDupMsg,
+    gcalSyncMsg: gcalSyncMsg,
     onConnectGCal: handleConnectGCal,
     onDisconnectGCal: handleDisconnectGCal,
     onFixDuplicatesGCal: handleFixDuplicatesGCal,
