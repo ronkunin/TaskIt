@@ -284,6 +284,8 @@ const T = {
     overdue: "Overdue",
     cancelled: "Cancelled",
     today: "Today",
+    previous: "Previous",
+    next: "Next",
     tomorrow: "Tomorrow",
     noDate: "No Date",
     pending: "Pending",
@@ -350,7 +352,7 @@ const T = {
     // Data modal
     taskData: "Task Data",
     exportImport: "Export or import your tasks as JSON",
-    replaceWarning: "⚠️ This will replace all current tasks and charts.",
+    replaceWarning: "Adds these tasks to your existing ones — anything that matches an existing task (same name, date, time & type) is skipped as a duplicate.",
     resetTab: "🗑️ Reset",
     resetTitle: "Reset Everything",
     resetDesc: "Delete all tasks, charts, and settings — then reload the app fresh.",
@@ -429,6 +431,8 @@ const T = {
     overdue: "באיחור",
     cancelled: "בוטל",
     today: "היום",
+    previous: "הקודם",
+    next: "הבא",
     tomorrow: "מחר",
     noDate: "ללא תאריך",
     pending: "ממתין",
@@ -489,7 +493,7 @@ const T = {
     progressDashboard: "לוח התקדמות",
     taskData: "נתוני משימות",
     exportImport: "ייצא או ייבא את המשימות שלך כ-JSON",
-    replaceWarning: "⚠️ פעולה זו תחליף את כל המשימות והגרפים הנוכחיים.",
+    replaceWarning: "המשימות האלה יתווספו לקיימות שלך — כל משימה שכבר קיימת (אותו שם, תאריך, שעה וסוג) תדולג כברירת מחדל.",
     resetTab: "🗑️ איפוס",
     resetTitle: "איפוס הכל",
     resetDesc: "מחק את כל המשימות, הגרפים וההגדרות — ורענן את האפליקציה מחדש.",
@@ -1428,6 +1432,7 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 .modal-sheet-in{animation:modalSheetIn 0.56s cubic-bezier(0.22,1,0.36,1) forwards}
 .modal-sheet-out{animation:modalSheetOut 0.26s cubic-bezier(0.4,0,1,1) forwards}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes syncPillPulse{0%,100%{opacity:1}50%{opacity:0.35}}
 @keyframes checkBounce{0%{transform:scale(1)}30%{transform:scale(1.4)}55%{transform:scale(0.85)}75%{transform:scale(1.1)}100%{transform:scale(1)}}
 @keyframes completeGlow{0%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(34,197,94,.22),0 2px 20px rgba(34,197,94,.14)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}}
 @keyframes completeShrink{0%{opacity:1;max-height:200px;margin-bottom:8px;padding-top:13px;padding-bottom:13px}50%{opacity:.6;max-height:200px}100%{opacity:0;max-height:0;margin-bottom:0;padding-top:0;padding-bottom:0;border-top-width:0;border-bottom-width:0}}
@@ -3978,6 +3983,8 @@ const MonthView = ({
       scrollToEl(dayRefs.current[d]);
     }, 60);
   };
+  // Wide screens: prev/today/next now live as circular buttons at the bottom-left
+  // of the app (see App's calNavFab), so this header only shows the title there.
   const navBar = /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -3995,25 +4002,7 @@ const MonthView = ({
     style: {
       color: C.blue
     }
-  }, year)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 6
-    }
-  }, /*#__PURE__*/React.createElement(NavBtn, {
-    onClick: () => onNav(-1)
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: isHe ? "chevRight" : "chevLeft",
-    size: 14
-  })), /*#__PURE__*/React.createElement(NavBtn, {
-    onClick: () => onNav(0),
-    small: true
-  }, t("today")), /*#__PURE__*/React.createElement(NavBtn, {
-    onClick: () => onNav(1)
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: isHe ? "chevLeft" : "chevRight",
-    size: 14
-  }))));
+  }, year)));
 
   // ── Swipe state (must live at top level — hooks cannot be inside conditionals) ──
   const swipeRef = useRef({
@@ -4025,6 +4014,54 @@ const MonthView = ({
   });
   const calGridRef = useRef(null);
   const [swipeDx, setSwipeDx] = useState(0);
+  // Shared by the narrow list and the wide calendar grid, so both swipe months.
+  const onTouchStart = e => {
+    const t = e.touches[0];
+    swipeRef.current = {
+      startX: t.clientX,
+      startY: t.clientY,
+      dx: 0,
+      swiping: false,
+      committed: false
+    };
+    setSwipeDx(0);
+  };
+  const onTouchMove = e => {
+    const s = swipeRef.current;
+    if (s.committed) return;
+    const t = e.touches[0];
+    const dx = t.clientX - s.startX;
+    const dy = t.clientY - s.startY;
+    if (!s.swiping) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; // wait for intent
+      if (Math.abs(dy) > Math.abs(dx)) {
+        s.committed = true;
+        return;
+      } // vertical scroll wins
+      s.swiping = true;
+    }
+    e.preventDefault(); // block scroll only when clearly horizontal
+    e.stopPropagation(); // prevent parent view-swipe from activating
+    s.dx = dx;
+    setSwipeDx(dx);
+  };
+  const onTouchEnd = e => {
+    const s = swipeRef.current;
+    const dx = s.dx;
+    setSwipeDx(0);
+    if (!s.swiping) return;
+    const THRESHOLD = 52;
+    if (Math.abs(dx) < THRESHOLD) return;
+    // Consumed — stop parent view-swipe from also firing
+    if (e && e.stopPropagation) e.stopPropagation();
+    // In Hebrew: left swipe (dx<0) = past month (-1), right swipe (dx>0) = next month (+1)
+    // In English: left swipe (dx<0) = next month (+1), right swipe (dx>0) = past month (-1)
+    if (isHe) {
+      onNav(dx < 0 ? -1 : 1);
+    } else {
+      onNav(dx < 0 ? 1 : -1);
+    }
+  };
   if (narrow) {
     const stickyDayCell = (() => {
       if (!stickyDay) return null;
@@ -4064,53 +4101,6 @@ const MonthView = ({
       other: true,
       date: new Date(year, month + 1, d)
     });
-    const onTouchStart = e => {
-      const t = e.touches[0];
-      swipeRef.current = {
-        startX: t.clientX,
-        startY: t.clientY,
-        dx: 0,
-        swiping: false,
-        committed: false
-      };
-      setSwipeDx(0);
-    };
-    const onTouchMove = e => {
-      const s = swipeRef.current;
-      if (s.committed) return;
-      const t = e.touches[0];
-      const dx = t.clientX - s.startX;
-      const dy = t.clientY - s.startY;
-      if (!s.swiping) {
-        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; // wait for intent
-        if (Math.abs(dy) > Math.abs(dx)) {
-          s.committed = true;
-          return;
-        } // vertical scroll wins
-        s.swiping = true;
-      }
-      e.preventDefault(); // block scroll only when clearly horizontal
-      e.stopPropagation(); // prevent parent view-swipe from activating
-      s.dx = dx;
-      setSwipeDx(dx);
-    };
-    const onTouchEnd = e => {
-      const s = swipeRef.current;
-      const dx = s.dx;
-      setSwipeDx(0);
-      if (!s.swiping) return;
-      const THRESHOLD = 52;
-      if (Math.abs(dx) < THRESHOLD) return;
-      // Consumed — stop parent view-swipe from also firing
-      if (e && e.stopPropagation) e.stopPropagation();
-      // In Hebrew: left swipe (dx<0) = past month (-1), right swipe (dx>0) = next month (+1)
-      // In English: left swipe (dx<0) = next month (+1), right swipe (dx>0) = past month (-1)
-      if (isHe) {
-        onNav(dx < 0 ? -1 : 1);
-      } else {
-        onNav(dx < 0 ? 1 : -1);
-      }
-    };
     return /*#__PURE__*/React.createElement("div", {
       style: {
         animation: "fadeIn 0.22s ease"
@@ -4714,6 +4704,17 @@ const MonthView = ({
       animation: "fadeIn 0.25s ease"
     }
   }, navBar, /*#__PURE__*/React.createElement("div", {
+    ref: calGridRef,
+    onTouchStart: onTouchStart,
+    onTouchMove: onTouchMove,
+    onTouchEnd: onTouchEnd,
+    style: {
+      touchAction: "pan-y",
+      transform: swipeDx ? `translateX(${Math.sign(swipeDx) * Math.min(Math.abs(swipeDx) * 0.35, 40)}px)` : "none",
+      transition: swipeDx ? "none" : "transform 0.18s ease",
+      willChange: "transform"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(7,1fr)",
@@ -4780,7 +4781,7 @@ const MonthView = ({
         paddingLeft: 5
       }
     }, t("more", dayTasks.length - 3)));
-  })));
+  }))));
 };
 
 //  WEEK VIEW 
@@ -4915,6 +4916,8 @@ const WeekView = ({
     d.setDate(d.getDate() + i);
     return d;
   });
+  // Wide screens: prev/today/next now live as circular buttons at the bottom-left
+  // of the app (see App's calNavFab); narrow screens keep them in this header.
   const navBar = /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -4935,7 +4938,7 @@ const WeekView = ({
     month: "short",
     day: "numeric",
     year: "numeric"
-  })), /*#__PURE__*/React.createElement("div", {
+  })), narrow && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6
@@ -7517,7 +7520,9 @@ const LineChart = ({
     ref: el => el && (el._lineRef = true)
   }, /*#__PURE__*/React.createElement("svg", {
     width: "100%",
+    height: H,
     viewBox: `0 0 ${W} ${H}`,
+    preserveAspectRatio: "none",
     style: {
       display: "block",
       overflow: "visible",
@@ -10306,15 +10311,14 @@ const SettingsModal = ({
   gcalBusy,
   gcalError,
   gcalStatus,
-  gcalDupMsg,
-  gcalSyncMsg,
+  gcalScanMsg,
   onConnectGCal,
   onDisconnectGCal,
-  onFixDuplicatesGCal,
-  onForcePushGCal,
+  onScanGCal,
   gcalStats,
   gcalReady,
-  onImportIcs
+  onImportIcs,
+  onDeleteType
 }) => {
   const isHe = getLang() === "he";
   const [jsonText, setJsonText] = useState("");
@@ -10324,6 +10328,29 @@ const SettingsModal = ({
   const [icsType, setIcsType] = useState("");
   const [icsMsg, setIcsMsg] = useState("");
   const [icsBusy, setIcsBusy] = useState(false);
+  // ── Delete-all-of-a-type state ──
+  const [delType, setDelType] = useState("");
+  const [delConfirm, setDelConfirm] = useState(false);
+  const [delMsg, setDelMsg] = useState("");
+  const typeCounts = React.useMemo(() => {
+    const m = {};
+    (tasks || []).forEach(tk => {
+      const k = tk.type || "general";
+      m[k] = (m[k] || 0) + 1;
+    });
+    return m;
+  }, [tasks]);
+  const deletableTypes = Object.keys(typeCounts).sort();
+  const runDeleteType = () => {
+    if (!delType) return;
+    const n = typeCounts[delType] || 0;
+    onDeleteType && onDeleteType(delType);
+    setDelConfirm(false);
+    setDelMsg(isHe
+      ? `נמחקו ${n} משימות מסוג “${getTypeMeta(delType).label}”`
+      : `Deleted ${n} task${n === 1 ? "" : "s"} of type "${getTypeMeta(delType).label}"`);
+    setDelType("");
+  };
   const knownTypes = React.useMemo(() => {
     const fromTasks = [...new Set((tasks || []).map(tk => tk.type).filter(Boolean))];
     return [...new Set([...fromTasks, "regular", "general"])].filter(x => x !== "calendar").sort();
@@ -10381,6 +10408,7 @@ const SettingsModal = ({
   const [copied, setCopied] = useState(false);
   const [pasted, setPasted] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [loadMsg, setLoadMsg] = useState("");
   const [loadOpen, setLoadOpen] = useState(false);
   const [resetStep, setResetStep] = useState(0); // 0=idle 1=confirm
   const [visible, setVisible] = useState(false);
@@ -10398,10 +10426,21 @@ const SettingsModal = ({
   const handleRef = useRef(null);
   const sheetDragActive = useRef(false);
   // Sheet position: fraction of screen height from top (0=full screen, 0.35=default bottom sheet)
-  const SHEET_DEFAULT = 0.18; // opens at 18% from top = 82% of screen
-  const SHEET_MIN_TOP = 0.05; // can pull up to 5% from top
+  const SHEET_DEFAULT = 0.06; // opens at 6% from top = 94% of screen
+  const SHEET_MIN_TOP = 0.03; // can pull up to 3% from top
   const [sheetTopFrac, setSheetTopFrac] = useState(SHEET_DEFAULT);
   const sheetTopFracRef = useRef(SHEET_DEFAULT); // imperative ref for during drag
+  // ── Copy JSON: let the person pick which types to include first ──
+  const [copyPickerOpen, setCopyPickerOpen] = useState(false);
+  const [copyTypes, setCopyTypes] = useState(null); // Set of selected types, or null before opened
+  const copyTypeCounts = React.useMemo(() => {
+    const m = {};
+    (tasks || []).forEach(tk => {
+      const k = tk.type || "general";
+      m[k] = (m[k] || 0) + 1;
+    });
+    return m;
+  }, [tasks]);
 
   useEffect(() => {
     if (open) {
@@ -10424,20 +10463,40 @@ const SettingsModal = ({
     }
   }, [open]);
   if (!visible) return null;
-  const compressed = LZString.compressToEncodedURIComponent(JSON.stringify({
-    tasks,
-    charts,
-    prefs: {
-      il: getPref(PREF_IL),
-      intl: getPref(PREF_INTL)
-    },
-    searchHistory: loadSearchHistory(),
-    _v: 2
-  }));
+  const copyTypeList = Object.keys(copyTypeCounts).sort();
+  const openCopyPicker = () => {
+    setCopyTypes(new Set(copyTypeList)); // default: everything selected
+    setCopyPickerOpen(true);
+    setCopied(false);
+  };
+  const toggleCopyType = tp => {
+    setCopyTypes(prev => {
+      const n = new Set(prev);
+      if (n.has(tp)) n.delete(tp); else n.add(tp);
+      return n;
+    });
+  };
+  const selectedCopyCount = copyTypes ? [...copyTypes].reduce((s, tp) => s + (copyTypeCounts[tp] || 0), 0) : 0;
+  const allCopySelected = !!copyTypes && copyTypeList.length > 0 && copyTypeList.every(tp => copyTypes.has(tp));
   const handleCopy = () => {
+    const chosen = copyTypes || new Set(copyTypeList);
+    const scopedTasks = (tasks || []).filter(tk => chosen.has(tk.type || "general"));
+    const compressed = LZString.compressToEncodedURIComponent(JSON.stringify({
+      tasks: scopedTasks,
+      charts,
+      prefs: {
+        il: getPref(PREF_IL),
+        intl: getPref(PREF_INTL)
+      },
+      searchHistory: loadSearchHistory(),
+      _v: 2
+    }));
     navigator.clipboard.writeText(compressed).then(() => {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => {
+        setCopied(false);
+        setCopyPickerOpen(false);
+      }, 1200);
     });
   };
   const handlePaste = () => {
@@ -10463,40 +10522,68 @@ const SettingsModal = ({
         }
         parsed = JSON.parse(decompressed);
       }
-      let loadedTasks, loadedCharts, loadedPrefs, loadedSearchHistory;
+      let loadedTasks, loadedCharts, loadedPrefs;
       if (Array.isArray(parsed)) {
         loadedTasks = parsed.map(migrateTask);
         loadedCharts = null;
         loadedPrefs = null;
-        loadedSearchHistory = null;
       } else if (parsed && Array.isArray(parsed.tasks)) {
         loadedTasks = parsed.tasks.map(migrateTask);
         loadedCharts = parsed.charts || null;
         loadedPrefs = parsed._v >= 2 ? parsed.prefs || null : null;
-        loadedSearchHistory = Array.isArray(parsed.searchHistory) ? parsed.searchHistory.map(migrateHistoryEntry) : null;
       } else {
         setLoadError(t("mustBeArray"));
         return;
       }
       if (!loadedPrefs) {
-        loadedTasks = loadedTasks.filter(t => t.type !== "calendar" && !t.hebcal && !t.intl || isDone(t) || isCancelled(t));
+        loadedTasks = loadedTasks.filter(tk => tk.type !== "calendar" && !tk.hebcal && !tk.intl || isDone(tk) || isCancelled(tk));
       }
-      // Re-split into main/archive
-      const finSorted = loadedTasks.filter(t => t.done || t.cancelled).sort((a, b) => (b.created || 0) - (a.created || 0));
-      const newMain = [...loadedTasks.filter(t => !t.done && !t.cancelled), ...finSorted.slice(0, ARCHIVE_BUFFER)];
+
+      // ── Merge, never replace: keep every existing task and only add the
+      // ones from this import that aren't already here. `tasks` here is the
+      // combined active+archive list the parent passes in. ──
+      const existingAll = tasks || [];
+      const existingIds = new Set(existingAll.map(tk => tk.id));
+      const sigOf = tk => (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "") + "|" + (tk.time || "") + "|" + (tk.type || "");
+      const existingSigs = new Set(existingAll.map(sigOf));
+      const fresh = [];
+      let dupCount = 0;
+      for (const lt of loadedTasks) {
+        if (existingIds.has(lt.id)) { dupCount++; continue; }
+        const sig = sigOf(lt);
+        if (existingSigs.has(sig)) { dupCount++; continue; }
+        existingSigs.add(sig);
+        fresh.push(lt);
+      }
+      const mergedAll = [...existingAll, ...fresh];
+
+      // Re-split into main/archive, same rule the app uses elsewhere.
+      const finSorted = mergedAll.filter(tk => tk.done || tk.cancelled).sort((a, b) => (b.created || 0) - (a.created || 0));
+      const newMain = [...mergedAll.filter(tk => !tk.done && !tk.cancelled), ...finSorted.slice(0, ARCHIVE_BUFFER)];
       const newArchive = finSorted.slice(ARCHIVE_BUFFER);
       _rawSave(STORAGE_KEY, newMain);
       _rawSave(ARCHIVE_KEY, newArchive);
-      if (loadedSearchHistory) {
-        saveSearchHistory(loadedSearchHistory);
+
+      // Merge charts by id too, rather than overwriting the existing set.
+      let mergedCharts = null;
+      if (Array.isArray(loadedCharts) && loadedCharts.length) {
+        const haveChartIds = new Set((charts || []).map(c => c && c.id));
+        const newCharts = loadedCharts.filter(c => c && !haveChartIds.has(c.id));
+        mergedCharts = newCharts.length ? [...(charts || []), ...newCharts] : null;
       }
+
       onLoad({
         tasks: newMain,
         archive: newArchive,
-        charts: loadedCharts,
-        prefs: loadedPrefs
+        charts: mergedCharts,
+        keepPrefs: true // this is an add, not a restore — leave holiday prefs untouched
       });
-      onClose();
+      setLoadMsg(fresh.length
+        ? (isHe
+            ? `נוספו ${fresh.length} משימות${dupCount > 0 ? ` · ${dupCount} כבר קיימות ודולגו` : ""}`
+            : `Added ${fresh.length} task${fresh.length === 1 ? "" : "s"}${dupCount > 0 ? ` · ${dupCount} already here, skipped` : ""}`)
+        : (isHe ? "הכול כבר קיים — לא נוסף דבר" : "Everything was already here — nothing added"));
+      setJsonText("");
     } catch {
       setLoadError(t("invalidJson"));
     }
@@ -10813,16 +10900,7 @@ const SettingsModal = ({
       flexShrink: 0,
       transition: "all 0.15s"
     }
-  }, isHe ? "EN" : "עב")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: C.text4,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      margin: "20px 0 4px"
-    }
-  }, isHe ? "גרפים ואריחים" : "Charts & Tiles"), /*#__PURE__*/React.createElement(Row, {
+  }, isHe ? "EN" : "עב")), /*#__PURE__*/React.createElement(Row, {
     icon: "🔮",
     label: isHe ? "תחזית חזרות" : "Recurrence Look-ahead",
     sub: isHe ? prefLookahead ? "ספירת מופעים עתידיים בטווח" : "ספירת מופע בודד בלבד" : prefLookahead ? "Count future occurrences in range" : "Count only the stored occurrence"
@@ -10870,11 +10948,15 @@ const SettingsModal = ({
     : gcalConnected
       ? (isHe ? "נתק" : "Disconnect")
       : (isHe ? "חבר" : "Connect"))), gcalConnected && /*#__PURE__*/React.createElement(Row, {
-    icon: "🧹",
-    label: isHe ? "תיקון כפילויות" : "Fix duplicates",
-    sub: isHe ? "מסיר אירועים כפולים שנוצרו בטעות" : "Removes any duplicate events created by mistake"
+    icon: gcalStats && gcalStats.pending === 0 && gcalStats.failed === 0 ? "✅" : "🔄",
+    label: isHe ? "סריקה וסנכרון" : "Scan & sync",
+    sub: !gcalReady
+      ? (isHe ? "קורא מ-Google…" : "Reading from Google…")
+      : (isHe
+          ? `${gcalStats.synced} מסונכרנות · ${gcalStats.pending} ממתינות · ${gcalStats.skipped} לא ניתנות · ${gcalStats.failed} נכשלו`
+          : `${gcalStats.synced} synced · ${gcalStats.pending} pending · ${gcalStats.skipped} can't sync · ${gcalStats.failed} failed`)
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: onFixDuplicatesGCal,
+    onClick: onScanGCal,
     disabled: gcalBusy,
     style: {
       padding: "6px 14px",
@@ -10889,7 +10971,7 @@ const SettingsModal = ({
       opacity: gcalBusy ? 0.6 : 1,
       transition: "all 0.15s"
     }
-  }, gcalBusy ? (isHe ? "בודק…" : "Checking…") : (isHe ? "תקן" : "Fix"))), gcalConnected && gcalDupMsg && /*#__PURE__*/React.createElement("div", {
+  }, gcalBusy ? (isHe ? "סורק…" : "Scanning…") : (isHe ? "סרוק" : "Scan"))), gcalConnected && gcalScanMsg && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: C.text3,
@@ -10897,33 +10979,7 @@ const SettingsModal = ({
       marginTop: -8,
       direction: isHe ? "rtl" : "ltr"
     }
-  }, gcalDupMsg), gcalConnected && /*#__PURE__*/React.createElement(Row, {
-    icon: gcalStats && gcalStats.pending === 0 && gcalStats.failed === 0 ? "✅" : "🔄",
-    label: isHe ? "מצב סנכרון" : "Sync status",
-    sub: !gcalReady
-      ? (isHe ? "קורא מ-Google…" : "Reading from Google…")
-      : (isHe
-          ? `${gcalStats.synced} מסונכרנות · ${gcalStats.pending} ממתינות · ${gcalStats.skipped} לא ניתנות · ${gcalStats.failed} נכשלו`
-          : `${gcalStats.synced} synced · ${gcalStats.pending} pending · ${gcalStats.skipped} can't sync · ${gcalStats.failed} failed`)
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: onForcePushGCal,
-    disabled: gcalBusy,
-    style: {
-      padding: "6px 14px", borderRadius: 20,
-      border: `1.5px solid ${C.border2}`, background: C.card2, color: C.text3,
-      fontSize: 13, fontWeight: 700,
-      cursor: gcalBusy ? "default" : "pointer", flexShrink: 0,
-      opacity: gcalBusy ? 0.6 : 1, transition: "all 0.15s"
-    }
-  }, isHe ? "סנכרן" : "Sync now")), gcalConnected && gcalSyncMsg && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: C.text3,
-      padding: isHe ? "0 50px 10px 0" : "0 0 10px 50px",
-      marginTop: -8,
-      direction: isHe ? "rtl" : "ltr"
-    }
-  }, gcalSyncMsg), gcalConnected && gcalReady && gcalStats.problems.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, gcalScanMsg), gcalConnected && gcalReady && gcalStats.problems.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       margin: "4px 0 0", padding: "10px 12px", borderRadius: 12,
       background: C.card2, border: `1px solid ${C.border2}`,
@@ -10940,7 +10996,300 @@ const SettingsModal = ({
         : pr.reason === "badtime" ? (isHe ? "שעה לא תקינה" : "invalid time")
         : pr.reason === "noname" ? (isHe ? "אין שם" : "no title")
         : (pr.detail || (isHe ? "שגיאה" : "error"))
-      )))), /*#__PURE__*/React.createElement(Row, {
+      )))), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.text4,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      margin: "20px 0 4px"
+    }
+  }, isHe ? "לוחות שנה" : "Calendars"), prefIL !== null && /*#__PURE__*/React.createElement(Row, {
+    icon: "✡️",
+    label: isHe ? "חגים ישראליים" : "Israeli Holidays",
+    sub: isHe ? prefIL === "yes" ? "מוצג" : "מוסתר" : prefIL === "yes" ? "Shown" : "Hidden"
+  }, /*#__PURE__*/React.createElement(Toggle, {
+    on: prefIL === "yes",
+    onToggle: onToggleIL,
+    color: "#F59E0B"
+  })), prefIntl !== null && /*#__PURE__*/React.createElement(Row, {
+    icon: "🌍",
+    label: isHe ? "חגים בינלאומיים" : "International Holidays",
+    sub: isHe ? prefIntl === "yes" ? "מוצג" : "מוסתר" : prefIntl === "yes" ? "Shown" : "Hidden"
+  }, /*#__PURE__*/React.createElement(Toggle, {
+    on: prefIntl === "yes",
+    onToggle: onToggleIntl,
+    color: "#10B981"
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.text4,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      margin: "20px 0 4px"
+    }
+  }, isHe ? "נתונים" : "Data"), /*#__PURE__*/React.createElement(Row, {
+    icon: "📋",
+    label: isHe ? "העתק JSON" : "Copy JSON",
+    sub: copyPickerOpen
+      ? (isHe ? "בחר אילו סוגים לכלול" : "Choose which types to include")
+      : (isHe ? "ייצא משימות ללוח — אפשר לבחור סוגים" : "Export tasks to clipboard — pick which types")
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => copyPickerOpen ? setCopyPickerOpen(false) : openCopyPicker(),
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: copyPickerOpen ? `1.5px solid ${C.blueBorder}` : "none",
+      background: copyPickerOpen ? C.blueBg : "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: copyPickerOpen ? C.blue : "#fff",
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      transition: "background 0.25s",
+      flexShrink: 0,
+      boxShadow: copyPickerOpen ? "none" : "0 2px 8px rgba(59,130,246,0.3)"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "copy",
+    size: 13,
+    color: copyPickerOpen ? C.blue : "#fff"
+  }), copyPickerOpen ? (isHe ? "סגור" : "Close") : (isHe ? "העתק" : "Copy"))), copyPickerOpen && /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "-4px 0 12px",
+      padding: "12px",
+      borderRadius: 12,
+      background: C.card2,
+      border: `1px solid ${C.border2}`,
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, fontWeight: 700, color: C.text2 }
+  }, isHe ? "אילו סוגים לכלול?" : "Which types to include?"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setCopyTypes(allCopySelected ? new Set() : new Set(copyTypeList)),
+    style: {
+      fontSize: 11.5,
+      fontWeight: 700,
+      color: C.blue,
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      padding: 0
+    }
+  }, allCopySelected ? (isHe ? "נקה הכל" : "Deselect all") : (isHe ? "בחר הכל" : "Select all"))), copyTypeList.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, color: C.text4, padding: "4px 0" }
+  }, isHe ? "אין משימות" : "No tasks yet") : /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }
+  }, copyTypeList.map(tp => {
+    const active = !!copyTypes && copyTypes.has(tp);
+    const m = getTypeMeta(tp);
+    return /*#__PURE__*/React.createElement("button", {
+      key: tp,
+      onClick: () => toggleCopyType(tp),
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "5px 10px",
+        borderRadius: 20,
+        border: `1.5px solid ${active ? m.dot : C.border2}`,
+        background: active ? m.bg : "transparent",
+        color: active ? m.color : C.text3,
+        fontSize: 12,
+        fontWeight: 700,
+        cursor: "pointer"
+      }
+    }, m.label, /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 10.5, opacity: 0.75, fontWeight: 600 }
+    }, `(${copyTypeCounts[tp]})`));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 8, alignItems: "center" }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: handleCopy,
+    disabled: selectedCopyCount === 0,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: "none",
+      background: selectedCopyCount === 0 ? C.border : copied ? "linear-gradient(135deg,#22C55E,#16A34A)" : "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: "#fff",
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: selectedCopyCount === 0 ? "default" : "pointer",
+      transition: "background 0.25s",
+      boxShadow: selectedCopyCount === 0 ? "none" : copied ? "0 2px 8px rgba(34,197,94,0.35)" : "0 2px 8px rgba(59,130,246,0.3)"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: copied ? "check" : "copy",
+    size: 13,
+    color: "#fff"
+  }), copied
+    ? (isHe ? "הועתק!" : "Copied!")
+    : (isHe ? `העתק ${selectedCopyCount} משימות` : `Copy ${selectedCopyCount} task${selectedCopyCount === 1 ? "" : "s"}`)))), /*#__PURE__*/React.createElement(Row, {
+    icon: "📂",
+    label: isHe ? "טען JSON" : "Load JSON",
+    sub: isHe ? "מוסיף משימות בלי למחוק קיימות — כפילויות ידולגו" : "Adds tasks without deleting existing ones — duplicates are skipped"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setLoadOpen(v => !v),
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${loadOpen ? C.blueBorder : C.border2}`,
+      background: loadOpen ? C.blueBg : C.card2,
+      color: loadOpen ? C.blue : C.text3,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0,
+      transition: "all 0.15s"
+    }
+  }, loadOpen ? isHe ? "סגור" : "Close" : isHe ? "פתח" : "Open")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      overflow: "hidden",
+      maxHeight: loadOpen ? "360px" : "0px",
+      opacity: loadOpen ? 1 : 0,
+      transition: "max-height 0.3s cubic-bezier(0.4,0,0.2,1),opacity 0.2s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "12px 0 4px"
+    }
+  }, /*#__PURE__*/React.createElement("textarea", {
+    value: jsonText,
+    onChange: e => {
+      setJsonText(e.target.value);
+      setLoadError("");
+      setLoadMsg("");
+    },
+    placeholder: isHe ? "הדבק JSON כאן..." : "Paste your JSON here...",
+    style: {
+      width: "100%",
+      minHeight: 140,
+      padding: "10px 12px",
+      borderRadius: 12,
+      border: `1px solid ${loadError ? C.red : C.border}`,
+      background: C.card2,
+      color: C.text,
+      fontSize: 11,
+      fontFamily: "monospace",
+      resize: "none",
+      outline: "none",
+      lineHeight: 1.5,
+      transition: "border-color 0.15s",
+      boxSizing: "border-box"
+    }
+  }), loadError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "6px 10px",
+      borderRadius: 8,
+      background: C.redBg,
+      border: `1px solid ${C.redBorder}`,
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "alert",
+    size: 12,
+    color: C.red
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.red
+    }
+  }, loadError)), loadMsg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "6px 10px",
+      borderRadius: 8,
+      background: C.greenBg,
+      border: `1px solid ${C.greenBorder}`,
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "check",
+    size: 12,
+    color: C.green
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.green
+    }
+  }, loadMsg)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: C.text4,
+      margin: "8px 0 10px"
+    }
+  }, t("replaceWarning")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: handlePaste,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      padding: "8px 14px",
+      borderRadius: 9,
+      border: `1px solid ${pasted ? C.greenBorder : C.border2}`,
+      background: pasted ? C.greenBg : C.card2,
+      color: pasted ? C.green : C.text2,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      transition: "all 0.2s"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: pasted ? "check" : "copy",
+    size: 12,
+    color: pasted ? C.green : C.text2
+  }), pasted ? isHe ? "הודבק!" : "Pasted!" : isHe ? "הדבק" : "Paste"), /*#__PURE__*/React.createElement("button", {
+    onClick: handleLoad,
+    disabled: !jsonText.trim() || loadSaving,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "8px 18px",
+      borderRadius: 9,
+      border: "none",
+      background: jsonText.trim() && !loadSaving ? "linear-gradient(135deg,#3B82F6,#2563EB)" : C.border,
+      color: "#fff",
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: jsonText.trim() && !loadSaving ? "pointer" : "default",
+      boxShadow: jsonText.trim() && !loadSaving ? "0 2px 8px rgba(59,130,246,0.3)" : "none"
+    }
+  }, loadSaving && /*#__PURE__*/React.createElement("svg", {
+    width: "13",
+    height: "13",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "#fff",
+    strokeWidth: "2.5",
+    style: {
+      animation: "spin 0.8s linear infinite"
+    }
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M12 2a10 10 0 0 1 10 10",
+    strokeLinecap: "round"
+  })), loadSaving ? isHe ? "שומר..." : "Saving..." : isHe ? "הוסף" : "Add")))), /*#__PURE__*/React.createElement(Row, {
     icon: "📥",
     label: isHe ? "ייבוא iCalendar (.ics)" : "Import iCalendar (.ics)",
     sub: icsFiles.length
@@ -11059,201 +11408,7 @@ const SettingsModal = ({
       padding: isHe ? "8px 50px 10px 0" : "8px 0 10px 50px",
       direction: isHe ? "rtl" : "ltr"
     }
-  }, icsMsg), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: C.text4,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      margin: "20px 0 4px"
-    }
-  }, isHe ? "לוחות שנה" : "Calendars"), prefIL !== null && /*#__PURE__*/React.createElement(Row, {
-    icon: "✡️",
-    label: isHe ? "חגים ישראליים" : "Israeli Holidays",
-    sub: isHe ? prefIL === "yes" ? "מוצג" : "מוסתר" : prefIL === "yes" ? "Shown" : "Hidden"
-  }, /*#__PURE__*/React.createElement(Toggle, {
-    on: prefIL === "yes",
-    onToggle: onToggleIL,
-    color: "#F59E0B"
-  })), prefIntl !== null && /*#__PURE__*/React.createElement(Row, {
-    icon: "🌍",
-    label: isHe ? "חגים בינלאומיים" : "International Holidays",
-    sub: isHe ? prefIntl === "yes" ? "מוצג" : "מוסתר" : prefIntl === "yes" ? "Shown" : "Hidden"
-  }, /*#__PURE__*/React.createElement(Toggle, {
-    on: prefIntl === "yes",
-    onToggle: onToggleIntl,
-    color: "#10B981"
-  }))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: C.text4,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      margin: "20px 0 4px"
-    }
-  }, isHe ? "נתונים" : "Data"), /*#__PURE__*/React.createElement(Row, {
-    icon: "📋",
-    label: isHe ? "העתק JSON" : "Copy JSON",
-    sub: isHe ? "ייצא את כל המשימות ללוח" : "Export all tasks to clipboard"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: handleCopy,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: "none",
-      background: copied ? "linear-gradient(135deg,#22C55E,#16A34A)" : "linear-gradient(135deg,#3B82F6,#2563EB)",
-      color: "#fff",
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      transition: "background 0.25s",
-      flexShrink: 0,
-      boxShadow: copied ? "0 2px 8px rgba(34,197,94,0.35)" : "0 2px 8px rgba(59,130,246,0.3)"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: copied ? "check" : "copy",
-    size: 13,
-    color: "#fff"
-  }), copied ? isHe ? "הועתק!" : "Copied!" : isHe ? "העתק" : "Copy")), /*#__PURE__*/React.createElement(Row, {
-    icon: "📂",
-    label: isHe ? "טען JSON" : "Load JSON",
-    sub: isHe ? "ייבא משימות מ-JSON" : "Import tasks from JSON"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setLoadOpen(v => !v),
-    style: {
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: `1.5px solid ${loadOpen ? C.blueBorder : C.border2}`,
-      background: loadOpen ? C.blueBg : C.card2,
-      color: loadOpen ? C.blue : C.text3,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      flexShrink: 0,
-      transition: "all 0.15s"
-    }
-  }, loadOpen ? isHe ? "סגור" : "Close" : isHe ? "פתח" : "Open")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      overflow: "hidden",
-      maxHeight: loadOpen ? "360px" : "0px",
-      opacity: loadOpen ? 1 : 0,
-      transition: "max-height 0.3s cubic-bezier(0.4,0,0.2,1),opacity 0.2s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "12px 0 4px"
-    }
-  }, /*#__PURE__*/React.createElement("textarea", {
-    value: jsonText,
-    onChange: e => {
-      setJsonText(e.target.value);
-      setLoadError("");
-    },
-    placeholder: isHe ? "הדבק JSON כאן..." : "Paste your JSON here...",
-    style: {
-      width: "100%",
-      minHeight: 140,
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: `1px solid ${loadError ? C.red : C.border}`,
-      background: C.card2,
-      color: C.text,
-      fontSize: 11,
-      fontFamily: "monospace",
-      resize: "none",
-      outline: "none",
-      lineHeight: 1.5,
-      transition: "border-color 0.15s",
-      boxSizing: "border-box"
-    }
-  }), loadError && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "6px 10px",
-      borderRadius: 8,
-      background: C.redBg,
-      border: `1px solid ${C.redBorder}`,
-      marginTop: 6
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "alert",
-    size: 12,
-    color: C.red
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: C.red
-    }
-  }, loadError)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: C.text4,
-      margin: "8px 0 10px"
-    }
-  }, t("replaceWarning")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      justifyContent: "flex-end"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: handlePaste,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 5,
-      padding: "8px 14px",
-      borderRadius: 9,
-      border: `1px solid ${pasted ? C.greenBorder : C.border2}`,
-      background: pasted ? C.greenBg : C.card2,
-      color: pasted ? C.green : C.text2,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      transition: "all 0.2s"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: pasted ? "check" : "copy",
-    size: 12,
-    color: pasted ? C.green : C.text2
-  }), pasted ? isHe ? "הודבק!" : "Pasted!" : isHe ? "הדבק" : "Paste"), /*#__PURE__*/React.createElement("button", {
-    onClick: handleLoad,
-    disabled: !jsonText.trim() || loadSaving,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "8px 18px",
-      borderRadius: 9,
-      border: "none",
-      background: jsonText.trim() && !loadSaving ? "linear-gradient(135deg,#3B82F6,#2563EB)" : C.border,
-      color: "#fff",
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: jsonText.trim() && !loadSaving ? "pointer" : "default",
-      boxShadow: jsonText.trim() && !loadSaving ? "0 2px 8px rgba(59,130,246,0.3)" : "none"
-    }
-  }, loadSaving && /*#__PURE__*/React.createElement("svg", {
-    width: "13",
-    height: "13",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "#fff",
-    strokeWidth: "2.5",
-    style: {
-      animation: "spin 0.8s linear infinite"
-    }
-  }, /*#__PURE__*/React.createElement("path", {
-    d: "M12 2a10 10 0 0 1 10 10",
-    strokeLinecap: "round"
-  })), loadSaving ? isHe ? "שומר..." : "Saving..." : isHe ? "טען" : "Load")))), /*#__PURE__*/React.createElement("div", {
+  }, icsMsg), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -11279,7 +11434,79 @@ const SettingsModal = ({
       cursor: "pointer",
       flexShrink: 0
     }
-  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement("div", {
+  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement(Row, {
+    icon: "🏷️",
+    label: isHe ? "מחק משימות לפי סוג" : "Delete tasks by type",
+    sub: delType
+      ? (isHe
+          ? `${typeCounts[delType] || 0} משימות ייעלמו — כולל הארכיון`
+          : `${typeCounts[delType] || 0} task${(typeCounts[delType] || 0) === 1 ? "" : "s"} will be removed — archive included`)
+      : (isHe ? "בחר סוג כדי למחוק את כל המשימות שלו" : "Pick a type to wipe every task under it"),
+    danger: true
+  }, /*#__PURE__*/React.createElement("select", {
+    value: delType,
+    onChange: e => { setDelType(e.target.value); setDelConfirm(false); setDelMsg(""); },
+    style: {
+      padding: "7px 10px",
+      borderRadius: 10,
+      border: `1px solid ${C.border2}`,
+      background: C.card2,
+      color: C.text,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0,
+      maxWidth: 150
+    }
+  }, /*#__PURE__*/React.createElement("option", { value: "" }, isHe ? "בחר סוג…" : "Choose type…"), deletableTypes.map(tp => /*#__PURE__*/React.createElement("option", {
+    key: tp,
+    value: tp
+  }, `${getTypeMeta(tp).label} (${typeCounts[tp]})`)))), delType && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      padding: isHe ? "0 50px 12px 0" : "0 0 12px 50px",
+      marginTop: -4,
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, delConfirm
+    ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+        onClick: () => setDelConfirm(false),
+        style: {
+          padding: "7px 12px", borderRadius: 20,
+          border: `1px solid ${C.border}`, background: C.card2, color: C.text3,
+          fontSize: 12, fontWeight: 600, cursor: "pointer"
+        }
+      }, isHe ? "ביטול" : "Cancel"), /*#__PURE__*/React.createElement("button", {
+        onClick: runDeleteType,
+        style: {
+          padding: "7px 14px", borderRadius: 20, border: "none",
+          background: "linear-gradient(135deg,#EF4444,#DC2626)", color: "#fff",
+          fontSize: 12, fontWeight: 700, cursor: "pointer",
+          boxShadow: "0 2px 8px rgba(239,68,68,0.4)"
+        }
+      }, isHe
+        ? `למחוק ${typeCounts[delType] || 0}?`
+        : `Delete ${typeCounts[delType] || 0}?`))
+    : /*#__PURE__*/React.createElement("button", {
+        onClick: () => setDelConfirm(true),
+        disabled: !(typeCounts[delType] > 0),
+        style: {
+          padding: "7px 16px", borderRadius: 20,
+          border: `1.5px solid ${C.redBorder}`, background: C.redBg, color: C.red,
+          fontSize: 13, fontWeight: 600,
+          cursor: typeCounts[delType] > 0 ? "pointer" : "default",
+          opacity: typeCounts[delType] > 0 ? 1 : 0.5
+        }
+      }, isHe ? "מחק הכל" : "Delete all")), delMsg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      padding: isHe ? "0 50px 12px 0" : "0 0 12px 50px",
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, delMsg), /*#__PURE__*/React.createElement("div", {
     style: {
       borderBottom: "none"
     }
@@ -13216,10 +13443,14 @@ function App() {
   const [gcalBusy, setGcalBusy] = useState(false);
   const [gcalError, setGcalError] = useState("");
   const [gcalStatus, setGcalStatus] = useState(""); // transient status text
-  const [gcalDupMsg, setGcalDupMsg] = useState(""); // last "fix duplicates" result, shown under that row
-  const [gcalSyncMsg, setGcalSyncMsg] = useState(""); // last "sync now" result, shown under that row
+  const [gcalScanMsg, setGcalScanMsg] = useState(""); // last "scan" result, shown under that row
   const [gcalReady, setGcalReady] = useState(false); // true once one full pull has landed
   const [gcalStats, setGcalStats] = useState({ synced: 0, pending: 0, skipped: 0, failed: 0, lastPull: 0, problems: [] });
+  // Live "is a sync round-trip happening right now" flags, purely for the header
+  // status pill (loading = pulling from Google, saving = pushing local changes).
+  // Kept as state (not just the existing refs) so the pill actually re-renders.
+  const [gcalPulling, setGcalPulling] = useState(false);
+  const [gcalPushCount, setGcalPushCount] = useState(0);
 
   // Everything Google told us in the last pull: taskId -> signature. Rebuilt from
   // Google on every pull, so it is not device state — two devices that pull the same
@@ -13263,6 +13494,7 @@ function App() {
   const gcalPullNow = async () => {
     if (!gcalConnected || gcalSyncing.current) return;
     gcalSyncing.current = true;
+    setGcalPulling(true);
     try {
       const { events, complete } = await GCal.pullAll();
       const remote = {};
@@ -13314,6 +13546,7 @@ function App() {
       setGcalError(e.message || String(e));
     } finally {
       gcalSyncing.current = false;
+      setGcalPulling(false);
     }
   };
 
@@ -13354,52 +13587,78 @@ function App() {
     gcalLoc.current = {};
     gcalFailed.current = {};
     setGcalStatus("");
-    setGcalDupMsg("");
-    setGcalSyncMsg("");
+    setGcalScanMsg("");
   };
 
-  const handleFixDuplicatesGCal = async () => {
-    setGcalBusy(true); setGcalError(""); setGcalDupMsg("");
+  // One button: dedupe local tasks (same name + same date), clean up any
+  // duplicate Google events, then push whatever is still out of sync — and
+  // report back deleted / uploaded / failed counts in one line.
+  const handleScanGCal = async () => {
+    setGcalBusy(true); setGcalError(""); setGcalScanMsg("");
     try {
-      const { removedCount, migratedCount, calendarsRemoved } = await GCal.reconcileAndDedupe();
       const he = getLang() === "he";
-      const total = removedCount + migratedCount + (calendarsRemoved || 0);
-      setGcalDupMsg(total > 0
-        ? (he
-            ? `נוקו ${removedCount + migratedCount} אירועים${calendarsRemoved ? ` והוסרו ${calendarsRemoved} יומנים כפולים` : ""}`
-            : `Cleaned up ${removedCount + migratedCount} event${removedCount + migratedCount === 1 ? "" : "s"}${calendarsRemoved ? ` and removed ${calendarsRemoved} duplicate calendar${calendarsRemoved === 1 ? "" : "s"}` : ""}`)
-        : (he ? "הכול תקין — לא נמצאו כפילויות" : "All clean — no duplicates found"));
-      gcalFailed.current = {};
-      await gcalPullNow();
-    } catch (e) {
-      setGcalError(e.message || String(e));
-    } finally {
-      setGcalBusy(false);
-    }
-  };
+      const normKey = tk => (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "");
+      const isSkippable = tk => !tk.date || !((tk.name || "").trim()) || tk.hebcal || tk.intl || tk.type === "calendar";
+      const combined = [
+        ...tasks.map(tk => ({ tk, src: "active" })),
+        ...archiveTasks.map(tk => ({ tk, src: "archive" }))
+      ];
+      const groups = {};
+      combined.forEach(item => {
+        if (isSkippable(item.tk)) return;
+        const k = normKey(item.tk);
+        (groups[k] = groups[k] || []).push(item);
+      });
+      const toDeleteIds = new Set();
+      Object.values(groups).forEach(items => {
+        if (items.length < 2) return;
+        // Keep the earliest-created copy (tie-break: the one with a time set).
+        const sorted = [...items].sort((a, b) => {
+          const ca = a.tk.created || 0, cb = b.tk.created || 0;
+          if (ca !== cb) return ca - cb;
+          return (a.tk.time ? 0 : 1) - (b.tk.time ? 0 : 1);
+        });
+        sorted.slice(1).forEach(item => toDeleteIds.add(item.tk.id));
+      });
+      const localDeleted = toDeleteIds.size;
+      if (localDeleted) {
+        setTasks(prev => prev.filter(tk => !toDeleteIds.has(tk.id)));
+        setArchiveTasks(prev => (prev || []).filter(tk => !toDeleteIds.has(tk.id)));
+        toDeleteIds.forEach(id => {
+          const loc = gcalLoc.current[id];
+          delete gcalRemote.current[id];
+          delete gcalLoc.current[id];
+          delete gcalFailed.current[id];
+          if (loc) gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {});
+        });
+      }
 
-  // Push everything that differs from Google, on demand.
-  const handleForcePushGCal = async () => {
-    setGcalBusy(true); setGcalError(""); setGcalSyncMsg("");
-    try {
+      const { removedCount, migratedCount, calendarsRemoved } = await GCal.reconcileAndDedupe();
+      const remoteDeleted = (removedCount || 0) + (migratedCount || 0) + (calendarsRemoved || 0);
+
       gcalRemote.current = {};
       gcalLoc.current = {};
       gcalFailed.current = {};
       await gcalPullNow();
-      let n = 0;
-      for (const task of tasks) {
+      const remainingTasks = tasks.filter(tk => !toDeleteIds.has(tk.id));
+      let uploaded = 0, failed = 0;
+      for (const task of remainingTasks) {
         if (!GCal.shouldSync(task)) continue;
         if (gcalRemote.current[task.id] === GCal.taskSignature(task)) continue;
         try {
           const r = await gcalEnqueue(() => GCal.pushTask(task, gcalLoc.current[task.id]));
-          if (r && r.sig) { gcalRemote.current[task.id] = r.sig; gcalLoc.current[task.id] = r.calendarId; n++; }
-        } catch (e) { gcalFailed.current[task.id] = e.message || String(e); }
+          if (r && r.sig) { gcalRemote.current[task.id] = r.sig; gcalLoc.current[task.id] = r.calendarId; uploaded++; }
+        } catch (e) {
+          gcalFailed.current[task.id] = e.message || String(e);
+          failed++;
+        }
       }
-      const he = getLang() === "he";
-      setGcalSyncMsg(n > 0
-        ? (he ? `נשלחו ${n} משימות` : `Pushed ${n} task${n === 1 ? "" : "s"}`)
-        : (he ? "הכול כבר מסונכרן" : "Everything was already in sync"));
-      gcalRecomputeStats(tasks, gcalRemote.current);
+      gcalRecomputeStats(remainingTasks, gcalRemote.current);
+
+      const deletedTotal = localDeleted + remoteDeleted;
+      setGcalScanMsg(he
+        ? `נמחקו ${deletedTotal} כפילויות · הועלו ${uploaded} · נכשלו ${failed}`
+        : `Deleted ${deletedTotal} duplicate${deletedTotal === 1 ? "" : "s"} · Uploaded ${uploaded} · Failed ${failed}`);
     } catch (e) {
       setGcalError(e.message || String(e));
     } finally {
@@ -13462,13 +13721,15 @@ function App() {
       if (gcalRemote.current[task.id] === sig) continue;
       const knownLoc = gcalLoc.current[task.id];
       gcalRemote.current[task.id] = sig; // optimistic, corrected by the next pull
+      setGcalPushCount(c => c + 1);
       gcalEnqueue(() => GCal.pushTask(task, knownLoc))
         .then(r => { if (r && r.sig) { delete gcalFailed.current[task.id]; if (r.calendarId) gcalLoc.current[task.id] = r.calendarId; } })
         .catch(e => {
           delete gcalRemote.current[task.id];
           gcalFailed.current[task.id] = e.message || String(e);
           setGcalError(e.message || String(e));
-        });
+        })
+        .finally(() => setGcalPushCount(c => Math.max(0, c - 1)));
     }
     gcalRecomputeStats(tasks, gcalRemote.current);
   }, [tasks, archiveTasks, gcalConnected, gcalReady]);
@@ -14083,6 +14344,49 @@ function App() {
   const todayTaskCount = tasks.filter(t => isPending(t) && t.date && t.date <= todayStr()).length;
   const appWidth = useWindowWidth();
   const narrow = appWidth < 640;
+  // Wide month/week views show prev/today/next as circular buttons in the
+  // bottom-left corner (where the new-task FAB normally sits) instead of in
+  // the header, and the FAB itself is hidden there since it'd overlap.
+  const isCalNavView = view === "month" || view === "week";
+  const showCalNavFab = !narrow && isCalNavView;
+  const calNavIsHe = getLang() === "he";
+  const calNavOnNav = view === "week" ? handleWeekNav : handleMonthNav;
+  const calNavStep = view === "week" ? 7 : 1;
+  // ── Header sync-status pill: offline > failed > loading > saving > online ──
+  const syncPillState = !online
+    ? "offline"
+    : gcalConnected && gcalStats.failed > 0
+      ? "failed"
+      : gcalConnected && gcalPulling
+        ? "loading"
+        : gcalConnected && (gcalPushCount > 0 || gcalBusy)
+          ? "saving"
+          : "online";
+  const getSyncPillInfo = isHePill => {
+    const map = {
+      offline: {
+        bg: "var(--red-bg)", border: "var(--red-border)", color: "var(--red)",
+        label: isHePill ? "לא מחובר" : "Offline", pulse: false
+      },
+      failed: {
+        bg: "var(--red-bg)", border: "var(--red-border)", color: "var(--red)",
+        label: isHePill ? "נכשל" : "Failed", pulse: false
+      },
+      loading: {
+        bg: "var(--blue-bg)", border: "var(--blue-border)", color: "var(--blue)",
+        label: isHePill ? "טוען…" : "Loading…", pulse: true
+      },
+      saving: {
+        bg: "var(--blue-bg)", border: "var(--blue-border)", color: "var(--blue)",
+        label: isHePill ? "שומר…" : "Saving…", pulse: true
+      },
+      online: {
+        bg: "var(--green-bg)", border: "var(--green-border)", color: "var(--green)",
+        label: isHePill ? "מחובר" : "Online", pulse: false
+      }
+    };
+    return map[syncPillState];
+  };
   // Measure the real height of the top app header/nav bar (it's taller on
   // wide/desktop layouts — logo row + view-switcher row — than on narrow
   // ones) and expose it as a CSS var so every in-view sticky sub-header can
@@ -14490,28 +14794,35 @@ function App() {
       gap: 8
     }
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => openNew(),
+    onClick: () => setDataModalOpen(true),
+    title: getLang() === "he" ? "הגדרות" : "Settings",
+    "aria-label": getLang() === "he" ? "הגדרות" : "Settings",
     style: {
+      width: 34,
+      height: 34,
+      borderRadius: 10,
+      border: `1px solid ${C.border2}`,
+      background: C.card2,
+      cursor: "pointer",
       display: "flex",
       alignItems: "center",
-      gap: 5,
-      padding: "7px 14px",
-      borderRadius: 9,
-      border: "none",
-      background: "linear-gradient(135deg,#3B82F6,#2563EB)",
-      color: "#fff",
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      boxShadow: "0 2px 10px rgba(59,130,246,0.35)",
-      whiteSpace: "nowrap"
+      justifyContent: "center",
+      flexShrink: 0,
+      transition: "all 0.15s"
+    },
+    onMouseEnter: e => {
+      e.currentTarget.style.background = "var(--blue-bg)";
+      e.currentTarget.style.borderColor = "var(--blue-border)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.background = "var(--card2)";
+      e.currentTarget.style.borderColor = "var(--border2)";
     }
   }, /*#__PURE__*/React.createElement(Icon, {
-    name: "plus",
-    size: 13,
-    color: "#fff",
-    strokeWidth: 2.5
-  }), " ", t("newTask")))), /*#__PURE__*/React.createElement("nav", {
+    name: "settings",
+    size: 16,
+    color: C.text3
+  })))), /*#__PURE__*/React.createElement("nav", {
     style: {
       display: "flex",
       gap: 2,
@@ -14542,7 +14853,98 @@ function App() {
     name: v.icon,
     size: 12,
     color: view === v.id ? C.blue : C.text4
-  }), " ", v.label))))), narrow && /*#__PURE__*/React.createElement("div", {
+  }), " ", v.label))))), !narrow && !showCalNavFab && /*#__PURE__*/React.createElement("button", {
+    onClick: () => openNew(),
+    title: t("newTask"),
+    "aria-label": t("newTask"),
+    style: {
+      position: "fixed",
+      bottom: 24,
+      left: 24,
+      zIndex: 150,
+      width: 56,
+      height: 56,
+      borderRadius: "50%",
+      border: "none",
+      background: "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: "#fff",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: "0 6px 20px rgba(59,130,246,0.45)",
+      transition: "transform 0.15s ease, box-shadow 0.15s ease"
+    },
+    onMouseEnter: e => {
+      e.currentTarget.style.transform = "scale(1.07)";
+      e.currentTarget.style.boxShadow = "0 8px 26px rgba(59,130,246,0.55)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.transform = "none";
+      e.currentTarget.style.boxShadow = "0 6px 20px rgba(59,130,246,0.45)";
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "plus",
+    size: 24,
+    color: "#fff",
+    strokeWidth: 2.5
+  })), showCalNavFab && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      bottom: 24,
+      left: 24,
+      zIndex: 150,
+      display: "flex",
+      flexDirection: "row",
+      gap: 10
+    }
+  }, [{
+    key: "prev",
+    dir: -calNavStep,
+    icon: calNavIsHe ? "chevRight" : "chevLeft",
+    label: t("previous")
+  }, {
+    key: "today",
+    dir: 0,
+    icon: "calendar",
+    label: t("today")
+  }, {
+    key: "next",
+    dir: calNavStep,
+    icon: calNavIsHe ? "chevLeft" : "chevRight",
+    label: t("next")
+  }].map(btn => /*#__PURE__*/React.createElement("button", {
+    key: btn.key,
+    onClick: () => calNavOnNav(btn.dir),
+    title: btn.label,
+    "aria-label": btn.label,
+    style: {
+      width: 44,
+      height: 44,
+      borderRadius: "50%",
+      border: `1px solid ${C.border}`,
+      background: C.card,
+      color: btn.key === "today" ? C.blue : C.text2,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
+      transition: "transform 0.15s ease, box-shadow 0.15s ease, background 0.15s"
+    },
+    onMouseEnter: e => {
+      e.currentTarget.style.transform = "scale(1.07)";
+      e.currentTarget.style.background = "var(--blue-bg)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.transform = "none";
+      e.currentTarget.style.background = C.card;
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: btn.icon,
+    size: 16,
+    strokeWidth: 2
+  })))), narrow && /*#__PURE__*/React.createElement("div", {
     className: "sticky-header",
     style: {
       zIndex: 2001,
@@ -14600,10 +15002,7 @@ function App() {
     }
   }, (() => {
     const isHePill = getLang() === "he";
-    const pillBg = online ? "var(--green-bg)" : "var(--red-bg)";
-    const pillBorder = online ? "var(--green-border)" : "var(--red-border)";
-    const pillColor = online ? "var(--green)" : "var(--red)";
-    const pillLabel = online ? isHePill ? "מחובר" : "Online" : isHePill ? "לא מחובר" : "Offline";
+    const pillInfo = getSyncPillInfo(isHePill);
     return /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
@@ -14612,8 +15011,8 @@ function App() {
         gap: 4,
         padding: "3px 8px",
         borderRadius: 20,
-        background: pillBg,
-        border: `1px solid ${pillBorder}`,
+        background: pillInfo.bg,
+        border: `1px solid ${pillInfo.border}`,
         transition: "background 0.3s ease, border-color 0.3s ease",
         overflow: "hidden"
       }
@@ -14622,20 +15021,21 @@ function App() {
         width: 6,
         height: 6,
         borderRadius: "50%",
-        background: pillColor,
+        background: pillInfo.color,
         flexShrink: 0,
-        transition: "background 0.3s ease"
+        transition: "background 0.3s ease",
+        animation: pillInfo.pulse ? "syncPillPulse 1s ease-in-out infinite" : "none"
       }
     }), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 10,
         fontWeight: 600,
-        color: pillColor,
+        color: pillInfo.color,
         letterSpacing: "0.03em",
         transition: "color 0.3s ease",
         whiteSpace: "nowrap"
       }
-    }, pillLabel));
+    }, pillInfo.label));
   })(), /*#__PURE__*/React.createElement("button", {
     onClick: () => setDataModalOpen(true),
     style: {
@@ -15014,13 +15414,9 @@ function App() {
     weekday: "long",
     month: "long",
     day: "numeric",
-    year: "numeric"
   })), !narrow && (() => {
     const isHeW = getLang() === "he";
-    const wBg = online ? C.greenBg : C.redBg;
-    const wBorder = online ? C.greenBorder : C.redBorder;
-    const wColor = online ? "var(--green)" : "var(--red)";
-    const wLabel = online ? isHeW ? "מחובר" : "Online" : isHeW ? "לא מחובר" : "Offline";
+    const pillInfoW = getSyncPillInfo(isHeW);
     return /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
@@ -15029,8 +15425,8 @@ function App() {
         gap: 5,
         padding: "4px 10px",
         borderRadius: 20,
-        background: wBg,
-        border: `1px solid ${wBorder}`,
+        background: pillInfoW.bg,
+        border: `1px solid ${pillInfoW.border}`,
         transition: "all 0.3s ease"
       }
     }, /*#__PURE__*/React.createElement("div", {
@@ -15038,18 +15434,19 @@ function App() {
         width: 7,
         height: 7,
         borderRadius: "50%",
-        background: wColor,
-        boxShadow: `0 0 0 2px ${wBg}`,
-        transition: "background 0.3s ease"
+        background: pillInfoW.color,
+        boxShadow: `0 0 0 2px ${pillInfoW.bg}`,
+        transition: "background 0.3s ease",
+        animation: pillInfoW.pulse ? "syncPillPulse 1s ease-in-out infinite" : "none"
       }
     }), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 11,
         fontWeight: 600,
-        color: wColor,
+        color: pillInfoW.color,
         letterSpacing: "0.03em"
       }
-    }, wLabel));
+    }, pillInfoW.label));
   })()), (() => {
     const tileDescs = [{
       en: "Pending tasks from today through Saturday, plus overdue. Includes projected recurring task occurrences.",
@@ -15402,14 +15799,18 @@ function App() {
     gcalBusy: gcalBusy,
     gcalError: gcalError,
     gcalStatus: gcalStatus,
-    gcalDupMsg: gcalDupMsg,
-    gcalSyncMsg: gcalSyncMsg,
+    gcalScanMsg: gcalScanMsg,
     onConnectGCal: handleConnectGCal,
     onDisconnectGCal: handleDisconnectGCal,
-    onFixDuplicatesGCal: handleFixDuplicatesGCal,
-    onForcePushGCal: handleForcePushGCal,
+    onScanGCal: handleScanGCal,
     gcalStats: gcalStats,
     gcalReady: gcalReady,
+    onDeleteType: type => {
+      if (!type) return;
+      const match = tk => (tk.type || "general") === type;
+      setTasks(prev => prev.filter(tk => !match(tk)));
+      setArchiveTasks(prev => (prev || []).filter(tk => !match(tk)));
+    },
     onImportIcs: newTasks => {
       if (!newTasks || !newTasks.length) return;
       setTasks(prev => {
@@ -15422,7 +15823,8 @@ function App() {
       tasks: lt,
       archive: la,
       charts: lc,
-      prefs: lp
+      prefs: lp,
+      keepPrefs
     }) => {
       setTasks(lt);
       setArchiveTasks(la || []);
@@ -15430,6 +15832,7 @@ function App() {
         setFilteredCharts(lc);
         persistCharts(lc);
       }
+      if (keepPrefs) return; // merge-import: leave holiday prefs exactly as they are
       if (lp) {
         // New JSON with prefs — restore them, no prompts needed
         setPref(PREF_IL, lp.il || "no");
