@@ -25,7 +25,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#F0F7FF" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0F172A" media="(prefers-color-scheme: dark)" />
-  <title>TaskIt Google</title>
+  <title>TaskIt G</title>
 
   <!-- ── Critical splash: painted immediately before ANY script runs ── -->
   <style>
@@ -12244,16 +12244,44 @@ const GCal = (() => {
   // ── Calendars (discovered remotely, never cached across sessions) ──────────
   const PALETTE = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
 
+  // A stray retry, or two devices racing to create the same calendar, can leave more
+  // than one physical Google calendar sharing the same "TaskIt · X" name. The old
+  // code kept only a name -> id dict, so the last one Google happened to list simply
+  // overwrote the rest in memory — the others still existed, still held events, and
+  // were invisible to every push, pull, and cleanup. calRaw keeps every one of them;
+  // getCalendars() picks one canonical id per name (the lowest id, so every device
+  // picks the same one independently, with nothing to coordinate); getAllCalendarIds
+  // is for the pull and the repair pass, which must see all of them or risk quietly
+  // losing a task that happens to live in a non-canonical copy.
+  let calRaw = null;
+
+  async function listAllRaw(force) {
+    if (calRaw && !force && Date.now() - calMapAt < 300000) return calRaw;
+    const list = await apiFetch("/users/me/calendarList?maxResults=250");
+    const raw = [];
+    for (const c of list?.items || []) {
+      if (c.summary && c.summary.startsWith(CAL_PREFIX)) raw.push({ id: c.id, type: c.summary.slice(CAL_PREFIX.length) });
+    }
+    calRaw = raw;
+    calMapAt = Date.now();
+    calMap = null; // canonical map derives from calRaw; drop the stale derived cache
+    return raw;
+  }
+
   async function getCalendars(force) {
     if (calMap && !force && Date.now() - calMapAt < 300000) return calMap;
-    const list = await apiFetch("/users/me/calendarList?maxResults=250");
-    const found = {};
-    for (const c of list?.items || []) {
-      if (c.summary && c.summary.startsWith(CAL_PREFIX)) found[c.summary.slice(CAL_PREFIX.length)] = c.id;
-    }
-    calMap = found;
-    calMapAt = Date.now();
+    const raw = await listAllRaw(force);
+    const byType = {};
+    for (const { id, type } of raw) (byType[type] = byType[type] || []).push(id);
+    const canonical = {};
+    for (const type in byType) canonical[type] = byType[type].slice().sort()[0];
+    calMap = canonical;
     return calMap;
+  }
+
+  async function getAllCalendarIds(force) {
+    const raw = await listAllRaw(force);
+    return raw.map(r => r.id);
   }
 
   // Dateless tasks always go to the unscheduled calendar, whatever their type, so
@@ -12268,7 +12296,16 @@ const GCal = (() => {
     if (m[key]) return m[key];
     m = await getCalendars(true); // another device may have just created it
     if (m[key]) return m[key];
-    const created = await apiFetch("/calendars", { method: "POST", body: JSON.stringify({ summary: CAL_PREFIX + key }) });
+    let created;
+    try {
+      created = await apiFetch("/calendars", { method: "POST", body: JSON.stringify({ summary: CAL_PREFIX + key }) });
+    } catch (e) {
+      // Another device won the race between our two lookups above and created it
+      // first; re-read rather than end up with two.
+      m = await getCalendars(true);
+      if (m[key]) return m[key];
+      throw e;
+    }
     const idx = Object.keys(calMap).length % PALETTE.length;
     const prefs = { colorId: PALETTE[idx] };
     // Start the unscheduled calendar unticked, so its anchor-date events never show
@@ -12277,6 +12314,7 @@ const GCal = (() => {
     await apiFetch(`/users/me/calendarList/${enc(created.id)}`, {
       method: "PATCH", body: JSON.stringify(prefs)
     }).catch(() => {});
+    calRaw = (calRaw || []).concat([{ id: created.id, type: key }]);
     calMap[key] = created.id;
     return created.id;
   }
@@ -12395,13 +12433,20 @@ const GCal = (() => {
   // Update-first, insert-on-404, patch-on-409. Because the id is derived from the
   // task, this is idempotent: running it twice, on two devices, at the same time,
   // converges on one event.
-  async function pushTask(task) {
+  //
+  // knownLoc, when given, is the calendar id the caller last saw this task's event
+  // sitting in (from a real pull, not a guess). It is the ONLY thing that can trigger
+  // a cleanup delete elsewhere. The previous version deleted the event from every
+  // other known calendar after every single insert — which, with several calendars,
+  // meant one real write plus a wall of guaranteed 404s on every new task. A first
+  // sync now costs exactly one request.
+  async function pushTask(task, knownLoc) {
     const skip = syncSkipReason(task);
     if (skip) return { skipped: skip };
     const calendarId = await ensureCalendarId(task);
     const eventId = eventIdForTask(task.id);
     const body = taskToEventBody(task);
-    let event, inserted = false;
+    let event;
     try {
       event = await apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, {
         method: "PATCH", body: JSON.stringify({ ...body, status: "confirmed" })
@@ -12412,7 +12457,6 @@ const GCal = (() => {
         event = await apiFetch(`/calendars/${enc(calendarId)}/events`, {
           method: "POST", body: JSON.stringify({ ...body, id: eventId })
         });
-        inserted = true;
       } catch (e2) {
         if (e2.status !== 409) throw e2;
         // id already taken here (usually a previously deleted event) — revive it
@@ -12421,24 +12465,25 @@ const GCal = (() => {
         });
       }
     }
-    // It wasn't in this calendar a moment ago, so the task's type may have changed
-    // and an older copy may still be sitting in the previous calendar.
-    if (inserted) await sweepOtherCalendars(calendarId, eventId);
+    // Only clean up a location we actually know held this task (a real type change),
+    // never a blind sweep of every calendar we happen to know about.
+    if (knownLoc && knownLoc !== calendarId) {
+      await apiFetch(`/calendars/${enc(knownLoc)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
+    }
     return { googleEventId: event.id, calendarId, sig: taskSignature(task) };
   }
 
-  async function sweepOtherCalendars(keepCalendarId, eventId) {
-    const m = await getCalendars();
-    for (const cid of Object.values(m)) {
-      if (cid === keepCalendarId) continue;
-      await apiFetch(`/calendars/${enc(cid)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
-    }
-  }
-
-  async function deleteTask(taskId) {
+  async function deleteTask(taskId, knownLoc) {
     const eventId = eventIdForTask(taskId);
-    const m = await getCalendars();
-    for (const cid of Object.values(m)) {
+    // Same principle as pushTask: delete from the one place we know it lives. Fall
+    // back to every calendar only if we truly have no record of where it is (e.g.
+    // deleting a task the same session it was created, before any pull ran).
+    if (knownLoc) {
+      await apiFetch(`/calendars/${enc(knownLoc)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
+      return;
+    }
+    const ids = await getAllCalendarIds();
+    for (const cid of ids) {
       await apiFetch(`/calendars/${enc(cid)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
     }
   }
@@ -12449,11 +12494,15 @@ const GCal = (() => {
   // and the old code quietly returned an empty list, so that calendar looked empty
   // until some later pass. A plain windowed list is a little more traffic and is
   // identical on every device, every time.
+  //
+  // Reads every physical TaskIt calendar (getAllCalendarIds), not just one per name —
+  // a task sitting in a non-canonical duplicate calendar must still be found, or it
+  // would look deleted the moment "complete" pulls started trusting their own result.
   async function pullAll() {
-    const cals = Object.entries(await getCalendars(true));
+    const raw = (await listAllRaw(true));
     const events = [];
     let complete = true;
-    for (const [type, calendarId] of cals) {
+    for (const { id: calendarId, type } of raw) {
       let pageToken = null, guard = 0;
       try {
         do {
@@ -12477,16 +12526,21 @@ const GCal = (() => {
         complete = false; // never let a partial read look like "these tasks are gone"
       }
     }
-    return { events, calendars: cals.length, complete };
+    return { events, calendars: raw.length, complete };
   }
 
   // ── Repair ────────────────────────────────────────────────────────────────
-  // Collapses every duplicate of a task down to the one canonical event, across all
-  // TaskIt calendars, and migrates legacy randomly-named events onto the
-  // deterministic id so they can never duplicate again.
+  // Collapses every duplicate of a task down to the one canonical event, across
+  // every physical TaskIt calendar (not just one per name), migrates legacy
+  // randomly-named events onto the deterministic id, and — new — folds duplicate
+  // calendars that share a name back down to one, deleting the emptied copies. That
+  // last part is what actually shrinks a Google Calendar sidebar that has ended up
+  // with several "TaskIt · work"-looking entries.
   async function reconcileAndDedupe() {
     const { events, complete } = await pullAll();
     if (!complete) throw Object.assign(new Error("Could not read every calendar — nothing was deleted"), { status: 0 });
+    const canonical = await getCalendars(true); // type -> one chosen id
+
     const byTid = {};
     for (const rec of events) {
       const tid = rec.event.extendedProperties.private.taskitId;
@@ -12494,10 +12548,15 @@ const GCal = (() => {
     }
     let removed = 0, migrated = 0;
     for (const [tid, recs] of Object.entries(byTid)) {
-      if (recs.length === 1 && recs[0].event.id === eventIdForTask(tid)) continue;
       const want = eventIdForTask(tid);
+      const home = canonical[recs[0].type] || recs[0].calendarId;
+      if (recs.length === 1 && recs[0].event.id === want && recs[0].calendarId === home) continue;
       recs.sort((a, b) => new Date(b.event.updated) - new Date(a.event.updated));
-      let keep = recs.find(r => r.event.id === want) || null;
+      // Prefer a copy that is already in the canonical calendar for its type, so
+      // consolidation doesn't need to move data whenever it can avoid it.
+      let keep = recs.find(r => r.calendarId === home && r.event.id === want)
+        || recs.find(r => r.calendarId === home)
+        || null;
       if (!keep) {
         const src = recs[0];
         const copy = {
@@ -12509,13 +12568,13 @@ const GCal = (() => {
           extendedProperties: src.event.extendedProperties
         };
         try {
-          const ev = await apiFetch(`/calendars/${enc(src.calendarId)}/events`, { method: "POST", body: JSON.stringify(copy) });
-          keep = { calendarId: src.calendarId, event: ev };
+          const ev = await apiFetch(`/calendars/${enc(home)}/events`, { method: "POST", body: JSON.stringify(copy) });
+          keep = { calendarId: home, event: ev };
           migrated++;
         } catch (e) {
           if (e.status !== 409) continue; // leave it alone rather than risk losing it
-          const ev = await apiFetch(`/calendars/${enc(src.calendarId)}/events/${want}`, { method: "PATCH", body: JSON.stringify({ ...copy, status: "confirmed" }) });
-          keep = { calendarId: src.calendarId, event: ev };
+          const ev = await apiFetch(`/calendars/${enc(home)}/events/${want}`, { method: "PATCH", body: JSON.stringify({ ...copy, status: "confirmed" }) });
+          keep = { calendarId: home, event: ev };
           migrated++;
         }
       }
@@ -12525,14 +12584,33 @@ const GCal = (() => {
         removed++;
       }
     }
-    return { removedCount: removed, migratedCount: migrated };
+
+    // Fold duplicate calendars: any non-canonical "TaskIt · X" calendar should now
+    // hold nothing of ours (everything above was moved to the canonical copy). Check
+    // each one and delete it if it's genuinely empty, so the sidebar clutter this
+    // created actually goes away instead of sitting there forever as an empty shell.
+    let calendarsRemoved = 0;
+    const raw = await listAllRaw(true);
+    for (const { id, type } of raw) {
+      if (id === canonical[type]) continue;
+      try {
+        const check = await apiFetch(`/calendars/${enc(id)}/events?maxResults=1&showDeleted=false`);
+        if ((check?.items || []).length === 0) {
+          await apiFetch(`/calendars/${enc(id)}`, { method: "DELETE" });
+          calendarsRemoved++;
+        }
+      } catch { /* leave it — better a harmless leftover calendar than data loss */ }
+    }
+    if (calendarsRemoved) { calRaw = null; calMap = null; } // force a fresh read next time
+
+    return { removedCount: removed, migratedCount: migrated, calendarsRemoved };
   }
 
   return {
     isConnected, connect, disconnect, tryRestoreSilently,
     pushTask, deleteTask, pullAll, reconcileAndDedupe,
     eventToTaskPatch, ensureCalendarId, shouldSync, syncSkipReason,
-    taskSignature, remoteSigOf, eventIdForTask, getCalendars
+    taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds
   };
 })();
 
@@ -12681,6 +12759,11 @@ function App() {
   // Google on every pull, so it is not device state — two devices that pull the same
   // calendars end up with the same map. Nothing here is written to localStorage.
   const gcalRemote = useRef({});
+  // taskId -> the calendar id we last actually saw this task's event living in.
+  // This is what lets pushTask/deleteTask clean up a stale copy after a type
+  // change without guessing — and, just as importantly, what lets them do
+  // *nothing* extra when there's no prior copy to clean up at all.
+  const gcalLoc = useRef({});
   const gcalSeenIds = useRef(new Set());   // ids we have actually observed locally
   const gcalFailed = useRef({});           // taskId -> message
   const gcalQueue = useRef(Promise.resolve());
@@ -12718,14 +12801,17 @@ function App() {
       const { events, complete } = await GCal.pullAll();
       const remote = {};
       const byId = {};
-      for (const { event } of events) {
+      const loc = {};
+      for (const { event, calendarId } of events) {
         const tid = event.extendedProperties?.private?.taskitId;
         if (!tid) continue;
         remote[tid] = GCal.remoteSigOf(event) || "";
         byId[tid] = event;
+        loc[tid] = calendarId;
       }
       const hadBefore = gcalRemote.current;
       gcalRemote.current = remote;
+      gcalLoc.current = loc;
 
       setTasks(ts => {
         // Archived tasks keep their event but must never be resurrected into the
@@ -12786,6 +12872,7 @@ function App() {
     setGcalConnected(false);
     setGcalReady(false);
     gcalRemote.current = {};
+    gcalLoc.current = {};
     gcalFailed.current = {};
     setGcalStatus("");
   };
@@ -12793,11 +12880,13 @@ function App() {
   const handleFixDuplicatesGCal = async () => {
     setGcalBusy(true); setGcalError(""); setGcalStatus("");
     try {
-      const { removedCount, migratedCount } = await GCal.reconcileAndDedupe();
+      const { removedCount, migratedCount, calendarsRemoved } = await GCal.reconcileAndDedupe();
       const he = getLang() === "he";
-      const total = removedCount + migratedCount;
+      const total = removedCount + migratedCount + (calendarsRemoved || 0);
       setGcalStatus(total > 0
-        ? (he ? `נוקו ${total} אירועים` : `Cleaned up ${total} event${total === 1 ? "" : "s"}`)
+        ? (he
+            ? `נוקו ${removedCount + migratedCount} אירועים${calendarsRemoved ? ` והוסרו ${calendarsRemoved} יומנים כפולים` : ""}`
+            : `Cleaned up ${removedCount + migratedCount} event${removedCount + migratedCount === 1 ? "" : "s"}${calendarsRemoved ? ` and removed ${calendarsRemoved} duplicate calendar${calendarsRemoved === 1 ? "" : "s"}` : ""}`)
         : (he ? "הכול תקין" : "Nothing to fix"));
       gcalFailed.current = {};
       await gcalPullNow();
@@ -12813,6 +12902,7 @@ function App() {
     setGcalBusy(true); setGcalError(""); setGcalStatus("");
     try {
       gcalRemote.current = {};
+      gcalLoc.current = {};
       gcalFailed.current = {};
       await gcalPullNow();
       let n = 0;
@@ -12820,8 +12910,8 @@ function App() {
         if (!GCal.shouldSync(task)) continue;
         if (gcalRemote.current[task.id] === GCal.taskSignature(task)) continue;
         try {
-          const r = await gcalEnqueue(() => GCal.pushTask(task));
-          if (r && r.sig) { gcalRemote.current[task.id] = r.sig; n++; }
+          const r = await gcalEnqueue(() => GCal.pushTask(task, gcalLoc.current[task.id]));
+          if (r && r.sig) { gcalRemote.current[task.id] = r.sig; gcalLoc.current[task.id] = r.calendarId; n++; }
         } catch (e) { gcalFailed.current[task.id] = e.message || String(e); }
       }
       const he = getLang() === "he";
@@ -12855,9 +12945,11 @@ function App() {
     }
     for (const id of gcalSeenIds.current) {
       if (!combinedIds.has(id) && (id in gcalRemote.current)) {
+        const loc = gcalLoc.current[id];
         delete gcalRemote.current[id];
+        delete gcalLoc.current[id];
         delete gcalFailed.current[id];
-        gcalEnqueue(() => GCal.deleteTask(id)).catch(() => {});
+        gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {});
       }
     }
     gcalSeenIds.current = combinedIds;
@@ -12866,9 +12958,10 @@ function App() {
       if (!GCal.shouldSync(task)) continue;
       const sig = GCal.taskSignature(task);
       if (gcalRemote.current[task.id] === sig) continue;
+      const knownLoc = gcalLoc.current[task.id];
       gcalRemote.current[task.id] = sig; // optimistic, corrected by the next pull
-      gcalEnqueue(() => GCal.pushTask(task))
-        .then(r => { if (r && r.sig) delete gcalFailed.current[task.id]; })
+      gcalEnqueue(() => GCal.pushTask(task, knownLoc))
+        .then(r => { if (r && r.sig) { delete gcalFailed.current[task.id]; if (r.calendarId) gcalLoc.current[task.id] = r.calendarId; } })
         .catch(e => {
           delete gcalRemote.current[task.id];
           gcalFailed.current[task.id] = e.message || String(e);
@@ -13076,7 +13169,7 @@ function App() {
 
   // Title update (icons already set by inline PWA script in <head>)
   useEffect(() => {
-    document.title = "TaskIt Google";
+    document.title = "TaskIt G";
   }, []);
   const openNew = (dateStr = null, timeStr = null) => {
     resetFabIdle();
@@ -13763,7 +13856,7 @@ function App() {
       color: C.text,
       letterSpacing: "-0.02em"
     }
-  }, "TaskIt Google"))), /*#__PURE__*/React.createElement("div", {
+  }, "TaskIt G"))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -13872,7 +13965,7 @@ function App() {
       color: C.text,
       letterSpacing: "-0.02em"
     }
-  }, "TaskIt Google")), /*#__PURE__*/React.createElement("div", {
+  }, "TaskIt G")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
