@@ -1419,8 +1419,8 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes settingsBounce{0%{transform:translateY(0)}40%{transform:translateY(-10px)}70%{transform:translateY(-3px)}100%{transform:translateY(0)}}
 @keyframes pullStretch{0%{transform:translateY(0) scaleY(1)}100%{transform:translateY(var(--pull)) scaleY(0.97)}}
 @keyframes scaleIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
-@keyframes sheetSlideUp{from{top:105%}to{top:38%}}
-@keyframes sheetSlideDown{from{top:38%}to{top:105%}}
+@keyframes sheetSlideUp{from{transform:translateY(105%)}to{transform:translateY(0%)}}
+@keyframes sheetSlideDown{from{transform:translateY(0%)}to{transform:translateY(105%)}}
 .settings-sheet-in{animation:sheetSlideUp 0.44s cubic-bezier(0.32,0.72,0,1) forwards}
 .settings-sheet-out{animation:sheetSlideDown 0.32s cubic-bezier(0.4,0,1,1) forwards}
 @keyframes modalBackdropOut{from{opacity:1;backdrop-filter:blur(20px) saturate(1.8)}to{opacity:0;backdrop-filter:blur(0px) saturate(1)}}
@@ -1443,6 +1443,7 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 .modal-sheet-out{animation:modalSheetOut 0.26s cubic-bezier(0.4,0,1,1) forwards}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes syncPillPulse{0%,100%{opacity:1}50%{opacity:0.35}}
+@keyframes syncSavedPop{0%{transform:scale(1)}20%{transform:scale(1.5)}50%{transform:scale(0.9)}70%{transform:scale(1.2)}100%{transform:scale(1)}}
 @keyframes checkBounce{0%{transform:scale(1)}30%{transform:scale(1.4)}55%{transform:scale(0.85)}75%{transform:scale(1.1)}100%{transform:scale(1)}}
 @keyframes completeGlow{0%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(34,197,94,.22),0 2px 20px rgba(34,197,94,.14)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}}
 @keyframes completeShrink{0%{opacity:1;max-height:200px;margin-bottom:8px;padding-top:13px;padding-bottom:13px}50%{opacity:.6;max-height:200px}100%{opacity:0;max-height:0;margin-bottom:0;padding-top:0;padding-bottom:0;border-top-width:0;border-bottom-width:0}}
@@ -1466,8 +1467,9 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes newTaskGlow{0%{box-shadow:0 0 0 0 rgba(59,130,246,0),0 1px 4px rgba(0,0,0,.04)}35%{box-shadow:0 0 0 6px rgba(59,130,246,.22),0 2px 20px rgba(59,130,246,.18)}100%{box-shadow:0 0 0 0 rgba(59,130,246,0),0 1px 4px rgba(0,0,0,.04)}}
 @keyframes newTaskSlide{from{opacity:0;transform:translateY(-12px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 .task-new{animation:newTaskSlide 0.35s cubic-bezier(0.34,1.56,0.64,1) forwards,newTaskGlow 0.7s ease 0.1s forwards;background:var(--blue-bg)!important;border-color:var(--blue-border)!important}
-input[type="date"],input[type="time"]{box-sizing:border-box;max-width:100%;min-width:0;min-height:40px}
-input[type="date"]{-webkit-appearance:auto;appearance:auto;color-scheme:light dark}
+input[type="date"],input[type="time"]{box-sizing:border-box;max-width:100%;min-width:0}
+input[type="date"].date-desktop{-webkit-appearance:auto;appearance:auto;color-scheme:light dark}
+input[type="date"].date-ios{-webkit-appearance:none;appearance:none}
 input[type="time"]{-webkit-appearance:none;appearance:none}
 `;
 const Icon = ({
@@ -3319,22 +3321,23 @@ const Modal = ({
   }, /*#__PURE__*/React.createElement("input", {
     ref: dateInputRef,
     type: "date",
-    style: {
-      ...inp({
-        minWidth: 0,
-        width: "100%",
-        maxWidth: "100%",
-        paddingRight: form.date ? "28px" : "12px"
-      }),
-      fontSize: 16,
-      minHeight: 40,
+    className: IS_IOS ? "date-ios" : "date-desktop",
+    style: inp({
+      minWidth: 0,
+      width: "100%",
+      maxWidth: "100%",
+      paddingRight: form.date ? "28px" : "12px",
+      height: 44,
+      boxSizing: "border-box",
+      fontSize: 15,
       cursor: "pointer"
-    },
+    }),
     value: form.date,
     onChange: e => {
       set("date", e.target.value);
       setError("");
-    }
+    },
+    onClick: IS_IOS ? e => { try { e.target.showPicker(); } catch {} } : undefined
   }), form.date && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: e => { e.stopPropagation(); set("date", ""); },
@@ -3379,7 +3382,10 @@ const Modal = ({
       minWidth: 0,
       width: "100%",
       maxWidth: "100%",
-      paddingRight: form.time ? "28px" : "12px"
+      paddingRight: form.time ? "28px" : "12px",
+      height: 44,
+      boxSizing: "border-box",
+      fontSize: 15
     }),
     value: form.time,
     onChange: e => {
@@ -3438,7 +3444,9 @@ const Modal = ({
       inputMode: "text",
       style: inp({
         minWidth: 0,
-        maxWidth: "100%"
+        maxWidth: "100%",
+        height: 44,
+        boxSizing: "border-box"
       }),
       value: form.recur,
       onChange: e => {
@@ -3458,7 +3466,8 @@ const Modal = ({
       style: inp({
         minWidth: 0,
         maxWidth: "100%",
-        minHeight: 40,
+        height: 44,
+        boxSizing: "border-box",
         cursor: "pointer",
         color: form.length ? C.text : C.text5
       }),
@@ -10600,12 +10609,11 @@ const SettingsModal = ({
     style: {
       flex: 1,
       overflowY: "auto",
-      WebkitOverflowScrolling: "touch",
-      padding: `0 0 calc(32px + env(safe-area-inset-bottom,0px))`
+      WebkitOverflowScrolling: "touch"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      padding: "0 20px"
+      padding: `0 20px calc(32px + env(safe-area-inset-bottom,0px))`
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -11527,6 +11535,8 @@ const SearchView = ({
   onEdit
 }) => {
   const isHe = getLang() === "he";
+  const viewWidth = useWindowWidth();
+  const wideCharts = viewWidth >= 640;
   const saved = loadSearchState();
   const [query, setQuery] = useState(saved.query || "");
   const [typeFilter, setTypeFilter] = useState(saved.typeFilter || "");
@@ -11745,8 +11755,10 @@ const SearchView = ({
     }
   }, value ? fmtDisplay(value) : placeholder), /*#__PURE__*/React.createElement("input", {
     type: "date",
+    className: IS_IOS ? "date-ios" : "date-desktop",
     value: value,
     onChange: onChange,
+    onClick: IS_IOS ? (e => { try { e.target.showPicker(); } catch(err) {} }) : undefined,
     style: {
       position: "absolute",
       inset: 0,
@@ -12086,115 +12098,87 @@ const SearchView = ({
       border: `1px solid ${C.border}`,
       marginBottom: 16
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      marginBottom: chartTitle ? 12 : 0
-    }
-  }, chartTitle && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 15,
-      fontWeight: 700,
-      color: C.text,
-      flex: 1,
-      textAlign: isHe ? "right" : "left",
-      direction: isHe ? "rtl" : "ltr"
-    }
-  }, chartTitle), !chartTitle && /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setChartMode(m => m === "pie" ? "line" : "pie"),
-    title: chartMode === "pie" ? isHe ? "עבור לגרף קווי" : "Switch to line chart" : isHe ? "עבור לעוגה" : "Switch to pie chart",
-    style: {
-      width: 28,
-      height: 28,
-      borderRadius: 8,
-      border: `1px solid ${C.border}`,
-      background: chartMode === "pie" ? C.blueBg : C.card,
-      cursor: "pointer",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      flexShrink: 0,
-      transition: "background 0.15s,border-color 0.15s"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: chartMode === "pie" ? "trending" : "pie-chart",
-    size: 14,
-    color: C.blue
-  }))), chartMode === "pie" && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "center"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 16
-    }
-  }, /*#__PURE__*/React.createElement(PieChart, {
-    size: 150,
-    sublabel: t("tasks"),
-    segments: pieSegments,
-    immediateAnim: true
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 10
-    }
-  }, pieSegments.map((s, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 10,
-      height: 10,
-      borderRadius: 3,
-      background: s.color,
-      flexShrink: 0
-    }
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: C.text2,
-      minWidth: 68
-    }
-  }, s.label), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: s.color
-    }
-  }, s.value))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 4,
-      fontSize: 11,
-      color: C.text4
-    }
-  }, t("total"), ": ", /*#__PURE__*/React.createElement("strong", {
-    style: {
-      color: C.text
-    }
-  }, filtered.length))))), chartMode === "line" && /*#__PURE__*/React.createElement(LineChart, {
-    tasks: filtered,
-    timeRange: datePreset === "today" ? "today" : datePreset === "week" ? "week" : datePreset === "month" ? "month" : datePreset === "year" ? "year" : datePreset === "alltime" ? "all" : "custom",
-    dateRange: datePreset === "custom" || fromDate || toDate ? {
-      from: fromDate,
-      to: toDate
-    } : null,
-    height: 160,
-    prefLookahead: false,
-    key: `search-line-${datePreset}-${fromDate}-${toDate}-${typeFilter}-${query}`
-  })), sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, wideCharts
+    /* ── Wide: both charts side by side ── */
+    ? /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", gap: 20, alignItems: "center" }
+      },
+      /*#__PURE__*/React.createElement("div", {
+        style: { flex: "0 0 auto", display: "flex", justifyContent: "center" }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", alignItems: "center", gap: 14 }
+      }, /*#__PURE__*/React.createElement(PieChart, {
+        size: 130, sublabel: t("tasks"), segments: pieSegments, immediateAnim: true
+      }), /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", flexDirection: "column", gap: 8 }
+      }, pieSegments.map((s, i) => /*#__PURE__*/React.createElement("div", {
+        key: i, style: { display: "flex", alignItems: "center", gap: 8 }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: { width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: { fontSize: 12, color: C.text2, minWidth: 60 }
+      }, s.label), /*#__PURE__*/React.createElement("span", {
+        style: { fontSize: 13, fontWeight: 700, color: s.color }
+      }, s.value))), /*#__PURE__*/React.createElement("div", {
+        style: { marginTop: 4, fontSize: 11, color: C.text4 }
+      }, t("total"), ": ", /*#__PURE__*/React.createElement("strong", { style: { color: C.text } }, filtered.length))))),
+      /*#__PURE__*/React.createElement("div", {
+        style: { width: 1, alignSelf: "stretch", background: C.border, flexShrink: 0 }
+      }),
+      /*#__PURE__*/React.createElement("div", {
+        style: { flex: 1, minWidth: 0 }
+      }, /*#__PURE__*/React.createElement(LineChart, {
+        tasks: filtered,
+        timeRange: datePreset === "today" ? "today" : datePreset === "week" ? "week" : datePreset === "month" ? "month" : datePreset === "year" ? "year" : datePreset === "alltime" ? "all" : "custom",
+        dateRange: datePreset === "custom" || fromDate || toDate ? { from: fromDate, to: toDate } : null,
+        height: 140, prefLookahead: false,
+        key: `search-line-${datePreset}-${fromDate}-${toDate}-${typeFilter}-${query}`
+      })))
+    /* ── Narrow: single chart with toggle ── */
+    : /*#__PURE__*/React.createElement(React.Fragment, null,
+      /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", alignItems: "center", marginBottom: chartTitle ? 12 : 0 }
+      }, chartTitle && /*#__PURE__*/React.createElement("div", {
+        style: { fontSize: 15, fontWeight: 700, color: C.text, flex: 1, textAlign: isHe ? "right" : "left", direction: isHe ? "rtl" : "ltr" }
+      }, chartTitle), !chartTitle && /*#__PURE__*/React.createElement("div", { style: { flex: 1 } }),
+      /*#__PURE__*/React.createElement("button", {
+        onClick: () => setChartMode(m => m === "pie" ? "line" : "pie"),
+        title: chartMode === "pie" ? isHe ? "עבור לגרף קווי" : "Switch to line chart" : isHe ? "עבור לעוגה" : "Switch to pie chart",
+        style: {
+          width: 28, height: 28, borderRadius: 8, border: `1px solid ${C.border}`,
+          background: chartMode === "pie" ? C.blueBg : C.card, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          flexShrink: 0, transition: "background 0.15s,border-color 0.15s"
+        }
+      }, /*#__PURE__*/React.createElement(Icon, { name: chartMode === "pie" ? "trending" : "pie-chart", size: 14, color: C.blue }))
+      ),
+      chartMode === "pie" && /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", justifyContent: "center" }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", alignItems: "center", gap: 16 }
+      }, /*#__PURE__*/React.createElement(PieChart, {
+        size: 150, sublabel: t("tasks"), segments: pieSegments, immediateAnim: true
+      }), /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", flexDirection: "column", gap: 10 }
+      }, pieSegments.map((s, i) => /*#__PURE__*/React.createElement("div", {
+        key: i, style: { display: "flex", alignItems: "center", gap: 8 }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: { width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: { fontSize: 12, color: C.text2, minWidth: 68 }
+      }, s.label), /*#__PURE__*/React.createElement("span", {
+        style: { fontSize: 13, fontWeight: 700, color: s.color }
+      }, s.value))), /*#__PURE__*/React.createElement("div", {
+        style: { marginTop: 4, fontSize: 11, color: C.text4 }
+      }, t("total"), ": ", /*#__PURE__*/React.createElement("strong", { style: { color: C.text } }, filtered.length)))))  ,
+      chartMode === "line" && /*#__PURE__*/React.createElement(LineChart, {
+        tasks: filtered,
+        timeRange: datePreset === "today" ? "today" : datePreset === "week" ? "week" : datePreset === "month" ? "month" : datePreset === "year" ? "year" : datePreset === "alltime" ? "all" : "custom",
+        dateRange: datePreset === "custom" || fromDate || toDate ? { from: fromDate, to: toDate } : null,
+        height: 160, prefLookahead: false,
+        key: `search-line-${datePreset}-${fromDate}-${toDate}-${typeFilter}-${query}`
+      })
+    )), sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "40px 0",
@@ -12499,6 +12483,9 @@ function isStandaloneApp() {
     return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
   } catch { return false; }
 }
+// True on iPhone/iPad (including iPadOS 13+ which reports MacIntel)
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 const GCal = (() => {
   const CLIENT_ID = "524595139539-bfgctn3aak51v38ua94m553v44ppg2ve.apps.googleusercontent.com";
@@ -13133,6 +13120,9 @@ function App() {
       top: 0,
       behavior: "instant"
     });
+    // Reset calendar position to today when switching into week or month view
+    if (nextView === "month") handleMonthNav(0);
+    if (nextView === "week") handleWeekNav(0);
     try {
       localStorage.setItem("taskflow_view", nextView);
     } catch {}
@@ -13262,6 +13252,9 @@ function App() {
   // Kept as state (not just the existing refs) so the pill actually re-renders.
   const [gcalPulling, setGcalPulling] = useState(false);
   const [gcalPushCount, setGcalPushCount] = useState(0);
+  const [savedFlash, setSavedFlash] = useState(false); // true for 3s after a push batch finishes
+  const prevPushCountRef = useRef(0);
+  const savedFlashTimerRef = useRef(null);
 
   // Everything Google told us in the last pull: taskId -> signature. Rebuilt from
   // Google on every pull, so it is not device state — two devices that pull the same
@@ -13557,6 +13550,16 @@ function App() {
     const interval = setInterval(() => { if (document.visibilityState === "visible") gcalPullNow(); }, 120000);
     return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(interval); };
   }, [gcalConnected]);
+
+  // Flash "Saved" pill for 3 s when a push batch finishes successfully
+  useEffect(() => {
+    if (prevPushCountRef.current > 0 && gcalPushCount === 0 && gcalConnected && gcalStats.failed === 0) {
+      if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
+      setSavedFlash(true);
+      savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 3000);
+    }
+    prevPushCountRef.current = gcalPushCount;
+  }, [gcalPushCount]);
 
   // ── Load Google Fonts asynchronously — never blocks offline render ──
   useEffect(() => {
@@ -14196,7 +14199,9 @@ function App() {
         ? "loading"
         : gcalConnected && (gcalPushCount > 0 || gcalBusy)
           ? "saving"
-          : "online";
+          : gcalConnected && savedFlash
+            ? "saved"
+            : "online";
   const getSyncPillInfo = isHePill => {
     const map = {
       offline: {
@@ -14213,11 +14218,15 @@ function App() {
       },
       saving: {
         bg: "var(--blue-bg)", border: "var(--blue-border)", color: "var(--blue)",
-        label: isHePill ? "שומר…" : "Saving…", pulse: true
+        label: isHePill ? "שומר…" : "Saving…", pulse: true, pop: false
+      },
+      saved: {
+        bg: "var(--green-bg)", border: "var(--green-border)", color: "var(--green)",
+        label: isHePill ? "נשמר" : "Saved", pulse: false, pop: true
       },
       online: {
         bg: "var(--green-bg)", border: "var(--green-border)", color: "var(--green)",
-        label: isHePill ? "מחובר" : "Online", pulse: false
+        label: isHePill ? "מחובר" : "Online", pulse: false, pop: false
       }
     };
     return map[syncPillState];
@@ -15014,8 +15023,8 @@ function App() {
         boxShadow: dark ? "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" : "0 8px 32px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.8)",
         pointerEvents: "all",
         minWidth: 300,
-        maxWidth: 380,
-        width: "calc(100% - 40px)",
+        maxWidth: 560,
+        width: "calc(100% - 32px)",
         touchAction: "none",
         userSelect: "none"
       }
@@ -15282,7 +15291,7 @@ function App() {
         background: pillInfoW.color,
         boxShadow: `0 0 0 2px ${pillInfoW.bg}`,
         transition: "background 0.3s ease",
-        animation: pillInfoW.pulse ? "syncPillPulse 1s ease-in-out infinite" : "none"
+        animation: pillInfoW.pulse ? "syncPillPulse 1s ease-in-out infinite" : pillInfoW.pop ? "syncSavedPop 0.5s ease-out forwards" : "none"
       }
     }), /*#__PURE__*/React.createElement("span", {
       style: {
