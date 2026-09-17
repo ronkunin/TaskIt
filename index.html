@@ -1921,9 +1921,21 @@ const Icon = ({
 };
 const Badge = ({
   type,
-  small
+  small,
+  matchTone
 }) => {
   const m = getTypeMeta(type);
+  // While the row is mid-animation (completing/cancelling/delaying), the type
+  // pill keeps its own color by default and visibly sticks out of the green/
+  // rose/amber glow that covers the rest of the card. matchTone swaps the
+  // pill's palette for the animation's own tone so it blends in like every
+  // other part of the row, then reverts once the animation is done.
+  const tone = matchTone ? {
+    color: C.green,
+    bg: C.greenBg,
+    border: C.greenBorder,
+    dot: C.green
+  } : m;
   // On the small card tag, the full "אירועי גוגל" / "Google Events" label is too
   // long for the pill — shorten it to just "גוגל" / "Google" there. Everywhere
   // else (settings, the edit form header, filters) keeps the full label.
@@ -1937,18 +1949,19 @@ const Badge = ({
       borderRadius: 20,
       fontSize: small ? 10 : 11,
       fontWeight: 600,
-      color: m.color,
-      background: m.bg,
-      border: `1px solid ${m.border}`,
+      color: tone.color,
+      background: tone.bg,
+      border: `1px solid ${tone.border}`,
       letterSpacing: "0.02em",
-      whiteSpace: "nowrap"
+      whiteSpace: "nowrap",
+      transition: matchTone ? "color 0.2s ease, background 0.2s ease, border-color 0.2s ease" : "none"
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       width: 5,
       height: 5,
       borderRadius: "50%",
-      background: m.dot,
+      background: tone.dot,
       flexShrink: 0
     }
   }), label);
@@ -2401,7 +2414,8 @@ const TaskCard = ({
       }
     }, !hideTypeBadge && !over && !visualCancelled && /*#__PURE__*/React.createElement(Badge, {
       type: task.type,
-      small: true
+      small: true,
+      matchTone: completing
     }), over && !visualCancelled && /*#__PURE__*/React.createElement(OverdueBadge, null), visualCancelled && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "inline-flex",
@@ -2439,7 +2453,7 @@ const TaskCard = ({
       name: "clock",
       size: 10,
       color: "#94A3B8"
-    }), " ", task.time), task.length != null && task.length !== "" && /*#__PURE__*/React.createElement("span", {
+    }), " ", task.time), shouldShowLengthTag(Number(task.length)) && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -2451,7 +2465,7 @@ const TaskCard = ({
       name: "hourglass",
       size: 10,
       color: "#94A3B8"
-    }), " ", fmtLengthShort(Number(task.length))), isRecurring(task) && !hideRecurTag && /*#__PURE__*/React.createElement("span", {
+    }), " ", fmtLengthTag(Number(task.length))), isRecurring(task) && !hideRecurTag && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -2694,6 +2708,9 @@ const fmtLength = mins => {
   if (h === 0) return he ? `${m} דק׳` : `${m} min`;
   const hp = he ? h === 1 ? "שעה" : h === 2 ? "שעתיים" : `${h} שעות` : `${h} ${h === 1 ? "hour" : "hours"}`;
   if (m === 0) return hp;
+  // Hebrew half-hour reads naturally as "וחצי" (e.g. "שעה וחצי", "שעתיים וחצי"),
+  // no need to spell out the minutes.
+  if (he && m === 30) return `${hp} וחצי`;
   return he ? `${hp} ו-${m} דק׳` : `${hp} ${m} min`;
 };
 // Compact form for task-card tags: 45m / 1h / 1h30m
@@ -2705,6 +2722,17 @@ const fmtLengthShort = mins => {
     mu = he ? "ד׳" : "m";
   if (h === 0) return `${m}${mu}`;
   return m === 0 ? `${h}${hu}` : `${h}${hu}${m}${mu}`;
+};
+// Whether a duration is worth showing as a tag at all. Only 45min up to — but
+// not including — 3h, and never exactly 1h, which is the unset/default length
+// (DEFAULT_TASK_LENGTH) and so carries no information.
+const shouldShowLengthTag = mins => Number.isFinite(mins) && mins >= 45 && mins < 180 && mins !== 60;
+// Numeric tag form: 45min / 1:30 / 2:00 / 2:30
+const fmtLengthTag = mins => {
+  const h = Math.floor(mins / 60),
+    m = mins % 60;
+  if (h === 0) return getLang() === "he" ? `${m} דק׳` : `${m}min`;
+  return `${h}:${String(m).padStart(2, "0")}`;
 };
 // Effective length of a task in minutes (defaults to 1 hour when unset)
 const getTaskLength = task => {
@@ -3316,18 +3344,29 @@ const Modal = ({
       }
     }, m.label);
   }), (() => {
-    const existingCustomTypes = [...new Set((allTasks || []).filter(tp => isPending(tp) && isCustomType(tp.type)).map(t => t.type))].slice(0, 8);
-    const inputVal = isCustomType(form.type) ? form.type : form.type === "general" ? "" : "";
+    // "google" is a reserved type — it only ever means a real synced Calendar
+    // event (see the save-time guard above), so it's excluded from the normal
+    // typed-suggestion list here and can't be produced by typing the word out
+    // by hand. It's offered instead as a one-tap suggestion, and only while
+    // editing a task that actually came from Google, so someone who cleared
+    // the field can put it back without retyping it.
+    const existingCustomTypes = [...new Set((allTasks || []).filter(tp => isPending(tp) && isCustomType(tp.type) && tp.type !== "google").map(t => t.type))].slice(0, 8);
+    const isGoogleType = form.type === "google";
+    const inputVal = isGoogleType ? getTypeMeta("google").label : isCustomType(form.type) ? form.type : "";
     const filteredSuggs = existingCustomTypes.filter(tp => tp.toLowerCase().includes(inputVal.toLowerCase()) && tp !== inputVal);
+    const offerGoogleSugg = editTask?.source === "google" && !isGoogleType;
+    const googleMeta = getTypeMeta("google");
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: "relative"
       }
     }, /*#__PURE__*/React.createElement("input", {
       value: inputVal,
+      readOnly: isGoogleType,
       onChange: e => {
         const v = e.target.value;
         const normalized = v.toLowerCase();
+        if (normalized === "google") return;
         set("type", normalized || "general");
         setShowTypeSugg(true);
       },
@@ -3339,15 +3378,19 @@ const Modal = ({
         fontSize: 12,
         fontWeight: 500,
         textAlign: "center",
-        border: `1.5px solid ${isCustomType(form.type) ? "#14B8A6" : C.border}`,
-        background: isCustomType(form.type) ? C.tealBg : C.card2,
-        color: isCustomType(form.type) ? "#14B8A6" : C.text3,
+        border: `1.5px solid ${isGoogleType ? googleMeta.color : isCustomType(form.type) ? "#14B8A6" : C.border}`,
+        background: isGoogleType ? googleMeta.bg : isCustomType(form.type) ? C.tealBg : C.card2,
+        color: isGoogleType ? googleMeta.color : isCustomType(form.type) ? "#14B8A6" : C.text3,
         outline: "none",
         fontFamily: "inherit",
+        cursor: isGoogleType ? "text" : "auto",
         transition: "all 0.15s"
       },
       onFocus: e => {
-        if (!isCustomType(form.type)) set("type", "general");
+        // Pressing into the field while it's still showing the synced Google
+        // type clears it immediately, so the user can start typing a
+        // replacement right away instead of deleting "Google" first.
+        if (isGoogleType || !isCustomType(form.type)) set("type", "general");
         setShowTypeSugg(true);
       },
       onBlur: e => {
@@ -3355,7 +3398,7 @@ const Modal = ({
         const trimmed = form.type.trim();
         if (form.type === "general" || !isCustomType(form.type) && !e.target.value.trim()) set("type", "regular");else if (trimmed !== form.type) set("type", trimmed);
       }
-    }), showTypeSugg && filteredSuggs.length > 0 && /*#__PURE__*/React.createElement("div", {
+    }), showTypeSugg && (filteredSuggs.length > 0 || offerGoogleSugg) && /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
         top: "100%",
@@ -3369,7 +3412,36 @@ const Modal = ({
         overflow: "hidden",
         marginTop: 4
       }
-    }, filteredSuggs.map((tp, i) => {
+    }, offerGoogleSugg && /*#__PURE__*/React.createElement("div", {
+      key: "google",
+      onMouseDown: () => {
+        set("type", "google");
+        setShowTypeSugg(false);
+      },
+      style: {
+        padding: "8px 12px",
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 600,
+        color: googleMeta.color,
+        background: "transparent",
+        borderBottom: filteredSuggs.length > 0 ? `1px solid ${C.border}` : "none",
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        transition: "background 0.1s"
+      },
+      onMouseEnter: e => e.currentTarget.style.background = googleMeta.bg,
+      onMouseLeave: e => e.currentTarget.style.background = "transparent"
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 7,
+        height: 7,
+        borderRadius: "50%",
+        background: googleMeta.dot,
+        flexShrink: 0
+      }
+    }), googleMeta.label), filteredSuggs.map((tp, i) => {
       const m = getTypeMeta(tp);
       return /*#__PURE__*/React.createElement("div", {
         key: tp,
@@ -4986,13 +5058,226 @@ const WeekView = ({
   curDate,
   onNav,
   onTaskClick,
-  onDayClick
+  onDayClick,
+  onReschedule
 }) => {
   const width = useWindowWidth();
   const height = useWindowHeight();
   const narrow = height > width;
   const scrollRef = useRef();
   const isHe = getLang() === "he";
+
+  // ── Drag-to-reschedule state ────────────────────────────────────────────────
+  // One pointer-event path drives both mouse (Chrome/desktop) and touch (iOS).
+  // Touch requires a long-press to arm, so a normal finger swipe still scrolls
+  // the page; a mouse arms on a few px of movement.
+  const DRAG_SNAP_MIN = 15;
+  const DRAG_LONG_PRESS_MS = 220;
+  const [drag, setDrag] = useState(null); // {id, ds, mins, dur, px, py}
+  const dragRef = useRef({
+    active: false,
+    armed: false,
+    id: null,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    grabDy: 0,
+    moved: false,
+    isTouch: false,
+    lpTimer: null,
+    origDs: "",
+    origTime: "",
+    dur: 60
+  });
+  // Geometry the pointer handlers need, refreshed on every render from inside
+  // the grid IIFE (where DAY_START / pxPerMin / the day list actually exist).
+  const dragMetaRef = useRef(null);
+  const colRefs = useRef([]);
+  const justDraggedRef = useRef(0);
+  const pointerOkRef = useRef(false);
+
+  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared);
+  const minsToTime = mins => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(Math.floor(mins % 60)).padStart(2, "0")}`;
+
+  // Map a viewport point to {ds, mins} snapped to the grid.
+  const dragTargetAt = (clientX, clientY) => {
+    const meta = dragMetaRef.current;
+    if (!meta) return null;
+    const cols = colRefs.current;
+    let rect = null,
+      idx = -1;
+    for (let i = 0; i < cols.length; i++) {
+      if (!cols[i]) continue;
+      const r = cols[i].getBoundingClientRect();
+      if (clientX >= r.left && clientX <= r.right) {
+        idx = i;
+        rect = r;
+        break;
+      }
+    }
+    if (idx === -1) {
+      // Pointer is outside the columns horizontally — snap to the nearest one.
+      let bestDist = Infinity;
+      for (let i = 0; i < cols.length; i++) {
+        if (!cols[i]) continue;
+        const r = cols[i].getBoundingClientRect();
+        const dist = Math.abs(clientX - (r.left + r.right) / 2);
+        if (dist < bestDist) {
+          bestDist = dist;
+          idx = i;
+          rect = r;
+        }
+      }
+    }
+    if (idx === -1 || !rect || !meta.dsList[idx]) return null;
+    const dur = dragRef.current.dur || 60;
+    const topPx = clientY - dragRef.current.grabDy - rect.top;
+    let mins = meta.DAY_START * 60 + topPx / meta.pxPerMin;
+    mins = Math.round(mins / DRAG_SNAP_MIN) * DRAG_SNAP_MIN;
+    mins = Math.min(mins, meta.DAY_END * 60 - dur);
+    mins = Math.max(mins, meta.DAY_START * 60);
+    return {
+      ds: meta.dsList[idx],
+      mins
+    };
+  };
+
+  const finishDrag = (commit, clientX, clientY) => {
+    const d = dragRef.current;
+    if (d.lpTimer) {
+      clearTimeout(d.lpTimer);
+      d.lpTimer = null;
+    }
+    const didDrag = d.active && d.moved;
+    if (commit && didDrag) {
+      const t = dragTargetAt(clientX, clientY);
+      if (t) {
+        const newTime = minsToTime(t.mins);
+        if ((t.ds !== d.origDs || newTime !== d.origTime) && onReschedule) {
+          onReschedule(d.id, t.ds, newTime);
+          if (navigator.vibrate) navigator.vibrate(12);
+        }
+      }
+    }
+    if (didDrag) justDraggedRef.current = Date.now();
+    d.active = false;
+    d.armed = false;
+    d.id = null;
+    d.pointerId = null;
+    d.moved = false;
+    setDrag(null);
+    return didDrag;
+  };
+
+  // Abandon any in-flight drag if the week is navigated away underneath it.
+  useEffect(() => {
+    if (dragRef.current.id) finishDrag(false);
+  }, [curDate]);
+
+  const dragHandlersFor = tk => {
+    if (isDragLocked(tk)) return {};
+    return {
+      onPointerDown: e => {
+        if (e.button != null && e.button !== 0) return;
+        pointerOkRef.current = true;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const isTouch = e.pointerType === "touch";
+        const dur = getTaskLength(tk) || 60;
+        const d = dragRef.current;
+        d.active = false;
+        d.armed = !isTouch;
+        d.id = tk.id;
+        d.pointerId = e.pointerId;
+        d.startX = e.clientX;
+        d.startY = e.clientY;
+        d.grabDy = e.clientY - rect.top;
+        d.moved = false;
+        d.isTouch = isTouch;
+        d.origDs = tk.date || "";
+        d.origTime = tk.time || "";
+        d.dur = dur;
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch (err) {}
+        if (isTouch) {
+          d.lpTimer = setTimeout(() => {
+            const cur = dragRef.current;
+            if (cur.id !== tk.id || cur.moved) return;
+            cur.lpTimer = null;
+            cur.active = true;
+            cur.armed = true;
+            if (navigator.vibrate) navigator.vibrate(8);
+            setDrag({
+              id: tk.id,
+              ds: tk.date,
+              mins: (() => {
+                const [hh, mm] = (tk.time || "0:0").split(":").map(Number);
+                return (hh || 0) * 60 + (mm || 0);
+              })(),
+              dur,
+              px: cur.startX,
+              py: cur.startY
+            });
+          }, DRAG_LONG_PRESS_MS);
+        }
+      },
+      onPointerMove: e => {
+        const d = dragRef.current;
+        if (d.id !== tk.id) return;
+        const dist = Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY);
+        if (!d.active) {
+          if (d.isTouch) {
+            // Finger moved before the long-press armed → treat as a scroll.
+            if (dist > 10 && d.lpTimer) {
+              clearTimeout(d.lpTimer);
+              d.lpTimer = null;
+              d.id = null;
+            }
+            return;
+          }
+          if (!d.armed || dist <= 4) return;
+          d.active = true;
+          setDrag({
+            id: tk.id,
+            ds: tk.date,
+            mins: (() => {
+              const [hh, mm] = (tk.time || "0:0").split(":").map(Number);
+              return (hh || 0) * 60 + (mm || 0);
+            })(),
+            dur: d.dur,
+            px: e.clientX,
+            py: e.clientY
+          });
+        }
+        d.moved = true;
+        if (e.cancelable) e.preventDefault();
+        const t = dragTargetAt(e.clientX, e.clientY);
+        if (!t) return;
+        setDrag(prev => {
+          if (prev && prev.ds === t.ds && prev.mins === t.mins && prev.px === e.clientX && prev.py === e.clientY) return prev;
+          if (prev && prev.ds !== t.ds && navigator.vibrate) navigator.vibrate(5);
+          return {
+            id: tk.id,
+            ds: t.ds,
+            mins: t.mins,
+            dur: d.dur,
+            px: e.clientX,
+            py: e.clientY
+          };
+        });
+      },
+      onPointerUp: e => {
+        const d = dragRef.current;
+        if (d.id !== tk.id) return;
+        const didDrag = finishDrag(true, e.clientX, e.clientY);
+        if (!didDrag) onTaskClick(tk);
+      },
+      onPointerCancel: () => {
+        if (dragRef.current.id === tk.id) finishDrag(false);
+      }
+    };
+  };
+
   // ── Swipe state for left/right → previous/next week (wide grid only) ──
   const swipeRef = useRef({
     startX: 0,
@@ -5004,6 +5289,11 @@ const WeekView = ({
   const weekGridRef = useRef(null);
   const [swipeDx, setSwipeDx] = useState(0);
   const onGridTouchStart = e => {
+    // Do NOT bail here just because a pointerdown landed on a draggable task
+    // (dragRef.current.id) — at touchstart time intent is still unknown (tap?
+    // scroll? week-swipe? drag?), so swipeRef must always be initialized
+    // normally. Only an actually-decided drag (dragRef.current.active, checked
+    // in onGridTouchMove below) should ever hijack the gesture.
     const t = e.touches[0];
     swipeRef.current = {
       startX: t.clientX,
@@ -5015,6 +5305,13 @@ const WeekView = ({
     setSwipeDx(0);
   };
   const onGridTouchMove = e => {
+    // A drag owns the gesture: block both the week swipe and the parent
+    // view-swipe, and stop iOS from scrolling underneath the finger.
+    if (dragRef.current.active) {
+      e.stopPropagation();
+      if (e.cancelable) e.preventDefault();
+      return;
+    }
     const s = swipeRef.current;
     if (s.committed) return;
     const t = e.touches[0];
@@ -5034,6 +5331,10 @@ const WeekView = ({
     setSwipeDx(dx);
   };
   const onGridTouchEnd = e => {
+    if (dragRef.current.id || Date.now() - justDraggedRef.current < 350) {
+      e.stopPropagation();
+      return;
+    }
     const s = swipeRef.current;
     const dx = s.dx;
     setSwipeDx(0);
@@ -5114,7 +5415,7 @@ const WeekView = ({
     const nowD = new Date();
     const nowMinutes = nowD.getHours() * 60 + nowD.getMinutes();
     const gutterCol = narrow ? "22px" : "50px";
-    const gridTemplate = `${gutterCol} repeat(7,1fr)`;
+    const gridTemplate = `${gutterCol} repeat(7,minmax(0,1fr))`;
 
     const dayData = days.map(day => {
       const ds = localDs(day);
@@ -5143,6 +5444,13 @@ const WeekView = ({
     const hoursArr = Array.from({
       length: DAY_END - DAY_START
     }, (_, i) => DAY_START + i);
+    // Hand the pointer handlers the geometry they can't see from outside here.
+    dragMetaRef.current = {
+      DAY_START,
+      DAY_END,
+      pxPerMin,
+      dsList: dayData.map(d => d.ds)
+    };
 
     // --- header row (day-of-week + date number) ---
     const headerCells = dayData.map(({
@@ -5201,7 +5509,7 @@ const WeekView = ({
         background: "var(--card)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
-        borderBottom: `1px solid ${C.border3}`,
+        borderBottom: `1px solid ${C.border}`,
         transform: "translateZ(0)",
         WebkitTransform: "translateZ(0)"
       }
@@ -5245,16 +5553,22 @@ const WeekView = ({
           textDecoration: cancelOnDay ? "line-through" : "none",
           overflow: "hidden",
           textOverflow: "ellipsis",
-          whiteSpace: "nowrap"
+          whiteSpace: "nowrap",
+          minWidth: 0
         }
       }, taskDisplayName(tk));
     };
     const untimedCells = dayData.map(({
-      untimed
+      untimed,
+      isT
     }, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
       style: {
-        padding: "6px 4px 0"
+        padding: "6px 4px 0",
+        minWidth: 0,
+        overflow: "hidden",
+        borderInlineStart: `1px solid ${C.border}`,
+        backgroundColor: isT ? "rgba(59,130,246,0.035)" : "transparent"
       }
     }, untimed.map(untimedChip)));
     const untimedTray = maxUntimed > 0 ? /*#__PURE__*/React.createElement("div", {
@@ -5262,7 +5576,7 @@ const WeekView = ({
         display: "grid",
         gridTemplateColumns: gridTemplate,
         gap: 0,
-        marginBottom: 1,
+        marginBottom: 0,
         paddingBottom: 0
       }
     }, /*#__PURE__*/React.createElement("div", {
@@ -5283,17 +5597,29 @@ const WeekView = ({
       key: h,
       style: {
         position: "absolute",
-        top: (h - DAY_START) * HOUR_PX - 6,
-        insetInlineEnd: narrow ? 2 : 6,
-        fontSize: narrow ? 8 : 10,
-        color: C.text5,
-        fontWeight: 600
+        top: (h - DAY_START) * HOUR_PX,
+        insetInlineEnd: 0,
+        insetInlineStart: 0,
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "flex-end",
+        paddingTop: 1,
+        paddingInlineEnd: narrow ? 3 : 6,
+        pointerEvents: "none"
       }
-    }, narrow ? String(h) : `${String(h).padStart(2, "0")}:00`));
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: narrow ? 8 : 10,
+        color: C.text4,
+        fontWeight: 600,
+        lineHeight: 1
+      }
+    }, narrow ? String(h) : `${String(h).padStart(2, "0")}:00`)));
     const hourGutter = /*#__PURE__*/React.createElement("div", {
       style: {
         position: "relative",
-        height: gridHeight
+        height: gridHeight,
+        backgroundImage: `repeating-linear-gradient(to bottom, ${C.border} 0, ${C.border} 1px, transparent 1px, transparent ${HOUR_PX}px)`
       }
     }, hourLabels);
 
@@ -5344,11 +5670,17 @@ const WeekView = ({
           overflow: "hidden",
           textOverflow: "ellipsis"
         }
-      }, tk.time + (tk.length != null && tk.length !== "" ? " · " + fmtLengthShort(Number(tk.length)) : "")) : null;
+      }, tk.time + (shouldShowLengthTag(Number(tk.length)) ? " · " + fmtLengthTag(Number(tk.length)) : "")) : null;
+      const locked = isDragLocked(tk);
+      const beingDragged = drag && drag.id === tk.id;
       return /*#__PURE__*/React.createElement("div", {
         key: tk.id,
+        ...dragHandlersFor(tk),
         onClick: e => {
           e.stopPropagation();
+          // Pointer events already decided tap-vs-drag; only fall back to
+          // click on browsers that never fired a pointerdown.
+          if (pointerOkRef.current) return;
           onTaskClick(tk);
         },
         style: {
@@ -5361,15 +5693,18 @@ const WeekView = ({
           padding: height < 30 ? "2px 5px" : "4px 6px",
           fontSize: 10.5,
           fontWeight: 500,
-          cursor: "pointer",
+          cursor: locked ? "pointer" : beingDragged ? "grabbing" : "grab",
+          touchAction: beingDragged ? "none" : "pan-y",
+          WebkitTouchCallout: "none",
+          userSelect: "none",
           overflow: "hidden",
           background: donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : m.bg,
           color: donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : m.color,
           borderInlineStart: `2px solid ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}`,
-          boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-          opacity: donOnDay ? 0.8 : cancelOnDay ? 0.7 : 1,
+          boxShadow: beingDragged ? "0 8px 22px rgba(0,0,0,0.26)" : "0 1px 3px rgba(0,0,0,0.08)",
+          opacity: beingDragged ? 0.35 : donOnDay ? 0.8 : cancelOnDay ? 0.7 : 1,
           textDecoration: cancelOnDay ? "line-through" : "none",
-          zIndex: 2,
+          zIndex: beingDragged ? 8 : 2,
           lineHeight: 1.25
         }
       }, nameLine, subLine);
@@ -5402,10 +5737,37 @@ const WeekView = ({
         }
       })) : null;
       const blocks = timed.map(taskBlock);
+      const isDropTarget = !!drag && drag.ds === ds;
+      const dropPreview = isDropTarget ? /*#__PURE__*/React.createElement("div", {
+        style: {
+          position: "absolute",
+          top: (drag.mins - DAY_START * 60) * pxPerMin,
+          height: Math.max((drag.dur || 60) * pxPerMin - 1, 18),
+          insetInlineStart: 1.5,
+          insetInlineEnd: 1.5,
+          borderRadius: 6,
+          border: `2px dashed ${C.blue}`,
+          background: "var(--blue-bg)",
+          zIndex: 7,
+          pointerEvents: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 9.5,
+          fontWeight: 700,
+          color: C.blue,
+          overflow: "hidden"
+        }
+      }, minsToTime(drag.mins)) : null;
       return /*#__PURE__*/React.createElement("div", {
         key: i,
+        ref: el => {
+          colRefs.current[i] = el;
+        },
         onClick: e => {
           if (e.target !== e.currentTarget) return;
+          // Don't open "new task" on the click that ends a drag.
+          if (Date.now() - justDraggedRef.current < 350) return;
           const rect = e.currentTarget.getBoundingClientRect();
           const offsetY = e.clientY - rect.top;
           let mins = DAY_START * 60 + offsetY / pxPerMin;
@@ -5420,11 +5782,12 @@ const WeekView = ({
           position: "relative",
           height: gridHeight,
           cursor: "pointer",
-          borderInlineStart: `1px solid ${C.border3}`,
-          backgroundColor: isT ? "rgba(59,130,246,0.035)" : "transparent",
-          backgroundImage: `repeating-linear-gradient(to bottom, ${C.border3} 0, ${C.border3} 1px, transparent 1px, transparent ${HOUR_PX}px)`
+          borderInlineStart: `1px solid ${C.border}`,
+          backgroundColor: isDropTarget ? "rgba(59,130,246,0.10)" : isT ? "rgba(59,130,246,0.035)" : "transparent",
+          transition: "background-color 0.12s",
+          backgroundImage: `repeating-linear-gradient(to bottom, ${C.border} 0, ${C.border} 1px, transparent 1px, transparent ${HOUR_PX}px)`
         }
-      }, nowLine, blocks);
+      }, nowLine, blocks, dropPreview);
     });
     const gridBody = /*#__PURE__*/React.createElement("div", {
       style: {
@@ -5435,10 +5798,8 @@ const WeekView = ({
     const scrollWrap = /*#__PURE__*/React.createElement("div", {
       ref: scrollRef,
       style: {
-        border: `1px solid ${C.border3}`,
-        borderTop: "none",
-        borderRadius: "0 0 10px 10px",
-        paddingTop: 3
+        borderBottom: `1px solid ${C.border}`,
+        paddingTop: 0
       }
     }, gridBody);
     const swipeWrap = /*#__PURE__*/React.createElement("div", {
@@ -5447,13 +5808,39 @@ const WeekView = ({
       onTouchMove: onGridTouchMove,
       onTouchEnd: onGridTouchEnd,
       style: {
-        touchAction: "pan-y",
+        touchAction: drag ? "none" : "pan-y",
         transform: swipeDx ? `translateX(${Math.sign(swipeDx) * Math.min(Math.abs(swipeDx) * 0.35, 40)}px)` : "none",
         transition: swipeDx ? "none" : "transform 0.18s ease",
         willChange: "transform"
       }
     }, untimedTray, scrollWrap);
-    return /*#__PURE__*/React.createElement(React.Fragment, null, headerRow, swipeWrap);
+    // Floating readout so the target time stays visible under a fingertip.
+    // Portalled to <body>: an ancestor carries a transform, which would
+    // otherwise become the containing block and offset this fixed element.
+    const dragPill = drag ? /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "fixed",
+        left: drag.px,
+        top: drag.py - 48,
+        transform: "translateX(-50%)",
+        zIndex: 9999,
+        pointerEvents: "none",
+        background: C.blue,
+        color: "#fff",
+        padding: "5px 11px",
+        borderRadius: 14,
+        fontSize: 11.5,
+        fontWeight: 700,
+        whiteSpace: "nowrap",
+        letterSpacing: "0.01em",
+        boxShadow: "0 6px 20px rgba(0,0,0,0.3)"
+      }
+    }, (() => {
+      const d = new Date(drag.ds + "T00:00:00");
+      const dow = isNaN(d.getTime()) ? "" : getDaysShort()[d.getDay()] + " ";
+      return dow + minsToTime(drag.mins);
+    })()), document.body) : null;
+    return /*#__PURE__*/React.createElement(React.Fragment, null, headerRow, swipeWrap, dragPill);
   })());
 };
 
@@ -14561,6 +14948,22 @@ function App() {
       } : t);
     });
   };
+  // Drag-to-reschedule from the week grid: move a task to another day/time.
+  const handleReschedule = (id, newDate, newTime) => {
+    setTasks(ts => {
+      const task = ts.find(t => t.id === id);
+      if (!task) return ts;
+      // Same guards as delay: holidays and shared Google events never move.
+      if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
+      if (task.date === newDate && task.time === newTime) return ts;
+      return ts.map(t => t.id === id ? {
+        ...t,
+        date: newDate,
+        time: newTime,
+        updated: Date.now()
+      } : t);
+    });
+  };
   const handleCompleteFromModal = (task, action) => {
     // Restore from archive (task not in main tasks list)
     if (action === "uncomplete" || action === "uncancel") {
@@ -15610,7 +16013,7 @@ function App() {
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
-        top: "calc(50% - 26px)",
+        top: "calc(50% - 29px)",
         height: 52,
         borderRadius: 26,
         background: dark ? "rgba(255,255,255,0.15)" : "rgba(59,130,246,0.12)",
@@ -15857,7 +16260,7 @@ function App() {
         justifyContent: "center",
         fontSize: 18
       }
-    }, "📅"), /*#__PURE__*/React.createElement("div", {
+    }, "📝"), /*#__PURE__*/React.createElement("div", {
       style: { display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }
     }, /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 11.5, fontWeight: 600, color: C.text3, letterSpacing: "0.01em" }
@@ -15932,10 +16335,7 @@ function App() {
       val: totalActive,
       label: t("activeTasks"),
       color: C.blue,
-      // Richer/more saturated than the other tiles' pale bg: blend extra
-      // accent blue into the theme's own blue-bg, so it stays correct across
-      // themes (default/ocean) and light/dark instead of a fixed hex.
-      bg: `color-mix(in srgb, var(--blue) ${dark ? 30 : 22}%, var(--blue-bg))`,
+      bg: C.blueBg,
       border: C.blueBorder
     }, {
       val: weekDone,
@@ -16158,7 +16558,8 @@ function App() {
     curDate: calDate,
     onNav: handleWeekNav,
     onTaskClick: openEdit,
-    onDayClick: openNew
+    onDayClick: openNew,
+    onReschedule: handleReschedule
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
     tasks: [...tasks, ...archiveTasks],
     onToggle: handleToggle,
