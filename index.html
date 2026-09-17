@@ -2092,7 +2092,9 @@ const TaskCard = ({
   hideDateTag = false,
   hideRecurTag = false,
   justSynced = false,
-  isNew = false
+  isNew = false,
+  dragHandlers = null,
+  isDragging = false
 }) => {
   const done = isDone(task);
   const cancelled = isCancelled(task);
@@ -2291,6 +2293,7 @@ const TaskCard = ({
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     ref: cardRef,
     "data-taskid": task.id,
+    ...(dragHandlers || {}),
     onMouseEnter: e => {
       if (e.movementX === 0 && e.movementY === 0) return;
       activateCard();
@@ -2316,7 +2319,16 @@ const TaskCard = ({
       opacity: done ? 0.55 : cancelled ? 0.6 : 1,
       animation: completing || cancelling || delaying || isNew ? undefined : justSynced ? undefined : `fadeIn 0.3s ease ${delay}s forwards`,
       marginBottom: _showNote ? 0 : 8,
-      zIndex: 1
+      zIndex: isDragging ? 30 : 1,
+      // touch-action must already be "none" when the finger lands, or iOS
+      // commits the gesture to a scroll and cancels the drag (see the engine).
+      touchAction: dragHandlers ? "none" : undefined,
+      WebkitTouchCallout: dragHandlers ? "none" : undefined,
+      cursor: dragHandlers ? isDragging ? "grabbing" : "grab" : undefined,
+      ...(isDragging ? {
+        opacity: 0.4,
+        boxShadow: "0 10px 26px rgba(0,0,0,0.26)"
+      } : null)
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3913,7 +3925,9 @@ const Modal = ({
 const DayChip = ({
   t,
   ds,
-  onTaskClick
+  onTaskClick,
+  dragHandlers = null,
+  isDragging = false
 }) => {
   const donOnDay = isDone(t),
     cancelOnDay = isCancelled(t),
@@ -4007,8 +4021,11 @@ const DayChip = ({
     }
   }, taskDisplayName(t)));
   return /*#__PURE__*/React.createElement("div", {
+    ...(dragHandlers || {}),
     onClick: e => {
       e.stopPropagation();
+      // With drag handlers attached, pointerup decides tap-vs-drag instead.
+      if (dragHandlers) return;
       onTaskClick(t);
     },
     style: {
@@ -4016,8 +4033,11 @@ const DayChip = ({
       alignItems: "center",
       gap: 4,
       marginBottom: 2,
-      cursor: "pointer",
-      opacity: donOnDay ? 0.75 : cancelOnDay ? 0.65 : 1,
+      cursor: dragHandlers ? isDragging ? "grabbing" : "grab" : "pointer",
+      // Latched at pointer-down — see the drag engine note.
+      touchAction: dragHandlers ? "none" : undefined,
+      WebkitTouchCallout: dragHandlers ? "none" : undefined,
+      opacity: isDragging ? 0.35 : donOnDay ? 0.75 : cancelOnDay ? 0.65 : 1,
       flexDirection: "row",
       minWidth: 0,
       maxWidth: "100%",
@@ -4032,8 +4052,30 @@ const MonthView = ({
   onDayClick,
   onSelectDay,
   onTaskClick,
-  onResetRef
+  onResetRef,
+  onDropDate
 }) => {
+  // Drag a chip onto a calendar day to move it to that date. Works the same in
+  // the wide grid (chips live in the cells) and narrow (chips live in the day
+  // detail list below the calendar) — the drop zones are the day cells either way.
+  const {
+    drag,
+    dragHandlersFor,
+    registerZone,
+    dragPill
+  } = useTaskDragEngine({
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
+    resolve: ds => ds ? ({ ds }) : null,
+    commit: (id, p) => onDropDate && onDropDate(id, p.ds),
+    pillLabel: p => {
+      if (!p) return "";
+      const d = new Date(p.ds + "T00:00:00");
+      if (isNaN(d.getTime())) return p.ds;
+      return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", { month: "short", day: "numeric" });
+    }
+  });
+  const dragDs = drag && !drag.outside && drag.payload ? drag.payload.ds : null;
+  const monthDragHandlers = tk => dragHandlersFor(tk, null, onTaskClick);
   const width = useWindowWidth();
   const height = useWindowHeight();
   const narrow = height > width;
@@ -4313,7 +4355,7 @@ const MonthView = ({
       style: {
         animation: "fadeIn 0.22s ease"
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, dragPill, /*#__PURE__*/React.createElement("div", {
       ref: stickyHeaderRef,
       style: {
         position: "sticky",
@@ -4504,8 +4546,14 @@ const MonthView = ({
           scrollToEl(dayRefs.current['o' + otherDs]);
         }, 60);
       } : null;
+      // Every calendar cell — including off-month ones — is a drop target, so a
+      // task can be dragged into a neighbouring month without navigating first.
+      const cellDs = cell.date ? localDs(cell.date) : null;
+      const isDropDay = !!cellDs && dragDs === cellDs;
       return /*#__PURE__*/React.createElement("div", {
         key: i,
+        ref: cellDs ? registerZone("m:" + cellDs, cellDs) : undefined,
+        "data-dropday": cellDs || undefined,
         onClick: () => isOther ? handleOtherClick() : handleDaySelect(d),
         style: {
           display: "flex",
@@ -4515,7 +4563,10 @@ const MonthView = ({
           cursor: "pointer",
           WebkitTapHighlightColor: "transparent",
           borderRadius: 8,
-          opacity: isOther ? isOtherSelected ? 0.8 : 0.1 : 1
+          background: isDropDay ? "var(--blue-bg)" : "transparent",
+          boxShadow: isDropDay ? `inset 0 0 0 2px ${C.blue}` : "none",
+          transition: "background-color 0.12s, box-shadow 0.12s",
+          opacity: isOther ? isOtherSelected ? 0.8 : 0.35 : 1
         }
       }, /*#__PURE__*/React.createElement("div", {
         style: {
@@ -4778,22 +4829,33 @@ const MonthView = ({
             opacity: 0.75
           }
         })) : null;
-        // Off-month days always render (they were explicitly clicked into the list)
-        if (sortedTasks.length === 0 && !isSelected && !isT && !isOtherMonth) return weekBreakEl ? /*#__PURE__*/React.createElement(React.Fragment, {
+        // Off-month days always render (they were explicitly clicked into the list).
+        // During an active drag we also keep every in-range day mounted so any
+        // day section can be a drop target — not just days that already have tasks.
+        if (sortedTasks.length === 0 && !isSelected && !isT && !isOtherMonth && !drag) return weekBreakEl ? /*#__PURE__*/React.createElement(React.Fragment, {
           key: `${isOtherMonth ? 'o' : ''}${ds}`
         }, weekBreakEl) : null;
         // For off-month appended days, auto-scroll if this is the offMonthEnd day
         const isEndTarget = offMonthEnd && ds === offMonthEnd || offMonthStart && ds === offMonthStart;
+        const isNarrowDrop = dragDs === ds;
         return /*#__PURE__*/React.createElement("div", {
           key: `${isOtherMonth ? 'o' : ''}${ds}`,
           ref: el => {
             if (isOtherMonth) {
               dayRefs.current['o' + ds] = el;
             } else dayRefs.current[d] = el;
+            registerZone("nl:" + ds, ds)(el);
           },
+          "data-dropday": ds,
           style: {
-            marginBottom: 12,
-            opacity: isOtherMonth ? 0.7 : 1
+            marginBottom: isNarrowDrop ? 10 : 12,
+            opacity: isOtherMonth ? 0.7 : 1,
+            borderRadius: isNarrowDrop ? 12 : 0,
+            padding: isNarrowDrop ? 6 : 0,
+            margin: isNarrowDrop ? "0 -6px 10px" : undefined,
+            background: isNarrowDrop ? "var(--blue-bg)" : "transparent",
+            boxShadow: isNarrowDrop ? `inset 0 0 0 2px ${C.blue}` : "none",
+            transition: "background 0.12s, box-shadow 0.12s"
           }
         }, weekBreakEl, /*#__PURE__*/React.createElement("div", {
           ref: el => {
@@ -4882,7 +4944,9 @@ const MonthView = ({
           key: tk.id,
           t: tk,
           ds: ds,
-          onTaskClick: onTaskClick
+          onTaskClick: onTaskClick,
+          dragHandlers: monthDragHandlers(tk),
+          isDragging: !!drag && drag.id === tk.id
         }))));
       }));
     })());
@@ -4911,7 +4975,7 @@ const MonthView = ({
     style: {
       animation: "fadeIn 0.25s ease"
     }
-  }, navBar, /*#__PURE__*/React.createElement("div", {
+  }, navBar, dragPill, /*#__PURE__*/React.createElement("div", {
     ref: calGridRef,
     onTouchStart: onTouchStart,
     onTouchMove: onTouchMove,
@@ -4948,22 +5012,26 @@ const MonthView = ({
     const isT = !cell.other && cell.date.toDateString() === realToday.toDateString();
     const isCellPast = !cell.other && isCurrentMonth && cell.date < realToday;
     const dayTasks = sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))));
+    const isDropDayW = dragDs === ds;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
+      ref: registerZone("mw:" + ds, ds),
+      "data-dropday": ds,
       onClick: () => onDayClick(ds),
       style: {
         minHeight: 100,
         padding: "8px 6px",
-        background: isT ? C.blueBg : C.card,
+        background: isDropDayW ? "var(--blue-bg)" : isT ? C.blueBg : C.card,
+        boxShadow: isDropDayW ? `inset 0 0 0 2px ${C.blue}` : "none",
         borderRight: (isHe ? i % 7 !== 0 : i % 7 !== 6) ? `1px solid ${C.border}` : "none",
         borderBottom: i < cells.length - 7 ? `1px solid ${C.border}` : "none",
         cursor: "pointer",
-        transition: "background 0.15s",
+        transition: "background 0.15s, box-shadow 0.12s",
         overflow: "hidden",
         minWidth: 0
       },
-      onMouseEnter: e => !isT && (e.currentTarget.style.background = "var(--card2)"),
-      onMouseLeave: e => !isT && (e.currentTarget.style.background = "var(--card)")
+      onMouseEnter: e => !isT && !dragDs && (e.currentTarget.style.background = "var(--card2)"),
+      onMouseLeave: e => !isT && !dragDs && (e.currentTarget.style.background = "var(--card)")
     }, /*#__PURE__*/React.createElement("div", {
       // Opacity for off-month/past dimming lives on this inner wrapper, not the
       // outer cell, so the cell's own borderRight/borderBottom (shared with the
@@ -4991,7 +5059,9 @@ const MonthView = ({
       key: tk.id,
       t: tk,
       ds: ds,
-      onTaskClick: onTaskClick
+      onTaskClick: onTaskClick,
+      dragHandlers: monthDragHandlers(tk),
+      isDragging: !!drag && drag.id === tk.id
     })), dayTasks.length > 3 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
@@ -5002,7 +5072,390 @@ const MonthView = ({
   }))));
 };
 
-//  WEEK VIEW 
+// ─────────────────────────────────────────────────────────────────────────────
+//  SHARED DRAG ENGINE
+// ─────────────────────────────────────────────────────────────────────────────
+// One long-press drag implementation behind drag-to-reschedule in every view:
+// the week grid, by-date, by-type, month, and up-next.
+//
+// Touch vs mouse: touch has to press-and-hold briefly to arm, so an ordinary
+// finger swipe still scrolls the page and each view's own swipe gestures keep
+// working untouched. A mouse arms after a few pixels of movement.
+//
+// Two iOS details this has to get right, both verified empirically:
+//   1. React attaches touchmove as a PASSIVE listener, so preventDefault()
+//      inside an onTouchMove prop is silently ignored ("Unable to preventDefault
+//      inside passive event listener invocation"). Without a non-passive
+//      listener of our own, iOS claims the gesture for scrolling the moment the
+//      finger moves vertically and fires pointercancel, destroying the drag.
+//   2. touch-action is latched when the pointer goes down, so flipping it to
+//      "none" once the long-press arms is too late for that same gesture.
+//      So (1) is the mechanism that actually holds the gesture, not touch-action.
+// Scrolling is still needed mid-drag to reach an off-screen slot, so instead of
+// fighting the browser for it the engine auto-scrolls when the finger nears the
+// top/bottom of the viewport, re-resolving the drop target as content moves
+// underneath. Releasing well outside every drop zone abandons the drop and the
+// task springs back to where it started.
+const DRAG_LONG_PRESS_MS = 220;
+// Module-level, because the app-level view-swipe (Home/Month/Week/List) and
+// pull-to-refresh live above every view and must stand aside while any view's
+// drag owns the gesture. The list views have no intermediate handler of their
+// own to stop propagation at, so a shared flag is the only reliable signal.
+const dragActiveFlag = {
+  current: false,
+  endedAt: 0
+};
+const DRAG_OUTSIDE_MARGIN = 64; // px beyond all zones before a drop is abandoned
+const DRAG_EDGE = 76; // auto-scroll band at the viewport edges
+const DRAG_MAX_SPEED = 16; // px per frame at the very edge
+
+// Nearest scrollable ancestor, or null to scroll the window itself.
+const findDragScroller = el => {
+  let n = el && el.parentElement;
+  while (n && n !== document.body && n !== document.documentElement) {
+    const s = getComputedStyle(n);
+    if (/(auto|scroll)/.test(s.overflowY) && n.scrollHeight > n.clientHeight + 4) return n;
+    n = n.parentElement;
+  }
+  return null;
+};
+
+// resolve(zoneData, x, y, rect, dragRef) -> payload | null
+// commit(taskId, payload, task) -> void
+// pillLabel(payload) -> string shown in the floating readout
+// isLocked(task) -> true to make a task undraggable
+function useTaskDragEngine({
+  resolve,
+  commit,
+  pillLabel,
+  isLocked
+}) {
+  const [drag, setDrag] = useState(null);
+  const dragRef = useRef({
+    active: false,
+    armed: false,
+    id: null,
+    task: null,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    grabDy: 0,
+    moved: false,
+    isTouch: false,
+    lpTimer: null,
+    scroller: null,
+    meta: null
+  });
+  const zonesRef = useRef(new Map());
+  const autoRef = useRef({
+    raf: 0,
+    vy: 0,
+    x: 0,
+    y: 0
+  });
+  const justDraggedRef = useRef(0);
+  const pointerOkRef = useRef(false);
+
+  // (1) above — the listener that actually stops iOS stealing the drag.
+  useEffect(() => {
+    const block = e => {
+      if (dragRef.current.active && e.cancelable) e.preventDefault();
+    };
+    document.addEventListener("touchmove", block, {
+      passive: false
+    });
+    return () => document.removeEventListener("touchmove", block, {
+      passive: false
+    });
+  }, []);
+
+  // Views attach this as a ref on each drop zone.
+  const registerZone = (key, data) => el => {
+    if (el) zonesRef.current.set(key, {
+      el,
+      data
+    });else zonesRef.current.delete(key);
+  };
+
+  const hitTest = (x, y) => {
+    let best = null,
+      bestDist = Infinity,
+      bounds = null;
+    for (const [key, z] of zonesRef.current) {
+      if (!z.el || !z.el.getBoundingClientRect) continue;
+      const r = z.el.getBoundingClientRect();
+      if (!r.width && !r.height) continue;
+      bounds = bounds ? {
+        left: Math.min(bounds.left, r.left),
+        right: Math.max(bounds.right, r.right),
+        top: Math.min(bounds.top, r.top),
+        bottom: Math.max(bounds.bottom, r.bottom)
+      } : {
+        left: r.left,
+        right: r.right,
+        top: r.top,
+        bottom: r.bottom
+      };
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return {
+        key,
+        z,
+        r
+      };
+      const cx = Math.max(r.left, Math.min(x, r.right)),
+        cy = Math.max(r.top, Math.min(y, r.bottom));
+      const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+      if (d < bestDist) {
+        bestDist = d;
+        best = {
+          key,
+          z,
+          r
+        };
+      }
+    }
+    if (!best || !bounds) return null;
+    // Reaching into the auto-scroll band at the top/bottom of the screen is a
+    // deliberate "scroll me further" gesture, and that band usually sits outside
+    // the zones — so never read it as abandoning the drop. Clamp to the nearest
+    // zone instead, otherwise edge-scrolling would arm a cancel.
+    // Only while the finger is still horizontally over the zones — on a phone the
+    // grid fills the width, so exempting the whole band would make it impossible
+    // to ever abandon a drop.
+    const overZonesX = x >= bounds.left && x <= bounds.right;
+    const inScrollBand = overZonesX && (y < DRAG_EDGE || y > window.innerHeight - DRAG_EDGE);
+    if (!inScrollBand && (x < bounds.left - DRAG_OUTSIDE_MARGIN || x > bounds.right + DRAG_OUTSIDE_MARGIN || y < bounds.top - DRAG_OUTSIDE_MARGIN || y > bounds.bottom + DRAG_OUTSIDE_MARGIN)) return null;
+    return best;
+  };
+
+  const resolveAt = (x, y) => {
+    const hit = hitTest(x, y);
+    if (!hit) return null;
+    const payload = resolve(hit.z.data, x, y, hit.r, dragRef.current);
+    return payload ? {
+      ...payload,
+      _zone: hit.key
+    } : null;
+  };
+
+  const stopAuto = () => {
+    const a = autoRef.current;
+    if (a.raf) cancelAnimationFrame(a.raf);
+    a.raf = 0;
+    a.vy = 0;
+  };
+  const autoTick = () => {
+    const a = autoRef.current;
+    if (!dragRef.current.active) {
+      stopAuto();
+      return;
+    }
+    if (a.vy) {
+      const sc = dragRef.current.scroller;
+      if (sc) sc.scrollTop += a.vy;else window.scrollBy(0, a.vy);
+      const p = resolveAt(a.x, a.y);
+      setDrag(prev => prev ? {
+        ...prev,
+        payload: p,
+        outside: !p
+      } : prev);
+    }
+    a.raf = requestAnimationFrame(autoTick);
+  };
+  const updateAuto = (x, y) => {
+    const a = autoRef.current;
+    a.x = x;
+    a.y = y;
+    const vh = window.innerHeight;
+    if (y < DRAG_EDGE) a.vy = -Math.max(1, Math.round(DRAG_MAX_SPEED * (1 - y / DRAG_EDGE)));else if (y > vh - DRAG_EDGE) a.vy = Math.max(1, Math.round(DRAG_MAX_SPEED * (1 - (vh - y) / DRAG_EDGE)));else a.vy = 0;
+    if (!a.raf) a.raf = requestAnimationFrame(autoTick);
+  };
+
+  const finishDrag = (doCommit, x, y) => {
+    const d = dragRef.current;
+    if (d.lpTimer) {
+      clearTimeout(d.lpTimer);
+      d.lpTimer = null;
+    }
+    stopAuto();
+    const didDrag = d.active && d.moved;
+    if (doCommit && didDrag) {
+      const p = resolveAt(x, y);
+      if (p) {
+        commit(d.id, p, d.task);
+        if (navigator.vibrate) navigator.vibrate(12);
+      }
+    }
+    if (didDrag) justDraggedRef.current = Date.now();
+    if (dragActiveFlag.current) dragActiveFlag.endedAt = Date.now();
+    dragActiveFlag.current = false;
+    d.active = false;
+    d.armed = false;
+    d.id = null;
+    d.task = null;
+    d.pointerId = null;
+    d.moved = false;
+    d.scroller = null;
+    d.meta = null;
+    d.standDown = false;
+    d.lastY = null;
+    setDrag(null);
+    return didDrag;
+  };
+
+  const beginActive = (task, meta, x, y) => {
+    dragActiveFlag.current = true;
+    const p = resolveAt(x, y);
+    setDrag({
+      id: task.id,
+      payload: p,
+      outside: !p,
+      meta,
+      px: x,
+      py: y
+    });
+  };
+
+  // onTap fires only for a genuine tap (no drag happened).
+  const dragHandlersFor = (task, meta, onTap) => {
+    if (isLocked && isLocked(task)) return {};
+    return {
+      onPointerDown: e => {
+        if (e.button != null && e.button !== 0) return;
+        pointerOkRef.current = true;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const isTouch = e.pointerType === "touch";
+        const d = dragRef.current;
+        d.active = false;
+        d.armed = !isTouch;
+        d.id = task.id;
+        d.task = task;
+        d.pointerId = e.pointerId;
+        d.startX = e.clientX;
+        d.startY = e.clientY;
+        d.grabDy = e.clientY - rect.top;
+        d.moved = false;
+        d.isTouch = isTouch;
+        d.meta = meta || null;
+        d.scroller = findDragScroller(e.currentTarget);
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch (err) {}
+        if (isTouch) {
+          d.lpTimer = setTimeout(() => {
+            const cur = dragRef.current;
+            if (cur.id !== task.id || cur.moved) return;
+            cur.lpTimer = null;
+            cur.active = true;
+            cur.armed = true;
+            if (navigator.vibrate) navigator.vibrate(8);
+            beginActive(task, meta, cur.startX, cur.startY);
+          }, DRAG_LONG_PRESS_MS);
+        }
+      },
+      onPointerMove: e => {
+        const d = dragRef.current;
+        if (d.id !== task.id) return;
+        const dist = Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY);
+        if (!d.active) {
+          if (d.isTouch) {
+            // Moved before the hold armed → this is a scroll or a view swipe,
+            // not a drag. Stand down (but keep receiving moves, see below).
+            if (dist > 10 && d.lpTimer) {
+              clearTimeout(d.lpTimer);
+              d.lpTimer = null;
+              d.standDown = true;
+              d.lastY = e.clientY;
+            }
+            // Draggable items must carry touch-action:none, because that value is
+            // latched when the finger lands and it is the only thing that stops
+            // iOS committing the gesture to a compositor scroll (which makes
+            // later touchmoves non-cancelable and fires pointercancel, killing
+            // the drag). The cost is that the browser won't scroll for us here,
+            // so for a clearly vertical gesture we scroll by hand — otherwise
+            // you could no longer scroll by starting on a task. Horizontal is
+            // left alone for the view's own swipe handler.
+            if (d.standDown && Math.abs(e.clientY - d.startY) > Math.abs(e.clientX - d.startX)) {
+              const dy = e.clientY - (d.lastY == null ? e.clientY : d.lastY);
+              d.lastY = e.clientY;
+              if (dy) {
+                const sc = d.scroller;
+                if (sc) sc.scrollTop -= dy;else window.scrollBy(0, -dy);
+              }
+            }
+            return;
+          }
+          if (!d.armed || dist <= 4) return;
+          d.active = true;
+          beginActive(task, meta, e.clientX, e.clientY);
+        }
+        d.moved = true;
+        if (e.cancelable) e.preventDefault();
+        updateAuto(e.clientX, e.clientY);
+        const p = resolveAt(e.clientX, e.clientY);
+        setDrag(prev => {
+          const sameZone = prev && prev.payload && p && prev.payload._zone === p._zone;
+          if (prev && !prev.outside === !!p && sameZone && JSON.stringify(prev.payload) === JSON.stringify(p) && prev.px === e.clientX && prev.py === e.clientY) return prev;
+          if (prev && p && (!prev.payload || prev.payload._zone !== p._zone) && navigator.vibrate) navigator.vibrate(5);
+          return {
+            id: task.id,
+            payload: p,
+            outside: !p,
+            meta,
+            px: e.clientX,
+            py: e.clientY
+          };
+        });
+      },
+      onPointerUp: e => {
+        const d = dragRef.current;
+        if (d.id !== task.id) return;
+        const stoodDown = !!d.standDown; // scrolled/swiped instead — not a tap
+        const didDrag = finishDrag(true, e.clientX, e.clientY);
+        if (!didDrag && !stoodDown && onTap) onTap(task);
+      },
+      onPointerCancel: () => {
+        if (dragRef.current.id === task.id) finishDrag(false);
+      }
+    };
+  };
+
+  // Floating readout. Portalled to <body> because an ancestor carries a
+  // transform, which would otherwise become the containing block for a
+  // position:fixed element and offset it.
+  const isHeDrag = getLang() === "he";
+  const dragPill = drag ? /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      left: drag.px,
+      top: drag.py - 48,
+      transform: "translateX(-50%)",
+      zIndex: 9999,
+      pointerEvents: "none",
+      background: drag.outside ? "var(--rose)" : C.blue,
+      color: "#fff",
+      padding: "5px 11px",
+      borderRadius: 14,
+      fontSize: 11.5,
+      fontWeight: 700,
+      whiteSpace: "nowrap",
+      letterSpacing: "0.01em",
+      boxShadow: "0 6px 20px rgba(0,0,0,0.3)"
+    }
+  }, drag.outside ? isHeDrag ? "בטל" : "Cancel" : pillLabel(drag.payload, drag.meta)), document.body) : null;
+
+  return {
+    drag,
+    dragRef,
+    dragHandlersFor,
+    registerZone,
+    dragPill,
+    justDraggedRef,
+    pointerOkRef,
+    dragScrollActive: !!drag
+  };
+}
+
+//  WEEK VIEW
 // Lay out a single day's timed tasks into non-overlapping lanes (for the week diary grid).
 // Returns each item with {task, start, end, lane, laneCount} in minutes-from-midnight.
 const layoutDayTasks = dayTasks => {
@@ -5067,216 +5520,54 @@ const WeekView = ({
   const scrollRef = useRef();
   const isHe = getLang() === "he";
 
-  // ── Drag-to-reschedule state ────────────────────────────────────────────────
-  // One pointer-event path drives both mouse (Chrome/desktop) and touch (iOS).
-  // Touch requires a long-press to arm, so a normal finger swipe still scrolls
-  // the page; a mouse arms on a few px of movement.
+  // ── Drag-to-reschedule (shared engine) ──────────────────────────────────────
+  // Zones are the seven day columns; the resolver turns the pointer's y inside a
+  // column into a 15-minute-snapped start time, keeping the grab offset so the
+  // block doesn't jump under the finger.
   const DRAG_SNAP_MIN = 15;
-  const DRAG_LONG_PRESS_MS = 220;
-  const [drag, setDrag] = useState(null); // {id, ds, mins, dur, px, py}
-  const dragRef = useRef({
-    active: false,
-    armed: false,
-    id: null,
-    pointerId: null,
-    startX: 0,
-    startY: 0,
-    grabDy: 0,
-    moved: false,
-    isTouch: false,
-    lpTimer: null,
-    origDs: "",
-    origTime: "",
-    dur: 60
-  });
-  // Geometry the pointer handlers need, refreshed on every render from inside
-  // the grid IIFE (where DAY_START / pxPerMin / the day list actually exist).
-  const dragMetaRef = useRef(null);
-  const colRefs = useRef([]);
-  const justDraggedRef = useRef(0);
-  const pointerOkRef = useRef(false);
-
   const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared);
   const minsToTime = mins => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(Math.floor(mins % 60)).padStart(2, "0")}`;
-
-  // Map a viewport point to {ds, mins} snapped to the grid.
-  const dragTargetAt = (clientX, clientY) => {
-    const meta = dragMetaRef.current;
-    if (!meta) return null;
-    const cols = colRefs.current;
-    let rect = null,
-      idx = -1;
-    for (let i = 0; i < cols.length; i++) {
-      if (!cols[i]) continue;
-      const r = cols[i].getBoundingClientRect();
-      if (clientX >= r.left && clientX <= r.right) {
-        idx = i;
-        rect = r;
-        break;
-      }
-    }
-    if (idx === -1) {
-      // Pointer is outside the columns horizontally — snap to the nearest one.
-      let bestDist = Infinity;
-      for (let i = 0; i < cols.length; i++) {
-        if (!cols[i]) continue;
-        const r = cols[i].getBoundingClientRect();
-        const dist = Math.abs(clientX - (r.left + r.right) / 2);
-        if (dist < bestDist) {
-          bestDist = dist;
-          idx = i;
-          rect = r;
-        }
-      }
-    }
-    if (idx === -1 || !rect || !meta.dsList[idx]) return null;
-    const dur = dragRef.current.dur || 60;
-    const topPx = clientY - dragRef.current.grabDy - rect.top;
-    let mins = meta.DAY_START * 60 + topPx / meta.pxPerMin;
-    mins = Math.round(mins / DRAG_SNAP_MIN) * DRAG_SNAP_MIN;
-    mins = Math.min(mins, meta.DAY_END * 60 - dur);
-    mins = Math.max(mins, meta.DAY_START * 60);
-    return {
-      ds: meta.dsList[idx],
-      mins
-    };
+  const timeToMins = s => {
+    const [hh, mm] = (s || "0:0").split(":").map(Number);
+    return (hh || 0) * 60 + (mm || 0);
   };
+  // Geometry the resolver needs, refreshed each render from inside the grid IIFE
+  // (where DAY_START / pxPerMin actually exist).
+  const dragMetaRef = useRef(null);
 
-  const finishDrag = (commit, clientX, clientY) => {
-    const d = dragRef.current;
-    if (d.lpTimer) {
-      clearTimeout(d.lpTimer);
-      d.lpTimer = null;
+  const {
+    drag,
+    dragRef,
+    dragHandlersFor,
+    registerZone,
+    dragPill,
+    justDraggedRef,
+    pointerOkRef
+  } = useTaskDragEngine({
+    isLocked: isDragLocked,
+    resolve: (ds, x, y, rect, d) => {
+      const g = dragMetaRef.current;
+      if (!g) return null;
+      const dur = d.meta && d.meta.dur || 60;
+      let mins = g.DAY_START * 60 + (y - d.grabDy - rect.top) / g.pxPerMin;
+      mins = Math.round(mins / DRAG_SNAP_MIN) * DRAG_SNAP_MIN;
+      mins = Math.min(mins, g.DAY_END * 60 - dur);
+      mins = Math.max(mins, g.DAY_START * 60);
+      return { ds, mins };
+    },
+    commit: (id, p) => onReschedule && onReschedule(id, p.ds, minsToTime(p.mins)),
+    pillLabel: p => {
+      if (!p) return "";
+      const d = new Date(p.ds + "T00:00:00");
+      const dow = isNaN(d.getTime()) ? "" : getDaysShort()[d.getDay()] + " ";
+      return dow + minsToTime(p.mins);
     }
-    const didDrag = d.active && d.moved;
-    if (commit && didDrag) {
-      const t = dragTargetAt(clientX, clientY);
-      if (t) {
-        const newTime = minsToTime(t.mins);
-        if ((t.ds !== d.origDs || newTime !== d.origTime) && onReschedule) {
-          onReschedule(d.id, t.ds, newTime);
-          if (navigator.vibrate) navigator.vibrate(12);
-        }
-      }
-    }
-    if (didDrag) justDraggedRef.current = Date.now();
-    d.active = false;
-    d.armed = false;
-    d.id = null;
-    d.pointerId = null;
-    d.moved = false;
-    setDrag(null);
-    return didDrag;
-  };
+  });
 
-  // Abandon any in-flight drag if the week is navigated away underneath it.
+  // Abandon an in-flight drag if the week navigates underneath it.
   useEffect(() => {
-    if (dragRef.current.id) finishDrag(false);
+    if (dragRef.current.id) dragRef.current.active = false;
   }, [curDate]);
-
-  const dragHandlersFor = tk => {
-    if (isDragLocked(tk)) return {};
-    return {
-      onPointerDown: e => {
-        if (e.button != null && e.button !== 0) return;
-        pointerOkRef.current = true;
-        const rect = e.currentTarget.getBoundingClientRect();
-        const isTouch = e.pointerType === "touch";
-        const dur = getTaskLength(tk) || 60;
-        const d = dragRef.current;
-        d.active = false;
-        d.armed = !isTouch;
-        d.id = tk.id;
-        d.pointerId = e.pointerId;
-        d.startX = e.clientX;
-        d.startY = e.clientY;
-        d.grabDy = e.clientY - rect.top;
-        d.moved = false;
-        d.isTouch = isTouch;
-        d.origDs = tk.date || "";
-        d.origTime = tk.time || "";
-        d.dur = dur;
-        try {
-          e.currentTarget.setPointerCapture(e.pointerId);
-        } catch (err) {}
-        if (isTouch) {
-          d.lpTimer = setTimeout(() => {
-            const cur = dragRef.current;
-            if (cur.id !== tk.id || cur.moved) return;
-            cur.lpTimer = null;
-            cur.active = true;
-            cur.armed = true;
-            if (navigator.vibrate) navigator.vibrate(8);
-            setDrag({
-              id: tk.id,
-              ds: tk.date,
-              mins: (() => {
-                const [hh, mm] = (tk.time || "0:0").split(":").map(Number);
-                return (hh || 0) * 60 + (mm || 0);
-              })(),
-              dur,
-              px: cur.startX,
-              py: cur.startY
-            });
-          }, DRAG_LONG_PRESS_MS);
-        }
-      },
-      onPointerMove: e => {
-        const d = dragRef.current;
-        if (d.id !== tk.id) return;
-        const dist = Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY);
-        if (!d.active) {
-          if (d.isTouch) {
-            // Finger moved before the long-press armed → treat as a scroll.
-            if (dist > 10 && d.lpTimer) {
-              clearTimeout(d.lpTimer);
-              d.lpTimer = null;
-              d.id = null;
-            }
-            return;
-          }
-          if (!d.armed || dist <= 4) return;
-          d.active = true;
-          setDrag({
-            id: tk.id,
-            ds: tk.date,
-            mins: (() => {
-              const [hh, mm] = (tk.time || "0:0").split(":").map(Number);
-              return (hh || 0) * 60 + (mm || 0);
-            })(),
-            dur: d.dur,
-            px: e.clientX,
-            py: e.clientY
-          });
-        }
-        d.moved = true;
-        if (e.cancelable) e.preventDefault();
-        const t = dragTargetAt(e.clientX, e.clientY);
-        if (!t) return;
-        setDrag(prev => {
-          if (prev && prev.ds === t.ds && prev.mins === t.mins && prev.px === e.clientX && prev.py === e.clientY) return prev;
-          if (prev && prev.ds !== t.ds && navigator.vibrate) navigator.vibrate(5);
-          return {
-            id: tk.id,
-            ds: t.ds,
-            mins: t.mins,
-            dur: d.dur,
-            px: e.clientX,
-            py: e.clientY
-          };
-        });
-      },
-      onPointerUp: e => {
-        const d = dragRef.current;
-        if (d.id !== tk.id) return;
-        const didDrag = finishDrag(true, e.clientX, e.clientY);
-        if (!didDrag) onTaskClick(tk);
-      },
-      onPointerCancel: () => {
-        if (dragRef.current.id === tk.id) finishDrag(false);
-      }
-    };
-  };
 
   // ── Swipe state for left/right → previous/next week (wide grid only) ──
   const swipeRef = useRef({
@@ -5331,7 +5622,10 @@ const WeekView = ({
     setSwipeDx(dx);
   };
   const onGridTouchEnd = e => {
-    if (dragRef.current.id || Date.now() - justDraggedRef.current < 350) {
+    // Only a real, completed drag suppresses the swipe commit. dragRef.id stays
+    // set through a stood-down gesture (so scroll synthesis keeps working), so
+    // gating on it here would break swiping that starts on a task block.
+    if (dragRef.current.active || Date.now() - justDraggedRef.current < 350) {
       e.stopPropagation();
       return;
     }
@@ -5444,12 +5738,11 @@ const WeekView = ({
     const hoursArr = Array.from({
       length: DAY_END - DAY_START
     }, (_, i) => DAY_START + i);
-    // Hand the pointer handlers the geometry they can't see from outside here.
+    // Hand the drag resolver the geometry it can't see from outside here.
     dragMetaRef.current = {
       DAY_START,
       DAY_END,
-      pxPerMin,
-      dsList: dayData.map(d => d.ds)
+      pxPerMin
     };
 
     // --- header row (day-of-week + date number) ---
@@ -5675,7 +5968,9 @@ const WeekView = ({
       const beingDragged = drag && drag.id === tk.id;
       return /*#__PURE__*/React.createElement("div", {
         key: tk.id,
-        ...dragHandlersFor(tk),
+        ...dragHandlersFor(tk, {
+          dur: getTaskLength(tk) || 60
+        }, onTaskClick),
         onClick: e => {
           e.stopPropagation();
           // Pointer events already decided tap-vs-drag; only fall back to
@@ -5694,7 +5989,10 @@ const WeekView = ({
           fontSize: 10.5,
           fontWeight: 500,
           cursor: locked ? "pointer" : beingDragged ? "grabbing" : "grab",
-          touchAction: beingDragged ? "none" : "pan-y",
+          // Must be "none" from the start on draggable blocks — see the engine
+          // note: this value is latched when the finger lands, and anything that
+          // permits a vertical pan lets iOS cancel the drag.
+          touchAction: locked ? "pan-y" : "none",
           WebkitTouchCallout: "none",
           userSelect: "none",
           overflow: "hidden",
@@ -5737,12 +6035,12 @@ const WeekView = ({
         }
       })) : null;
       const blocks = timed.map(taskBlock);
-      const isDropTarget = !!drag && drag.ds === ds;
+      const isDropTarget = !!drag && !drag.outside && drag.payload && drag.payload.ds === ds;
       const dropPreview = isDropTarget ? /*#__PURE__*/React.createElement("div", {
         style: {
           position: "absolute",
-          top: (drag.mins - DAY_START * 60) * pxPerMin,
-          height: Math.max((drag.dur || 60) * pxPerMin - 1, 18),
+          top: (drag.payload.mins - DAY_START * 60) * pxPerMin,
+          height: Math.max((drag.meta && drag.meta.dur || 60) * pxPerMin - 1, 18),
           insetInlineStart: 1.5,
           insetInlineEnd: 1.5,
           borderRadius: 6,
@@ -5758,12 +6056,10 @@ const WeekView = ({
           color: C.blue,
           overflow: "hidden"
         }
-      }, minsToTime(drag.mins)) : null;
+      }, minsToTime(drag.payload.mins)) : null;
       return /*#__PURE__*/React.createElement("div", {
         key: i,
-        ref: el => {
-          colRefs.current[i] = el;
-        },
+        ref: registerZone("col" + i, ds),
         onClick: e => {
           if (e.target !== e.currentTarget) return;
           // Don't open "new task" on the click that ends a drag.
@@ -5814,32 +6110,6 @@ const WeekView = ({
         willChange: "transform"
       }
     }, untimedTray, scrollWrap);
-    // Floating readout so the target time stays visible under a fingertip.
-    // Portalled to <body>: an ancestor carries a transform, which would
-    // otherwise become the containing block and offset this fixed element.
-    const dragPill = drag ? /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
-      style: {
-        position: "fixed",
-        left: drag.px,
-        top: drag.py - 48,
-        transform: "translateX(-50%)",
-        zIndex: 9999,
-        pointerEvents: "none",
-        background: C.blue,
-        color: "#fff",
-        padding: "5px 11px",
-        borderRadius: 14,
-        fontSize: 11.5,
-        fontWeight: 700,
-        whiteSpace: "nowrap",
-        letterSpacing: "0.01em",
-        boxShadow: "0 6px 20px rgba(0,0,0,0.3)"
-      }
-    }, (() => {
-      const d = new Date(drag.ds + "T00:00:00");
-      const dow = isNaN(d.getTime()) ? "" : getDaysShort()[d.getDay()] + " ";
-      return dow + minsToTime(drag.mins);
-    })()), document.body) : null;
     return /*#__PURE__*/React.createElement(React.Fragment, null, headerRow, swipeWrap, dragPill);
   })());
 };
@@ -5892,8 +6162,26 @@ const ListByDate = ({
   onDelay,
   onRename,
   onQuickAdd,
-  newlyAddedIds
+  newlyAddedIds,
+  onDropDate
 }) => {
+  // Drag a card onto another date group to move it to that date.
+  const {
+    drag,
+    dragHandlersFor,
+    registerZone,
+    dragPill
+  } = useTaskDragEngine({
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
+    resolve: ds => ({ ds }),
+    commit: (id, p) => onDropDate && onDropDate(id, p.ds),
+    pillLabel: p => {
+      if (!p) return "";
+      const d = new Date(p.ds + "T00:00:00");
+      if (isNaN(d.getTime())) return p.ds;
+      return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", { month: "short", day: "numeric" });
+    }
+  });
   const [quickInputs, setQuickInputs] = useState({});
   const [activeDate, setActiveDate] = useState(null);
   const [visibleCount, setVisibleCount] = useState(20);
@@ -6181,7 +6469,15 @@ const ListByDate = ({
         }
       }, new Date(k + "T00:00:00").toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
         weekday: "long"
-      }))), sortGroup(groups[k]).map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
+      }))), /*#__PURE__*/React.createElement("div", {
+        ref: registerZone("d:" + k, k),
+        style: {
+          borderRadius: 12,
+          transition: "background-color 0.12s, box-shadow 0.12s",
+          background: drag && !drag.outside && drag.payload && drag.payload.ds === k ? "var(--blue-bg)" : "transparent",
+          boxShadow: drag && !drag.outside && drag.payload && drag.payload.ds === k ? `inset 0 0 0 2px ${C.blue}` : "none"
+        }
+      }, sortGroup(groups[k]).map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
         key: task.id,
         task: task,
         justSynced: !!(window.__newTaskIds && window.__newTaskIds.has(task.id)),
@@ -6191,9 +6487,11 @@ const ListByDate = ({
         onCancel: onCancel,
         onDelay: onDelay,
         onRename: onRename,
+        dragHandlers: dragHandlersFor(task, null, null),
+        isDragging: !!drag && drag.id === task.id,
         delay: i * 0.04,
         hideDateTag: true
-      })), /*#__PURE__*/React.createElement("div", {
+      }))), /*#__PURE__*/React.createElement("div", {
         style: {
           overflow: "hidden",
           height: activeDate === k || (quickInputs[k] || "").trim() ? "auto" : 0,
@@ -6298,7 +6596,7 @@ const ListByDate = ({
       background: C.blue,
       opacity: 0.5
     }
-  })));
+  })), dragPill);
 };
 const ListByType = ({
   tasks,
@@ -6310,8 +6608,23 @@ const ListByType = ({
   onRenameType,
   onQuickAdd,
   onCollapseAllRef,
-  newlyAddedIds
+  newlyAddedIds,
+  onDropType
 }) => {
+  // Drag a card onto another type group to change its type. Both the header and
+  // the card area register as zones, so a collapsed group is still a target.
+  const {
+    drag,
+    dragHandlersFor,
+    registerZone,
+    dragPill
+  } = useTaskDragEngine({
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
+    resolve: type => ({ type }),
+    commit: (id, p) => onDropType && onDropType(id, p.type),
+    pillLabel: p => p ? getTypeMeta(p.type).label : ""
+  });
+  const dragType = drag && !drag.outside && drag.payload ? drag.payload.type : null;
   const [quickInputs, setQuickInputs] = useState({});
   const inputRefs = useRef({});
   const [editingType, setEditingType] = useState(null);
@@ -6539,6 +6852,7 @@ const ListByType = ({
         height: 0
       }
     }), /*#__PURE__*/React.createElement("div", {
+      ref: registerZone("ty-h:" + type, type),
       onClick: () => editingType !== type && toggleCollapsed(type),
       style: {
         display: "flex",
@@ -6547,12 +6861,12 @@ const ListByType = ({
         marginBottom: collapsed_ ? 0 : 12,
         padding: "10px 14px",
         borderRadius: 10,
-        background: m.bg,
-        border: `1px solid ${editingType === type ? m.color : m.border}`,
+        background: dragType === type ? m.border : m.bg,
+        border: `1px solid ${dragType === type ? m.color : editingType === type ? m.color : m.border}`,
         cursor: editingType === type ? "default" : "pointer",
         userSelect: "none",
-        transition: "margin 0.3s ease, border-color 0.15s",
-        boxShadow: editingType === type ? `0 0 0 2px ${m.color}33` : "none"
+        transition: "margin 0.3s ease, border-color 0.15s, background-color 0.12s",
+        boxShadow: dragType === type ? `0 0 0 2px ${m.color}` : editingType === type ? `0 0 0 2px ${m.color}33` : "none"
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -6633,8 +6947,12 @@ const ListByType = ({
         transition: "opacity 0.25s ease"
       }
     }, /*#__PURE__*/React.createElement("div", {
+      ref: registerZone("ty:" + type, type),
       style: {
-        paddingTop: 4
+        paddingTop: 4,
+        borderRadius: 12,
+        transition: "background-color 0.12s",
+        background: dragType === type ? m.bg : "transparent"
       }
     }, entries.map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
       key: task.id,
@@ -6645,6 +6963,8 @@ const ListByType = ({
       onCancel: onCancel,
       onDelay: onDelay,
       onRename: onRename,
+      dragHandlers: dragHandlersFor(task, null, null),
+      isDragging: !!drag && drag.id === task.id,
       delay: i * 0.04,
       hideTypeBadge: true,
       isNew: !!(newlyAddedIds && newlyAddedIds.has(task.id))
@@ -6707,7 +7027,7 @@ const ListByType = ({
         borderRadius: 6
       }
     }, "↵ Enter"))))));
-  }));
+  }), dragPill);
 };
 const EmptyState = () => /*#__PURE__*/React.createElement("div", {
   style: {
@@ -9849,8 +10169,29 @@ const Dashboard = ({
   filteredCharts,
   setFilteredCharts,
   prefLookahead = true,
-  newlyAddedIds
+  newlyAddedIds,
+  onDropDate
 }) => {
+  // Up Next drag: move a task between the Today and Tomorrow sections (and out
+  // of Overdue into either). Overdue itself is a drag source only — "overdue"
+  // isn't a single date, so there is nothing sensible to drop onto it.
+  const {
+    drag: upDrag,
+    dragHandlersFor: upDragHandlersFor,
+    registerZone: upRegisterZone,
+    dragPill: upDragPill
+  } = useTaskDragEngine({
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
+    resolve: ds => ds ? ({ ds }) : null,
+    commit: (id, p) => onDropDate && onDropDate(id, p.ds),
+    pillLabel: p => {
+      if (!p) return "";
+      const d = new Date(p.ds + "T00:00:00");
+      if (isNaN(d.getTime())) return p.ds;
+      return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", { month: "short", day: "numeric" });
+    }
+  });
+  const upDragDs = upDrag && !upDrag.outside && upDrag.payload ? upDrag.payload.ds : null;
   const tds = todayStr();
   const completedCount = tasks.filter(t => isDone(t)).length;
   const cancelledCount = tasks.filter(t => isCancelled(t)).length;
@@ -9911,6 +10252,8 @@ const Dashboard = ({
   nowDay.setHours(0, 0, 0, 0);
   const todayDsNow = localDs(nowDay);
   const tomorrowDs = localDs(new Date(nowDay.getFullYear(), nowDay.getMonth(), nowDay.getDate() + 1));
+  const yesterdayDs = localDs(new Date(nowDay.getFullYear(), nowDay.getMonth(), nowDay.getDate() - 1));
+  const isOverdueDrop = upDragDs === yesterdayDs;
   const days = [{
     ds: todayDsNow,
     label: t("today"),
@@ -10183,8 +10526,15 @@ const Dashboard = ({
         color: C.text
       }
     }, t("upNext"))), overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
+      "data-dropday": yesterdayDs,
       style: {
-        marginBottom: 16
+        marginBottom: isOverdueDrop ? 10 : 16,
+        borderRadius: isOverdueDrop ? 12 : 0,
+        padding: isOverdueDrop ? 6 : 0,
+        margin: isOverdueDrop ? "-6px -6px 10px" : undefined,
+        background: isOverdueDrop ? C.redBg : "transparent",
+        boxShadow: isOverdueDrop ? `inset 0 0 0 2px ${C.red}` : "none",
+        transition: "background-color 0.12s, box-shadow 0.12s"
       }
     }, /*#__PURE__*/React.createElement("div", {
       ref: sentinelOverdue,
@@ -10247,6 +10597,8 @@ const Dashboard = ({
       onCancel: onCancel,
       onDelay: onDelay,
       onRename: onRename,
+      dragHandlers: upDragHandlersFor(tk, null, null),
+      isDragging: !!upDrag && upDrag.id === tk.id,
       delay: i * 0.04,
       hideRecurTag: true
     }))), days.map(({
@@ -10268,11 +10620,25 @@ const Dashboard = ({
         if (a.time !== b.time) return a.time < b.time ? -1 : 1;
         return (a.name || "").localeCompare(b.name || "");
       });
-      if (!dayTasks.length) return null;
+      // While a drag is in flight, keep an empty day section mounted so it can
+      // still be dropped onto — otherwise moving the last task out of Tomorrow
+      // would make Tomorrow un-droppable.
+      const emptyDuringDrag = !dayTasks.length;
+      if (emptyDuringDrag && !upDrag) return null;
+      const isUpDrop = upDragDs === ds;
       return /*#__PURE__*/React.createElement("div", {
         key: ds,
+        ref: upRegisterZone("up:" + ds, ds),
+        "data-dropday": ds,
         style: {
-          marginBottom: 16
+          marginBottom: 16,
+          borderRadius: 12,
+          padding: isUpDrop ? 6 : 0,
+          margin: isUpDrop ? "-6px -6px 10px" : undefined,
+          minHeight: emptyDuringDrag ? 64 : undefined,
+          background: isUpDrop ? "var(--blue-bg)" : emptyDuringDrag ? "var(--card2)" : "transparent",
+          boxShadow: isUpDrop ? `inset 0 0 0 2px ${C.blue}` : emptyDuringDrag ? `inset 0 0 0 1.5px ${C.border2}` : "none",
+          transition: "background-color 0.12s, box-shadow 0.12s"
         }
       }, /*#__PURE__*/React.createElement("div", {
         ref: sentinelKey === "today" ? sentinelToday : sentinelTomorrow,
@@ -10341,11 +10707,13 @@ const Dashboard = ({
         onCancel: onCancel,
         onDelay: onDelay,
         onRename: onRename,
+        dragHandlers: upDragHandlersFor(tk, null, null),
+        isDragging: !!upDrag && upDrag.id === tk.id,
         delay: i * 0.04,
         hideDateTag: true
       })));
     }));
-  })(), /*#__PURE__*/React.createElement("div", {
+  })(), upDragPill, /*#__PURE__*/React.createElement("div", {
     ref: sentinelOverview,
     style: {
       height: 0
@@ -11977,7 +12345,9 @@ const AllTasksView = ({
   onQuickAddDate,
   onQuickAddType,
   collapseAllRef,
-  onRenameType
+  onRenameType,
+  onDropDate,
+  onDropType
 }) => {
   const isHe = getLang() === "he";
   const byDate = activeTab === "date";
@@ -12043,7 +12413,8 @@ const AllTasksView = ({
     onDelay: onDelay,
     onRename: onRename,
     newlyAddedIds: newlyAddedIds,
-    onQuickAdd: onQuickAddDate
+    onQuickAdd: onQuickAddDate,
+    onDropDate: onDropDate
   }) : /*#__PURE__*/React.createElement(ListByType, {
     tasks: tasks.filter(t => !isDone(t) && !isCancelled(t)),
     onToggle: onToggle,
@@ -12054,7 +12425,8 @@ const AllTasksView = ({
     newlyAddedIds: newlyAddedIds,
     onRenameType: onRenameType,
     onQuickAdd: onQuickAddType,
-    onCollapseAllRef: collapseAllRef
+    onCollapseAllRef: collapseAllRef,
+    onDropType: onDropType
   }));
 };
 
@@ -14964,6 +15336,42 @@ function App() {
       } : t);
     });
   };
+  // Drag-to-move in the list/month/up-next views: change only the date, keeping
+  // the task's time of day intact.
+  const handleDropDate = (id, newDate) => {
+    setTasks(ts => {
+      const task = ts.find(t => t.id === id);
+      if (!task) return ts;
+      if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
+      if (task.date === newDate) return ts;
+      return ts.map(t => t.id === id ? {
+        ...t,
+        date: newDate,
+        updated: Date.now()
+      } : t);
+    });
+  };
+  // Drag-to-retype in the by-type view.
+  const handleDropType = (id, newType) => {
+    setTasks(ts => {
+      const task = ts.find(t => t.id === id);
+      if (!task) return ts;
+      if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared || task.source === "google") return ts;
+      if (task.type === newType) return ts;
+      // "repeated" carries a recurrence interval; moving into it needs a sane
+      // default, and moving out of it drops the interval entirely.
+      const patch = {
+        type: newType,
+        updated: Date.now()
+      };
+      if (newType === "repeated" && !task.recur) patch.recur = 7;
+      if (newType !== "repeated" && task.recur) patch.recur = null;
+      return ts.map(t => t.id === id ? {
+        ...t,
+        ...patch
+      } : t);
+    });
+  };
   const handleCompleteFromModal = (task, action) => {
     // Restore from archive (task not in main tasks list)
     if (action === "uncomplete" || action === "uncancel") {
@@ -16174,6 +16582,9 @@ function App() {
     }));
   })()), /*#__PURE__*/React.createElement("div", {
     onTouchStart: e => {
+      // A drag in any view owns the gesture — don't arm the view-swipe or the
+      // pull-to-refresh rubber band underneath it.
+      if (dragActiveFlag.current) return;
       const t = e.touches[0];
       swipeRef.current = {
         startX: t.clientX,
@@ -16192,6 +16603,7 @@ function App() {
       }
     },
     onTouchMove: e => {
+      if (dragActiveFlag.current) return;
       const s = swipeRef.current;
       if (!s.active) return;
       const dx = e.touches[0].clientX - s.startX,
@@ -16212,6 +16624,8 @@ function App() {
       // Pull snap back
       pullRef.current.active = false;
       setPullDist(0);
+      // Don't navigate views on the touch that just finished a drag.
+      if (dragActiveFlag.current || Date.now() - dragActiveFlag.endedAt < 350) return;
       const s = swipeRef.current;
       if (!s.active) return;
       s.active = false;
@@ -16541,7 +16955,8 @@ function App() {
     filteredCharts: filteredCharts,
     setFilteredCharts: setFilteredCharts,
     prefLookahead: prefLookahead,
-    newlyAddedIds: newlyAddedIds
+    newlyAddedIds: newlyAddedIds,
+    onDropDate: handleDropDate
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
     tasks: [...tasks, ...archiveTasks],
     curDate: calDate,
@@ -16552,7 +16967,8 @@ function App() {
     },
     onSelectDay: ds => setCalSelectedDate(ds),
     onTaskClick: openEdit,
-    onResetRef: resetMonthViewRef
+    onResetRef: resetMonthViewRef,
+    onDropDate: handleDropDate
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
     tasks: [...tasks, ...archiveTasks],
     curDate: calDate,
@@ -16568,6 +16984,8 @@ function App() {
     onDelay: handleDelay,
     onRename: handleRename,
     newlyAddedIds: newlyAddedIds,
+    onDropDate: handleDropDate,
+    onDropType: handleDropType,
     activeTab: allTasksTab,
     onTabChange: setAllTasksTabAndSave,
     onQuickAddDate: ({
