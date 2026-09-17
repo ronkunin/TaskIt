@@ -4885,7 +4885,6 @@ const MonthView = ({
         background: isT ? C.blueBg : C.card,
         borderRight: (isHe ? i % 7 !== 0 : i % 7 !== 6) ? `1px solid ${C.border}` : "none",
         borderBottom: i < cells.length - 7 ? `1px solid ${C.border}` : "none",
-        opacity: cell.other ? 0.1 : isCellPast ? 0.9 : 1,
         cursor: "pointer",
         transition: "background 0.15s",
         overflow: "hidden",
@@ -4893,6 +4892,15 @@ const MonthView = ({
       },
       onMouseEnter: e => !isT && (e.currentTarget.style.background = "var(--card2)"),
       onMouseLeave: e => !isT && (e.currentTarget.style.background = "var(--card)")
+    }, /*#__PURE__*/React.createElement("div", {
+      // Opacity for off-month/past dimming lives on this inner wrapper, not the
+      // outer cell, so the cell's own borderRight/borderBottom (shared with the
+      // neighboring cell) always render at full strength. Applying opacity to the
+      // outer cell washed out those shared grid lines, making adjacent in-month
+      // cells look borderless next to an off-month cell.
+      style: {
+        opacity: cell.other ? 0.1 : isCellPast ? 0.9 : 1
+      }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         width: 24,
@@ -4918,7 +4926,7 @@ const MonthView = ({
         color: C.text4,
         paddingLeft: 5
       }
-    }, t("more", dayTasks.length - 3)));
+    }, t("more", dayTasks.length - 3))));
   }))));
 };
 
@@ -15923,9 +15931,12 @@ function App() {
     }, [{
       val: totalActive,
       label: t("activeTasks"),
-      color: dark ? "#93C5FD" : "#3B82F6",
-      bg: dark ? "#1a2d45" : "#EFF6FF",
-      border: dark ? "#2D5A8E" : "#BFDBFE"
+      color: C.blue,
+      // Richer/more saturated than the other tiles' pale bg: blend extra
+      // accent blue into the theme's own blue-bg, so it stays correct across
+      // themes (default/ocean) and light/dark instead of a fixed hex.
+      bg: `color-mix(in srgb, var(--blue) ${dark ? 30 : 22}%, var(--blue-bg))`,
+      border: C.blueBorder
     }, {
       val: weekDone,
       label: t("completedW"),
