@@ -143,7 +143,7 @@
       <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
     </div>
     <div style="animation:htmlSplashFadeIn 0.5s ease 0.1s both;display:flex;flex-direction:column;align-items:center;gap:8px">
-      <div class="splash-title" style="font-size:28px;font-weight:800;letter-spacing:-0.03em;color:#1E3A5F;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">TaskIt</div>
+      <div class="splash-title" style="font-size:28px;font-weight:750;letter-spacing:-0.03em;color:#1E3A5F;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">TaskIt</div>
       <div id="html-splash-sub" class="splash-sub" style="font-size:13px;color:#94A3B8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">Just Task It.</div>
     </div>
     <div style="display:flex;gap:7px;margin-top:4px">
@@ -229,6 +229,7 @@ const {
 
 //  TRANSLATIONS 
 const LANG_KEY = "taskflow_lang";
+const PALETTE_KEY = "taskflow_palette"; // "default" | "vivid"
 const T = {
   en: {
     // Nav & views
@@ -661,23 +662,26 @@ const TYPE_META = {
 };
 
 // Custom type colors -- distinct from built-ins (blue, indigo, teal, sky, amber)
-const CUSTOM_COLORS = ["#EC4899", "#EF4444", "#F97316", "#84CC16", "#10B981", "#8B5CF6", "#06B6D4", "#A78BFA"];
+const CUSTOM_COLORS_DEFAULT = ["#EC4899", "#EF4444", "#F97316", "#84CC16", "#10B981", "#8B5CF6", "#06B6D4", "#A78BFA"];
+// "Bold" palette equivalents -- same hues, deeper/richer, matching the Bold theme
+const CUSTOM_COLORS_VIVID = ["#DB2777", "#DC2626", "#C2410C", "#4D7C0F", "#047857", "#6D28D9", "#0E7490", "#7C3AED"];
+const getCustomColors = () => (typeof window !== "undefined" && window.__palette === "vivid") ? CUSTOM_COLORS_VIVID : CUSTOM_COLORS_DEFAULT;
 // Sequential assignment so <=8 customs never share a color; hash fallback for >8
 const _customColorIndex = {};
 let _customColorCounter = 0;
 const getCustomColorIndex = type => {
   if (_customColorIndex[type] === undefined) {
-    if (_customColorCounter < CUSTOM_COLORS.length) {
+    if (_customColorCounter < getCustomColors().length) {
       _customColorIndex[type] = _customColorCounter++;
     } else {
-      _customColorIndex[type] = Array.from(type).reduce((s, c) => s + c.charCodeAt(0), 0) % CUSTOM_COLORS.length;
+      _customColorIndex[type] = Array.from(type).reduce((s, c) => s + c.charCodeAt(0), 0) % getCustomColors().length;
     }
   }
   return _customColorIndex[type];
 };
 const customTypeMeta = type => {
   const label = type.charAt(0).toUpperCase() + type.slice(1);
-  const color = CUSTOM_COLORS[getCustomColorIndex(type)];
+  const color = getCustomColors()[getCustomColorIndex(type)];
   return {
     label,
     color,
@@ -698,7 +702,7 @@ const getTypeMeta = type => {
   }
   if (type === "google") {
     return {
-      label: getLang() === "he" ? "אירועי גוגל" : "Google Events",
+      label: getLang() === "he" ? "גוגל" : "Google",
       color: GOOGLE_TYPE_COLOR,
       bg: GOOGLE_TYPE_COLOR + "18",
       border: GOOGLE_TYPE_COLOR + "44",
@@ -1415,6 +1419,81 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --cal-other:0.4; --gradient:linear-gradient(160deg,#EFF6FF 0%,#F0F7FF 40%,#FAFCFF 100%);
   --gauge-track:#D4E2F4;
 }
+/* ── "Vivid" color palette — richer, more saturated, less pastel-washed ── */
+:root[data-palette="vivid"]{
+  --bg:#E3EEFF; --bg2:#FFFFFF; --bg3:#EAF2FF; --bg4:#DCEAFF; --bg5:#E3F1FF;
+  --border:#B9D4FF; --border2:#8FB8FF; --border3:#CFE2FF;
+  --text:#0F1B2D; --text2:#33465E; --text3:#5A7189; --text4:#8CA0B3; --text5:#C3D2DF;
+  --card:#FFFFFF; --card2:#EEF5FF; --card3:#E3EFFF;
+  --header:rgba(255,255,255,0.92); --tabbar:rgba(255,255,255,0.97);
+  --blue:#2563EB; --blue-bg:#DCEAFF; --blue-border:#93C0FF;
+  --green:#16A34A; --green-bg:#D8F5E3; --green-border:#7FE0A8;
+  --red:#DC2626; --red-bg:#FEE0E0; --red-border:#FCA5A5;
+  --rose:#9F1239; --rose-bg:#FCE1E7; --rose-border:#FDA4B8;
+  --amber:#D97706; --amber-bg:#FEECC7; --amber-border:#FCD24D;
+  --teal:#0D9488; --teal-bg:#CFF7EF; --teal-border:#5EEAD4;
+  --indigo:#4F46E5; --indigo-bg:#E0DEFE; --indigo-border:#A5B4FC;
+  --sky:#0284C7; --sky-bg:#D6F0FE; --sky-border:#7DD3FC;
+  --shadow:0 1px 4px rgba(0,0,0,0.09); --shadow2:0 4px 16px rgba(37,99,235,0.14);
+  --cal-other:0.45; --gradient:linear-gradient(160deg,#DCEAFF 0%,#E5F0FF 40%,#F2F8FF 100%);
+  --gauge-track:#B9D4FF;
+}
+@media(prefers-color-scheme:dark){
+  :root[data-palette="vivid"]{
+    --bg:#0B1220; --bg2:#141F33; --bg3:#16233A; --bg4:#17263F; --bg5:#101B2C;
+    --border:#25406B; --border2:#2F5486; --border3:#1D3355;
+    --text:#EAF2FF; --text2:#C3D6F0; --text3:#8FADD1; --text4:#5E7FA3; --text5:#3A5473;
+    --card:#141F33; --card2:#1B2A45; --card3:#16233A;
+    --header:rgba(11,18,32,0.92); --tabbar:rgba(11,18,32,0.97);
+    --blue:#3B82F6; --blue-bg:#16294A; --blue-border:#2E5490;
+    --green:#22D66F; --green-bg:#0E3323; --green-border:#1C7A4C;
+    --red:#FF5A5A; --red-bg:#3A1414; --red-border:#8C2222;
+    --rose:#FB6F92; --rose-bg:#361622; --rose-border:#9E2A49;
+    --amber:#FFB020; --amber-bg:#332005; --amber-border:#9A5B06;
+    --teal:#2FE0C7; --teal-bg:#0B2E29; --teal-border:#127A6A;
+    --indigo:#8B7CF8; --indigo-bg:#241D45; --indigo-border:#4A3E96;
+    --sky:#38C6FF; --sky-bg:#0C2C42; --sky-border:#0F6693;
+    --shadow:0 1px 4px rgba(0,0,0,0.45); --shadow2:0 4px 16px rgba(0,0,0,0.35);
+    --cal-other:0.28; --gradient:linear-gradient(160deg,#0B1220 0%,#0B1220 100%);
+    --modal-glass:rgba(11,18,32,0.85); --gauge-track:#233A5C;
+  }
+}
+[data-theme="dark"][data-palette="vivid"]{
+  --bg:#0B1220; --bg2:#141F33; --bg3:#16233A; --bg4:#17263F; --bg5:#101B2C;
+  --border:#25406B; --border2:#2F5486; --border3:#1D3355;
+  --text:#EAF2FF; --text2:#C3D6F0; --text3:#8FADD1; --text4:#5E7FA3; --text5:#3A5473;
+  --card:#141F33; --card2:#1B2A45; --card3:#16233A;
+  --header:rgba(11,18,32,0.92); --tabbar:rgba(11,18,32,0.97);
+  --blue:#3B82F6; --blue-bg:#16294A; --blue-border:#2E5490;
+  --green:#22D66F; --green-bg:#0E3323; --green-border:#1C7A4C;
+  --red:#FF5A5A; --red-bg:#3A1414; --red-border:#8C2222;
+  --rose:#FB6F92; --rose-bg:#361622; --rose-border:#9E2A49;
+  --amber:#FFB020; --amber-bg:#332005; --amber-border:#9A5B06;
+  --teal:#2FE0C7; --teal-bg:#0B2E29; --teal-border:#127A6A;
+  --indigo:#8B7CF8; --indigo-bg:#241D45; --indigo-border:#4A3E96;
+  --sky:#38C6FF; --sky-bg:#0C2C42; --sky-border:#0F6693;
+  --shadow:0 1px 4px rgba(0,0,0,0.45); --shadow2:0 4px 16px rgba(0,0,0,0.35);
+  --cal-other:0.28; --gradient:linear-gradient(160deg,#0B1220 0%,#0B1220 100%);
+  --modal-glass:rgba(11,18,32,0.85); --gauge-track:#233A5C;
+}
+:root[style*="color-scheme: light"][data-palette="vivid"]{
+  --bg:#E3EEFF; --bg2:#FFFFFF; --bg3:#EAF2FF; --bg4:#DCEAFF; --bg5:#E3F1FF;
+  --border:#B9D4FF; --border2:#8FB8FF; --border3:#CFE2FF;
+  --text:#0F1B2D; --text2:#33465E; --text3:#5A7189; --text4:#8CA0B3; --text5:#C3D2DF;
+  --card:#FFFFFF; --card2:#EEF5FF; --card3:#E3EFFF;
+  --header:rgba(255,255,255,0.92); --tabbar:rgba(255,255,255,0.97);
+  --blue:#2563EB; --blue-bg:#DCEAFF; --blue-border:#93C0FF;
+  --green:#16A34A; --green-bg:#D8F5E3; --green-border:#7FE0A8;
+  --red:#DC2626; --red-bg:#FEE0E0; --red-border:#FCA5A5;
+  --rose:#9F1239; --rose-bg:#FCE1E7; --rose-border:#FDA4B8;
+  --amber:#D97706; --amber-bg:#FEECC7; --amber-border:#FCD24D;
+  --teal:#0D9488; --teal-bg:#CFF7EF; --teal-border:#5EEAD4;
+  --indigo:#4F46E5; --indigo-bg:#E0DEFE; --indigo-border:#A5B4FC;
+  --sky:#0284C7; --sky-bg:#D6F0FE; --sky-border:#7DD3FC;
+  --shadow:0 1px 4px rgba(0,0,0,0.09); --shadow2:0 4px 16px rgba(37,99,235,0.14);
+  --cal-other:0.45; --gradient:linear-gradient(160deg,#DCEAFF 0%,#E5F0FF 40%,#F2F8FF 100%);
+  --gauge-track:#B9D4FF;
+}
 html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:4px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -1845,6 +1924,10 @@ const Badge = ({
   small
 }) => {
   const m = getTypeMeta(type);
+  // On the small card tag, the full "אירועי גוגל" / "Google Events" label is too
+  // long for the pill — shorten it to just "גוגל" / "Google" there. Everywhere
+  // else (settings, the edit form header, filters) keeps the full label.
+  const label = small && type === "google" ? (getLang() === "he" ? "גוגל" : "Google") : m.label;
   return /*#__PURE__*/React.createElement("span", {
     style: {
       display: "inline-flex",
@@ -1868,7 +1951,7 @@ const Badge = ({
       background: m.dot,
       flexShrink: 0
     }
-  }), m.label);
+  }), label);
 };
 const OverdueBadge = () => /*#__PURE__*/React.createElement("span", {
   style: {
@@ -2785,7 +2868,13 @@ const Modal = ({
       return;
     }
     setError("");
-    const finalType = form.type === "repeated" && !form.recur ? "regular" : form.type === "calendar" ? "regular" : form.type;
+    const finalType = form.type === "repeated" && !form.recur ? "regular"
+      : form.type === "calendar" ? "regular"
+      // "google" only ever means a real imported event; typing that word by
+      // hand (new task, or editing something that wasn't already one) can't
+      // actually create one, so it falls back to Schedule instead.
+      : form.type === "google" && editTask?.source !== "google" ? "regular"
+      : form.type;
     const finalRecur = form.recur ? parseRecur(form.recur) || null : null;
     const finalLength = form.length === "" || form.length == null ? null : Number(form.length);
     const finalNote = form.note && form.note.trim() ? form.note.trim() : null;
@@ -5108,7 +5197,19 @@ const WeekView = ({
         transform: "translateZ(0)",
         WebkitTransform: "translateZ(0)"
       }
-    }, /*#__PURE__*/React.createElement("div", null), headerCells);
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: narrow ? 8 : 9,
+        fontWeight: 500,
+        color: C.text5,
+        letterSpacing: "0.02em",
+        userSelect: "none"
+      },
+      title: isHe ? `שבוע ${getISOWeekNumber(ws)}` : `Week ${getISOWeekNumber(ws)}`
+    }, getISOWeekNumber(ws)), headerCells);
 
     // --- no-time tray ---
     const untimedChip = tk => {
@@ -5947,7 +6048,11 @@ const ListByType = ({
       if (val && onQuickAdd) {
         onQuickAdd({
           name: val,
-          type: type === "calendar" ? "regular" : type
+          // Holiday and Google-imported groups aren't real types you can file a
+          // new task under — there's nothing on the Google side to attach it to,
+          // and the holiday group is auto-generated — so a task typed there
+          // lands in Schedule (regular) instead.
+          type: type === "calendar" || type === "google" ? "regular" : type
         });
         setQuickInputs(q => ({
           ...q,
@@ -10211,6 +10316,8 @@ const SettingsModal = ({
   darkOverride,
   toggleDark,
   toggleLang,
+  palette,
+  onSetPalette,
   prefIL,
   prefIntl,
   onToggleIL,
@@ -10688,6 +10795,41 @@ const SettingsModal = ({
     onToggle: toggleDark,
     color: "#6366F1"
   })), /*#__PURE__*/React.createElement(Row, {
+    icon: "🎨",
+    label: isHe ? "פלטת צבעים" : "Color Palette",
+    sub: palette === "vivid"
+      ? (isHe ? "נועז — צבעים עזים יותר" : "Bold — richer, punchier colors")
+      : (isHe ? "קלאסי — הצבעים המקוריים" : "Classic — the original colors")
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      borderRadius: 20,
+      border: `1.5px solid ${C.border2}`,
+      padding: 2,
+      flexShrink: 0,
+      background: C.card2
+    }
+  }, [{
+    id: "default",
+    label: isHe ? "קלאסי" : "Classic"
+  }, {
+    id: "vivid",
+    label: isHe ? "נועז" : "Bold"
+  }].map(opt => /*#__PURE__*/React.createElement("button", {
+    key: opt.id,
+    onClick: () => onSetPalette(opt.id),
+    style: {
+      padding: "5px 12px",
+      borderRadius: 18,
+      border: "none",
+      background: (palette || "default") === opt.id ? "linear-gradient(135deg,#3B82F6,#2563EB)" : "transparent",
+      color: (palette || "default") === opt.id ? "#fff" : C.text3,
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: "pointer",
+      transition: "all 0.15s"
+    }
+  }, opt.label)))), /*#__PURE__*/React.createElement(Row, {
     icon: "🌐",
     label: isHe ? "שפה" : "Language",
     sub: isHe ? "עברית / English" : "Hebrew / English"
@@ -10722,7 +10864,24 @@ const SettingsModal = ({
       textTransform: "uppercase",
       margin: "20px 0 4px"
     }
-  }, isHe ? "סנכרון" : "Sync"), /*#__PURE__*/React.createElement(Row, {
+  }, isHe ? "אפליקציה" : "App"), /*#__PURE__*/React.createElement(Row, {
+    icon: "🔄",
+    label: isHe ? "עדכן אפליקציה" : "Update App",
+    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload — keeps all your data"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: handleUpdate,
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement(Row, {
     icon: "📆",
     label: isHe ? "Google Calendar" : "Google Calendar",
     sub: gcalError
@@ -10800,7 +10959,16 @@ const SettingsModal = ({
         : pr.reason === "badtime" ? (isHe ? "שעה לא תקינה" : "invalid time")
         : pr.reason === "noname" ? (isHe ? "אין שם" : "no title")
         : (pr.detail || (isHe ? "שגיאה" : "error"))
-      )))), gcalConnected && /*#__PURE__*/React.createElement(Row, {
+      )))), (gcalConnected || prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.text4,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      margin: "20px 0 4px"
+    }
+  }, isHe ? "לוחות שנה" : "Calendars"), gcalConnected && /*#__PURE__*/React.createElement(Row, {
     icon: "🗓️",
     label: isHe ? "אירועי יומן גוגל" : "Google Calendar events",
     sub: isHe
@@ -10814,16 +10982,7 @@ const SettingsModal = ({
     on: prefGcalForeign,
     onToggle: onToggleGcalForeign,
     color: GOOGLE_TYPE_COLOR
-  })), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: C.text4,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      margin: "20px 0 4px"
-    }
-  }, isHe ? "לוחות שנה" : "Calendars"), prefIL !== null && /*#__PURE__*/React.createElement(Row, {
+  })), prefIL !== null && /*#__PURE__*/React.createElement(Row, {
     icon: "✡️",
     label: isHe ? "חגים ישראליים" : "Israeli Holidays",
     sub: isHe ? prefIL === "yes" ? "מוצג" : "מוסתר" : prefIL === "yes" ? "Shown" : "Hidden"
@@ -11236,23 +11395,6 @@ const SettingsModal = ({
       margin: "20px 0 4px"
     }
   }, isHe ? "אזור מסוכן" : "Danger Zone"), /*#__PURE__*/React.createElement(Row, {
-    icon: "🔄",
-    label: isHe ? "עדכן אפליקציה" : "Update App",
-    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload — keeps all your data"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: handleUpdate,
-    style: {
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: `1.5px solid ${C.blueBorder}`,
-      background: C.blueBg,
-      color: C.blue,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      flexShrink: 0
-    }
-  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement(Row, {
     icon: "🧹",
     label: isHe ? "נקה איחורים" : "Clean Delays",
     sub: lateCount > 0
@@ -14642,7 +14784,7 @@ function App() {
       },
       online: {
         bg: "var(--green-bg)", border: "var(--green-border)", color: "var(--green)",
-        label: isHePill ? "מחובר" : "Online", pulse: false, pop: false
+        label: isHePill ? "מחובר" : "Online", pulse: false, pop: true
       }
     };
     return map[syncPillState];
@@ -14697,6 +14839,16 @@ function App() {
     setDataModalOpen(true);
   };
 
+  // Color palette (default / vivid)
+  const [palette, setPalette] = useState(() => localStorage.getItem(PALETTE_KEY) || "default");
+  const setPaletteAndSave = p => {
+    if (p !== "default" && p !== "vivid") return;
+    localStorage.setItem(PALETTE_KEY, p);
+    setPalette(p);
+  };
+  // Expose palette globally so custom-type color helpers can read it without prop-drilling
+  if (typeof window !== "undefined") window.__palette = palette;
+
   // Apply dark + RTL
   useEffect(() => {
     document.documentElement.style.colorScheme = dark ? "dark" : "light";
@@ -14706,6 +14858,9 @@ function App() {
     document.documentElement.dir = lang === "he" ? "rtl" : "ltr";
     document.documentElement.lang = lang;
   }, [lang]);
+  useEffect(() => {
+    document.documentElement.setAttribute("data-palette", palette);
+  }, [palette]);
   const views = [{
     id: "home",
     icon: "home",
@@ -14835,7 +14990,7 @@ function App() {
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 22,
-        fontWeight: 800,
+        fontWeight: 750,
         letterSpacing: "-0.02em",
         color: isDarkSplash ? "#F1F5F9" : "#1E3A5F",
         fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
@@ -14900,7 +15055,7 @@ function App() {
       style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 8, animation: "splashFadeIn 0.4s ease both", maxWidth: 320 }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em",
+        fontSize: 20, fontWeight: 750, letterSpacing: "-0.02em",
         color: isDarkSplash ? "#F1F5F9" : "#1E3A5F",
         fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"
       }
@@ -15670,21 +15825,46 @@ function App() {
       alignItems: "center",
       justifyContent: "space-between"
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 22,
-      fontWeight: 700,
-      color: C.text,
-      letterSpacing: "-0.02em"
-    }
-  }, new Date().toLocaleDateString(t("dateLocale"), {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  })), (() => {
+  }, (() => {
+    const isHeD = getLang() === "he";
+    const hr = new Date().getHours();
+    const greeting = hr < 5 ? (isHeD ? "לילה טוב" : "Good night")
+      : hr < 12 ? (isHeD ? "בוקר טוב" : "Good morning")
+      : hr < 18 ? (isHeD ? "צהריים טובים" : "Good afternoon")
+      : (isHeD ? "ערב טוב" : "Good evening");
+    const weekdayStr = new Date().toLocaleDateString(t("dateLocale"), { weekday: "long" });
+    const monthDayStr = new Date().toLocaleDateString(t("dateLocale"), { month: "long", day: "numeric" });
+    return /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 10 }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 38,
+        height: 38,
+        borderRadius: 12,
+        flexShrink: 0,
+        background: "linear-gradient(135deg,var(--blue-bg),var(--indigo-bg))",
+        border: `1px solid ${C.blueBorder}`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 18
+      }
+    }, "📅"), /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11.5, fontWeight: 600, color: C.text3, letterSpacing: "0.01em" }
+    }, greeting), /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 20, fontWeight: 750, color: C.blue, letterSpacing: "-0.02em" }
+    }, weekdayStr), /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 20, fontWeight: 700, color: C.text3, letterSpacing: "-0.02em" }
+    }, monthDayStr))));
+  })(), (() => {
     const isHeW = getLang() === "he";
     const pillInfoW = getSyncPillInfo(isHeW);
     return /*#__PURE__*/React.createElement("div", {
+      key: syncPillState,
       onClick: () => { if (gcalConnected) gcalPullNow(); },
       style: {
         display: "flex",
@@ -15697,7 +15877,8 @@ function App() {
         background: pillInfoW.bg,
         border: `1px solid ${pillInfoW.border}`,
         transition: "all 0.3s ease",
-        cursor: gcalConnected ? "pointer" : "default"
+        cursor: gcalConnected ? "pointer" : "default",
+        animation: "syncPop 0.45s cubic-bezier(0.34,1.56,0.64,1) both"
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -15714,7 +15895,8 @@ function App() {
         fontSize: 11,
         fontWeight: 600,
         color: pillInfoW.color,
-        letterSpacing: "0.03em"
+        letterSpacing: "0.03em",
+        animation: "syncLabelPop 0.4s ease-out both"
       }
     }, pillInfoW.label));
   })()), (() => {
@@ -16058,6 +16240,8 @@ function App() {
     darkOverride: darkOverride,
     toggleDark: toggleDark,
     toggleLang: toggleLang,
+    palette: palette,
+    onSetPalette: setPaletteAndSave,
     prefIL: prefIL,
     prefIntl: prefIntl,
     onToggleIL: handleToggleIL,
