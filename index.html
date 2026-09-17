@@ -687,12 +687,22 @@ const customTypeMeta = type => {
   };
 };
 // Get meta for any type -- built-in or custom
+const GOOGLE_TYPE_COLOR = "#4285F4"; // Google's own blue, kept distinct from every built-in/custom color
 const getTypeMeta = type => {
   if (!type) {
     const m = TYPE_META.general;
     return {
       ...m,
       label: t(m.labelKey)
+    };
+  }
+  if (type === "google") {
+    return {
+      label: getLang() === "he" ? "אירועי גוגל" : "Google Events",
+      color: GOOGLE_TYPE_COLOR,
+      bg: GOOGLE_TYPE_COLOR + "18",
+      border: GOOGLE_TYPE_COLOR + "44",
+      dot: GOOGLE_TYPE_COLOR
     };
   }
   if (TYPE_META[type]) {
@@ -935,6 +945,7 @@ const setHebcalSyncedDate = ds => {
 const PREF_IL = "taskflow_pref_il"; // "yes" | "no" | null (unset = first time)
 const PREF_INTL = "taskflow_pref_intl"; // "yes" | "no" | null
 const PREF_LOOKAHEAD = "taskflow_pref_lookahead"; // "yes" | "no" — default "yes"
+const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null — default "no" (off)
 const getPref = key => localStorage.getItem(key); // null | "yes" | "no"
 const setPref = (key, val) => {
   try {
@@ -2108,7 +2119,7 @@ const TaskCard = ({
     }
   };
   const startRename = () => {
-    if (done || cancelled || task.hebcal || task.intl || task.type === "calendar") return;
+    if (done || cancelled || task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return;
     setRenameVal(taskDisplayName(task));
     setRenaming(true);
     window.dispatchEvent(new CustomEvent("taskflow-rename-start", {
@@ -2427,7 +2438,7 @@ const TaskCard = ({
       }
     }
     return null;
-  })(), !task.hebcal && !task.intl && task.type !== "calendar" && onDelay && !done && !cancelled && /*#__PURE__*/React.createElement("button", {
+  })(), !task.hebcal && !task.intl && task.type !== "calendar" && !task.googleShared && onDelay && !done && !cancelled && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       setHovered(false);
@@ -2456,7 +2467,7 @@ const TaskCard = ({
     name: "clock",
     size: 13,
     color: "#D97706"
-  })), !task.hebcal && /*#__PURE__*/React.createElement("button", {
+  })), !task.hebcal && !task.googleShared && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       setHovered(false);
@@ -2854,10 +2865,10 @@ const Modal = ({
   }), " ", showNote ? t("removeNote") : t("addNote"));
 
   // Hebcal holidays: show read-only modal with only status actions
-  if (editTask?.hebcal) {
+  if (editTask?.hebcal || editTask?.googleShared) {
     const taskDone = isDone(editTask),
       taskCancelled = isCancelled(editTask);
-    const m = getTypeMeta("calendar");
+    const m = getTypeMeta(editTask?.hebcal ? "calendar" : "google");
     return /*#__PURE__*/React.createElement("div", {
       className: closing ? "modal-backdrop-out" : "modal-backdrop-in",
       style: {
@@ -2923,7 +2934,7 @@ const Modal = ({
         textTransform: "uppercase",
         marginBottom: 2
       }
-    }, t("calendarType")), /*#__PURE__*/React.createElement("div", {
+    }, m.label), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 17,
         fontWeight: 700,
@@ -10217,8 +10228,12 @@ const SettingsModal = ({
   onScanGCal,
   gcalStats,
   gcalReady,
+  prefGcalForeign,
+  onToggleGcalForeign,
   onImportIcs,
-  onDeleteType
+  onDeleteType,
+  onCleanDelays,
+  cleanDelaysMsg
 }) => {
   const isHe = getLang() === "he";
   const [jsonText, setJsonText] = useState("");
@@ -10232,6 +10247,16 @@ const SettingsModal = ({
   const [delType, setDelType] = useState("");
   const [delConfirm, setDelConfirm] = useState(false);
   const [delMsg, setDelMsg] = useState("");
+  // ── Clean Delays state ──
+  const [cleanConfirm, setCleanConfirm] = useState(false);
+  const lateCount = React.useMemo(() => {
+    const todayDs = todayStr();
+    return (tasks || []).filter(tk => !tk.done && !tk.cancelled && tk.date && tk.date < todayDs).length;
+  }, [tasks]);
+  const runCleanDelays = () => {
+    onCleanDelays && onCleanDelays();
+    setCleanConfirm(false);
+  };
   const typeCounts = React.useMemo(() => {
     const m = {};
     (tasks || []).forEach(tk => {
@@ -10755,8 +10780,7 @@ const SettingsModal = ({
     style: {
       fontSize: 12,
       color: C.text3,
-      padding: isHe ? "0 50px 10px 0" : "0 0 10px 50px",
-      marginTop: -8,
+      padding: isHe ? "8px 50px 10px 0" : "8px 0 10px 50px",
       direction: isHe ? "rtl" : "ltr"
     }
   }, gcalScanMsg), gcalConnected && gcalReady && gcalStats.problems.length > 0 && /*#__PURE__*/React.createElement("div", {
@@ -10776,7 +10800,21 @@ const SettingsModal = ({
         : pr.reason === "badtime" ? (isHe ? "שעה לא תקינה" : "invalid time")
         : pr.reason === "noname" ? (isHe ? "אין שם" : "no title")
         : (pr.detail || (isHe ? "שגיאה" : "error"))
-      )))), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      )))), gcalConnected && /*#__PURE__*/React.createElement(Row, {
+    icon: "🗓️",
+    label: isHe ? "אירועי יומן גוגל" : "Google Calendar events",
+    sub: isHe
+      ? prefGcalForeign
+        ? "אירועים שאינם TaskIt מוצגים כמשימות רגילות"
+        : "טען גם אירועים שאינם TaskIt מהיומן"
+      : prefGcalForeign
+        ? "Non-TaskIt events show up as regular tasks"
+        : "Also load non-TaskIt events from your calendar"
+  }, /*#__PURE__*/React.createElement(Toggle, {
+    on: prefGcalForeign,
+    onToggle: onToggleGcalForeign,
+    color: GOOGLE_TYPE_COLOR
+  })), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -11215,6 +11253,52 @@ const SettingsModal = ({
       flexShrink: 0
     }
   }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement(Row, {
+    icon: "🧹",
+    label: isHe ? "נקה איחורים" : "Clean Delays",
+    sub: lateCount > 0
+      ? (isHe
+          ? `${lateCount} משימות באיחור יבוטלו`
+          : `${lateCount} overdue task${lateCount === 1 ? "" : "s"} will be cancelled`)
+      : (isHe ? "אין משימות באיחור כרגע" : "No overdue tasks right now"),
+    danger: true
+  }, cleanConfirm
+    ? /*#__PURE__*/React.createElement("div", {
+        style: { display: "flex", gap: 6, flexShrink: 0 }
+      }, /*#__PURE__*/React.createElement("button", {
+        onClick: e => { e.currentTarget.blur(); setCleanConfirm(false); },
+        style: {
+          padding: "7px 12px", borderRadius: 20,
+          border: `1px solid ${C.border}`, background: C.card2, color: C.text3,
+          fontSize: 12, fontWeight: 600, cursor: "pointer"
+        }
+      }, isHe ? "ביטול" : "Cancel"), /*#__PURE__*/React.createElement("button", {
+        onClick: e => { e.currentTarget.blur(); runCleanDelays(); },
+        style: {
+          padding: "7px 14px", borderRadius: 20, border: "none",
+          background: "linear-gradient(135deg,#EF4444,#DC2626)", color: "#fff",
+          fontSize: 12, fontWeight: 700, cursor: "pointer",
+          boxShadow: "0 2px 8px rgba(239,68,68,0.4)"
+        }
+      }, isHe ? "בטל את כולן" : "Cancel them"))
+    : /*#__PURE__*/React.createElement("button", {
+        onClick: e => { e.currentTarget.blur(); setCleanConfirm(true); },
+        disabled: lateCount === 0,
+        style: {
+          padding: "7px 16px", borderRadius: 20,
+          border: `1.5px solid ${C.redBorder}`, background: C.redBg, color: C.red,
+          fontSize: 13, fontWeight: 600,
+          cursor: lateCount > 0 ? "pointer" : "default",
+          opacity: lateCount > 0 ? 1 : 0.5,
+          flexShrink: 0
+        }
+      }, isHe ? "נקה" : "Clean")), cleanDelaysMsg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      padding: isHe ? "8px 50px 12px 0" : "8px 0 12px 50px",
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, cleanDelaysMsg), /*#__PURE__*/React.createElement(Row, {
     icon: "🏷️",
     label: isHe ? "מחק משימות לפי סוג" : "Delete tasks by type",
     sub: delType
@@ -11548,7 +11632,7 @@ const SearchView = ({
   // chartMode: persisted per-search; old data without chartMode defaults to "pie"
   const [chartMode, setChartMode] = useState(saved.chartMode || "pie"); // "pie" | "line"
   const [sortOrder, setSortOrder] = useState(saved.sortOrder || "smart"); // "smart" = overdue→today→future then history newest→oldest, "asc" = past→future, "desc" = future→past
-  const [filtersOpen, setFiltersOpen] = useState(false); // always collapsed on load/reload/history nav
+  const [filtersOpen, setFiltersOpen] = useState(true); // open by default so the search options are visible on entry, without focusing/opening the keyboard
 
   // ── Sticky headers ────────────────────────────────────────────────────────
   const [showTitleSticky, setShowTitleSticky] = useState(false);
@@ -12012,8 +12096,7 @@ const SearchView = ({
     },
     onFocus: e => e.target.style.borderColor = "#93C5FD",
     onBlur: e => e.target.style.borderColor = "var(--border)",
-    autoComplete: "off",
-    autoFocus: true
+    autoComplete: "off"
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -12101,10 +12184,10 @@ const SearchView = ({
   }, wideCharts
     /* ── Wide: both charts side by side ── */
     ? /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", gap: 20, alignItems: "center" }
+        style: { display: "flex", gap: 20, alignItems: "center", justifyContent: "center" }
       },
       /*#__PURE__*/React.createElement("div", {
-        style: { flex: "0 0 auto", display: "flex", justifyContent: "center" }
+        style: { flex: 1, minWidth: 0, display: "flex", justifyContent: "center" }
       }, /*#__PURE__*/React.createElement("div", {
         style: { display: "flex", alignItems: "center", gap: 14 }
       }, /*#__PURE__*/React.createElement(PieChart, {
@@ -12698,6 +12781,12 @@ const GCal = (() => {
   // losing a task that happens to live in a non-canonical copy.
   let calRaw = null;
 
+  // Non-TaskIt ("foreign") calendars — the user's own primary/other calendars
+  // plus anything shared with them. Only read when the "Google Events" toggle
+  // is on; kept entirely separate from calRaw/calMap above.
+  let foreignCalRaw = null;
+  let foreignCalAt = 0;
+
   async function listAllRaw(force) {
     if (calRaw && !force && Date.now() - calMapAt < 300000) return calRaw;
     const list = await apiFetch("/users/me/calendarList?maxResults=250");
@@ -13071,11 +13160,159 @@ const GCal = (() => {
     return { removedCount: removed, migratedCount: migrated, calendarsRemoved };
   }
 
+  // ── Foreign (non-TaskIt) calendars & events ─────────────────────────────
+  // "Foreign" means any calendar that is not one of our own "TaskIt · X"
+  // calendars: the user's primary calendar, any other calendar they own, and
+  // any calendar someone else has shared with them. Reading these is entirely
+  // opt-in (the "Google Events" toggle) and lives on its own — foreign events
+  // are never written into a TaskIt calendar, and TaskIt tasks are never
+  // written into a foreign one.
+  async function listForeignCalendars(force) {
+    if (foreignCalRaw && !force && Date.now() - foreignCalAt < 300000) return foreignCalRaw;
+    const list = await apiFetch("/users/me/calendarList?maxResults=250");
+    const raw = [];
+    for (const c of list?.items || []) {
+      if (c.summary && c.summary.startsWith(CAL_PREFIX)) continue; // ours, handled above
+      if (c.deleted) continue;
+      // A calendar the user did not add themselves (holidays-in-X, birthdays,
+      // etc. that Google subscribes everyone to) still comes back as "reader"
+      // and would flood the list with entries nobody asked to import — skip
+      // anything whose id looks like one of Google's own public feeds.
+      if (/^[a-z_]+#(holiday|weeknum)@group\.v\.calendar\.google\.com$/.test(c.id)) continue;
+      if (c.id === "addressbook#contacts@group.v.calendar.google.com") continue;
+      raw.push({ id: c.id, summary: c.summary || c.id, accessRole: c.accessRole || "reader", primary: !!c.primary });
+    }
+    foreignCalRaw = raw;
+    foreignCalAt = Date.now();
+    return raw;
+  }
+
+  // A stable per-event local task id, independent of TaskIt's uid() scheme, so
+  // the same foreign event always maps back to the same local task on every
+  // device and every pull, with no lookup table to keep in sync.
+  function foreignTaskId(calendarId, eventId) {
+    const raw = calendarId + "::" + eventId;
+    const bytes = new TextEncoder().encode(raw);
+    let hex = "";
+    for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+    if (hex.length > 60) hex = hex.slice(0, 60);
+    return "gf" + hex;
+  }
+
+  function foreignEventToTask(calendarId, calSummary, shared, event) {
+    const untitled = getLang() === "he" ? "(ללא כותרת)" : "(untitled)";
+    const patch = {
+      id: foreignTaskId(calendarId, event.id),
+      name: event.summary || untitled,
+      note: event.description || null,
+      type: "google",
+      source: "google",
+      googleCalendarId: calendarId,
+      googleEventId: event.id,
+      googleCalendarName: calSummary,
+      googleShared: !!shared,
+      created: event.created ? new Date(event.created).getTime() : Date.now(),
+      updated: event.updated ? new Date(event.updated).getTime() : Date.now()
+    };
+    if (event.start?.dateTime) {
+      const d = new Date(event.start.dateTime);
+      const e = event.end?.dateTime ? new Date(event.end.dateTime) : null;
+      patch.date = localDs(d);
+      patch.time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+      patch.length = e ? Math.max(5, Math.round((e - d) / 60000)) : null;
+    } else if (event.start?.date) {
+      patch.date = event.start.date;
+      patch.time = "";
+      patch.length = null;
+    } else {
+      patch.date = "";
+      patch.time = "";
+      patch.length = null;
+    }
+    return patch;
+  }
+
+  // Reads every non-TaskIt calendar in a rolling window (60 days back, 400
+  // ahead — a little wider back than the TaskIt pull since real appointments
+  // are more often looked up in the recent past) and returns one task-shaped
+  // object per event, tagged with exactly where it lives so an edit or a
+  // type-change can find its way back to the right calendar/event.
+  async function pullForeign() {
+    const cals = await listForeignCalendars(true);
+    const tasksOut = [];
+    let complete = true;
+    const timeMin = new Date(Date.now() - 60 * 864e5).toISOString();
+    const timeMax = new Date(Date.now() + 400 * 864e5).toISOString();
+    for (const cal of cals) {
+      let pageToken = null, guard = 0;
+      try {
+        do {
+          const params = new URLSearchParams({
+            maxResults: "250", showDeleted: "false", singleEvents: "true",
+            orderBy: "startTime", timeMin, timeMax
+          });
+          if (pageToken) params.set("pageToken", pageToken);
+          const res = await apiFetch(`/calendars/${enc(cal.id)}/events?${params}`);
+          for (const ev of res?.items || []) {
+            if (ev.status === "cancelled") continue;
+            if (ev.extendedProperties?.private?.taskitId) continue; // one of ours, already covered by pullAll
+            if (!ev.start) continue;
+            tasksOut.push(foreignEventToTask(cal.id, cal.summary, cal.accessRole !== "owner", ev));
+          }
+          pageToken = res?.nextPageToken || null;
+        } while (pageToken && ++guard < 20);
+      } catch (e) {
+        complete = false; // never let a partial read look like "these are gone"
+      }
+    }
+    return { tasks: tasksOut, complete };
+  }
+
+  // Owned foreign events (accessRole === "owner" on their calendar) can be
+  // edited in place — name, note, date/time, done/cancelled — by patching the
+  // original event where it already lives. Shared ones never call this; the
+  // UI keeps them read-only, exactly like holidays.
+  async function patchForeignEvent(task) {
+    if (!task.googleCalendarId || !task.googleEventId) return;
+    const prefix = task.done ? "✔ " : task.cancelled ? "✖ " : "";
+    const body = { summary: (prefix + String(task.name || "")).slice(0, 1000) };
+    body.description = task.note ? String(task.note).slice(0, 7000) : null;
+    if (String(task.date || "").trim()) {
+      const time = normTime(task.time);
+      if (time) {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        const startLocal = `${task.date}T${time}:00`;
+        const mins = Number(task.length) > 0 ? Number(task.length) : 30;
+        const end = new Date(new Date(startLocal).getTime() + mins * 60000);
+        body.start = { dateTime: startLocal, timeZone: tz };
+        body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz };
+      } else {
+        const d = new Date(task.date + "T00:00:00");
+        const next = new Date(d); next.setDate(next.getDate() + 1);
+        body.start = { date: task.date };
+        body.end = { date: localDs(next) };
+      }
+    }
+    await apiFetch(`/calendars/${enc(task.googleCalendarId)}/events/${enc(task.googleEventId)}`, {
+      method: "PATCH", body: JSON.stringify(body)
+    });
+  }
+
+  // Called when a "google" task is converted into a real TaskIt type (the
+  // person retyped its type field). The original event it came from is
+  // removed so the very next foreign pull doesn't bring it straight back —
+  // the content now lives on as an ordinary TaskIt task instead.
+  async function deleteForeignEvent(calendarId, eventId) {
+    if (!calendarId || !eventId) return;
+    await apiFetch(`/calendars/${enc(calendarId)}/events/${enc(eventId)}`, { method: "DELETE" }).catch(() => {});
+  }
+
   return {
     isConnected, connect, disconnect, tryRestoreSilently,
     pushTask, deleteTask, pullAll, reconcileAndDedupe,
     eventToTaskPatch, ensureCalendarId, shouldSync, syncSkipReason,
-    taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds
+    taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds,
+    listForeignCalendars, pullForeign, patchForeignEvent, deleteForeignEvent, foreignTaskId
   };
 })();
 
@@ -13193,8 +13430,8 @@ function App() {
   });
   const pillAnimRef = useRef(null);
   const [tappedTab, setTappedTab] = useState(null);
-  const SWIPE_VIEWS = ["home", "month", "search", "all-tasks"];
-  const WIDE_SWIPE_VIEWS = ["home", "month", "week", "search", "all-tasks"];
+  const SWIPE_VIEWS = ["home", "month", "week", "all-tasks"];
+  const WIDE_SWIPE_VIEWS = ["home", "month", "week", "all-tasks"];
   const pullRef = useRef({
     active: false,
     startY: 0,
@@ -13217,10 +13454,12 @@ function App() {
   const resetMonthViewRef = useRef(null); // set by MonthView; called when tapping active month tab
   const [pullDist, setPullDist] = useState(0);
   const [filteredCharts, setFilteredCharts] = useState(() => DEFAULT_CHARTS.map(c => ({...c})));
+  const [cleanDelaysMsg, setCleanDelaysMsg] = useState("");
   const [newlyAddedIds, setNewlyAddedIds] = useState(() => new Set());
   const [prefIL, setPrefIL] = useState(() => getPref(PREF_IL));
   const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL));
   const [prefLookahead, setPrefLookahead] = useState(() => getPref(PREF_LOOKAHEAD) !== "no"); // default ON
+  const [prefGcalForeign, setPrefGcalForeign] = useState(() => getPref(PREF_GCAL_FOREIGN) === "yes"); // default OFF
   const [online, setOnline] = useState(() => navigator.onLine);
 
   // ── Google Calendar sync state ──────────────────────────────────────────
@@ -13270,6 +13509,19 @@ function App() {
   const gcalQueue = useRef(Promise.resolve());
   const gcalSyncing = useRef(false);
 
+  // ── Foreign ("non-TaskIt") Google events — separate bookkeeping ──────────
+  // taskId -> a signature of what we last saw for this owned foreign task,
+  // either straight from a pull or right after we pushed an edit to it. Only
+  // owned (non-shared) "google" tasks are ever pushed back to Google; shared
+  // ones are read-only and never appear here.
+  const gcalForeignPushed = useRef({});
+  const gcalForeignSyncing = useRef(false);
+  const [gcalForeignReady, setGcalForeignReady] = useState(false);
+  const gcalForeignSig = t => JSON.stringify([
+    String(t.name || ""), String(t.note || ""), String(t.date || ""), String(t.time || ""),
+    t.length == null ? "" : String(t.length), t.done ? 1 : 0, t.cancelled ? 1 : 0
+  ]);
+
   const gcalEnqueue = fn => {
     gcalQueue.current = gcalQueue.current.then(fn, fn);
     return gcalQueue.current;
@@ -13279,6 +13531,7 @@ function App() {
     let synced = 0, pending = 0, skipped = 0;
     const problems = [];
     for (const t of taskList) {
+      if (t.source === "google") continue; // reported separately, not part of the TaskIt sync stats
       const reason = GCal.syncSkipReason(t);
       if (reason) {
         skipped++; problems.push({ id: t.id, name: t.name || "", reason });
@@ -13339,6 +13592,7 @@ function App() {
         if (complete) {
           const isFirstPull = Object.keys(hadBefore).length === 0;
           next = (next === ts ? [...ts] : next).filter(t => {
+            if (t.source === "google") return true; // lives in a foreign calendar, handled by gcalPullForeignNow
             if (!GCal.shouldSync(t)) return true;
             if (byId[t.id]) return true;
             if (isFirstPull) return !initialLocalIds.current.has(t.id);
@@ -13358,6 +13612,84 @@ function App() {
     }
   };
 
+  // Pulls every non-TaskIt calendar and merges the events in as "google"-type
+  // tasks. Only ever runs while the toggle is on; turning the toggle off wipes
+  // these tasks out again (see handleToggleGcalForeign below) rather than
+  // leaving stale copies around.
+  const gcalPullForeignNow = async () => {
+    if (!gcalConnected || !prefGcalForeign || gcalForeignSyncing.current) return;
+    gcalForeignSyncing.current = true;
+    try {
+      const { tasks: pulled, complete } = await GCal.pullForeign();
+      const byId = {};
+      for (const p of pulled) byId[p.id] = p;
+      // A foreign task that was marked done/cancelled long enough ago to have been
+      // moved into archiveTasks must never be resurrected into the active list just
+      // because its source event is still sitting on the calendar — same principle
+      // gcalPullNow already applies to TaskIt's own archived tasks.
+      const archivedIds = new Set(archiveTasks.map(t => t.id));
+      setTasks(ts => {
+        let next = ts;
+        for (const [id, patch] of Object.entries(byId)) {
+          if (archivedIds.has(id)) continue;
+          const existing = next.find(t => t.id === id);
+          if (!existing) {
+            next = next === ts ? [...ts] : next;
+            // Never resurrect done/cancelled state from Google — that's local-only
+            // for foreign events (see the note on patchForeignEvent). New imports
+            // always start pending.
+            next.push({ done: false, cancelled: false, ...patch });
+          } else {
+            // Preserve local done/cancelled — those never come from the remote
+            // event itself, only from what the person marked in TaskIt. Everything
+            // else (title, note, date/time) follows the live Google event: by the
+            // time a pull runs, any edit we pushed ourselves has already round-
+            // tripped through Google, so last-write-wins here is safe.
+            next = (next === ts ? [...ts] : next).map(t => t.id === id ? {
+              ...t,
+              ...patch,
+              done: existing.done,
+              cancelled: existing.cancelled
+            } : t);
+          }
+          if (!byId[id]?.googleShared) {
+            const merged = next.find(t => t.id === id);
+            if (merged) gcalForeignPushed.current[id] = gcalForeignSig(merged);
+          }
+        }
+        // An event that's gone from every foreign calendar (deleted, moved out of
+        // the window, or the calendar itself unshared) was removed at the source —
+        // drop the local copy too, unless it's already safely archived. Only a
+        // complete read may conclude this.
+        if (complete) {
+          next = (next === ts ? [...ts] : next).filter(t => t.source !== "google" || byId[t.id] || archivedIds.has(t.id));
+        }
+        return next;
+      });
+      if (complete) setGcalForeignReady(true);
+    } catch (e) {
+      // Non-fatal: leave whatever we already have and try again on the next cycle.
+    } finally {
+      gcalForeignSyncing.current = false;
+    }
+  };
+
+  const handleToggleGcalForeign = () => {
+    const next = !prefGcalForeign;
+    setPref(PREF_GCAL_FOREIGN, next ? "yes" : "no");
+    setPrefGcalForeign(next);
+    if (!next) {
+      // Switched off: these tasks only ever exist as a live mirror of Google's
+      // own calendars, so they simply disappear — nothing to clean up on the
+      // Google side, since none of this ever created new TaskIt calendars.
+      setTasks(ts => ts.filter(t => t.source !== "google"));
+      gcalForeignPushed.current = {};
+      setGcalForeignReady(false);
+    } else if (gcalConnected) {
+      gcalPullForeignNow();
+    }
+  };
+
   const handleConnectGCal = async () => {
     setGcalBusy(true); setGcalError(""); setGcalStatus("");
     try {
@@ -13367,6 +13699,7 @@ function App() {
       // Repair first, then read, then push only what actually differs.
       await GCal.reconcileAndDedupe().catch(() => {});
       await gcalPullNow();
+      if (prefGcalForeign) gcalPullForeignNow();
       setGcalStatus(getLang() === "he" ? "מחובר" : "Connected");
     } catch (e) {
       setGcalError(e.message || String(e));
@@ -13396,6 +13729,11 @@ function App() {
     gcalFailed.current = {};
     setGcalStatus("");
     setGcalScanMsg("");
+    // Foreign events only ever exist as a live mirror while connected — drop them
+    // rather than leave a frozen, unsyncable copy behind.
+    setTasks(ts => ts.filter(t => t.source !== "google"));
+    gcalForeignPushed.current = {};
+    setGcalForeignReady(false);
   };
 
   // One button: dedupe local tasks (same name + same date), clean up any
@@ -13406,7 +13744,7 @@ function App() {
     try {
       const he = getLang() === "he";
       const normKey = tk => (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "");
-      const isSkippable = tk => !tk.date || !((tk.name || "").trim()) || tk.hebcal || tk.intl || tk.type === "calendar";
+      const isSkippable = tk => !tk.date || !((tk.name || "").trim()) || tk.hebcal || tk.intl || tk.type === "calendar" || tk.source === "google";
       const combined = [
         ...tasks.map(tk => ({ tk, src: "active" })),
         ...archiveTasks.map(tk => ({ tk, src: "archive" }))
@@ -13451,6 +13789,7 @@ function App() {
       const remainingTasks = tasks.filter(tk => !toDeleteIds.has(tk.id));
       let uploaded = 0, failed = 0;
       for (const task of remainingTasks) {
+        if (task.source === "google") continue; // lives in its own Google event, not a TaskIt-pushed one
         if (!GCal.shouldSync(task)) continue;
         if (gcalRemote.current[task.id] === GCal.taskSignature(task)) continue;
         try {
@@ -13524,6 +13863,7 @@ function App() {
     gcalSeenIds.current = combinedIds;
 
     for (const task of tasks) {
+      if (task.source === "google") continue; // imported non-TaskIt event — edited/pushed via patchForeignEvent instead
       if (!GCal.shouldSync(task)) continue;
       const sig = GCal.taskSignature(task);
       if (gcalRemote.current[task.id] === sig) continue;
@@ -13545,11 +13885,39 @@ function App() {
   useEffect(() => {
     if (!gcalConnected) return;
     gcalPullNow();
-    const onVis = () => { if (document.visibilityState === "visible") gcalPullNow(); };
+    if (prefGcalForeign) gcalPullForeignNow();
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      gcalPullNow();
+      if (prefGcalForeign) gcalPullForeignNow();
+    };
     document.addEventListener("visibilitychange", onVis);
-    const interval = setInterval(() => { if (document.visibilityState === "visible") gcalPullNow(); }, 120000);
+    const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      gcalPullNow();
+      if (prefGcalForeign) gcalPullForeignNow();
+    }, 120000);
     return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(interval); };
-  }, [gcalConnected]);
+  }, [gcalConnected, prefGcalForeign]);
+
+  // Push effect for owned ("google" type, not shared) foreign events: any
+  // edit made locally — name, note, date/time, done/cancelled — is patched
+  // straight back onto the original event in its original calendar. Shared
+  // ones are never touched here; they're read-only in the UI (see the
+  // read-only modal), so they can never generate an edit to push in the
+  // first place.
+  useEffect(() => {
+    if (!gcalConnected || !prefGcalForeign || !gcalForeignReady) return;
+    for (const task of tasks) {
+      if (task.source !== "google" || task.googleShared) continue;
+      const sig = gcalForeignSig(task);
+      if (gcalForeignPushed.current[task.id] === sig) continue;
+      gcalForeignPushed.current[task.id] = sig; // optimistic, corrected by the next pull
+      gcalEnqueue(() => GCal.patchForeignEvent(task)).catch(e => {
+        delete gcalForeignPushed.current[task.id];
+      });
+    }
+  }, [tasks, gcalConnected, prefGcalForeign, gcalForeignReady]);
 
   // Flash "Saved" pill for 3 s when a push batch finishes successfully
   useEffect(() => {
@@ -13787,12 +14155,24 @@ function App() {
   const handleSave = form => {
     const now = Date.now();
     if (editTask) {
+      // A "google" task whose type was retyped to something else converts into
+      // a plain TaskIt task: the original Google event it came from is deleted
+      // (so the next foreign pull doesn't bring it straight back) and the
+      // source/google* bookkeeping is stripped, so it flows through the normal
+      // TaskIt push effect from here on — landing in a fresh TaskIt calendar
+      // for its new type, same as any task created by hand.
+      const convertingFromGoogle = editTask.source === "google" && form.type !== "google";
+      if (convertingFromGoogle && !editTask.googleShared) {
+        gcalEnqueue(() => GCal.deleteForeignEvent(editTask.googleCalendarId, editTask.googleEventId)).catch(() => {});
+        delete gcalForeignPushed.current[editTask.id];
+      }
       setTasks(ts => ts.map(t => t.id === editTask.id ? {
         ...t,
         ...form,
         done: t.done || false,
         cancelled: t.cancelled || false,
-        updated: now
+        updated: now,
+        ...(convertingFromGoogle ? { source: undefined, googleCalendarId: undefined, googleEventId: undefined, googleCalendarName: undefined, googleShared: undefined } : {})
       } : t));
     } else {
       const newTask = {
@@ -13895,6 +14275,11 @@ function App() {
     });
   };
   const handleDelete = id => {
+    const task = tasks.find(t => t.id === id);
+    if (task && task.source === "google" && !task.googleShared) {
+      gcalEnqueue(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
+      delete gcalForeignPushed.current[id];
+    }
     setTasks(ts => ts.filter(t => t.id !== id));
   };
   const handleRename = (id, name, andNext = false) => {
@@ -13965,12 +14350,43 @@ function App() {
       return updated;
     });
   };
+  // Clean Delays: cancel every actionable task whose date has already passed (not today).
+  // Recurring tasks are advanced to their next scheduled date first; if that date has
+  // also passed, it too is cancelled and advanced again, repeating until the task's
+  // next occurrence lands on today or later (or it stops recurring).
+  const handleCleanDelays = () => {
+    const todayDs = todayStr();
+    let cancelledCount = 0;
+    setTasks(ts => {
+      let result = [...ts];
+      let guard = 0;
+      while (guard++ < 10000) {
+        const idx = result.findIndex(t => !t.done && !t.cancelled && t.date && t.date < todayDs);
+        if (idx === -1) break;
+        const task = result[idx];
+        result[idx] = {
+          ...task,
+          cancelled: true,
+          done: false,
+          updated: Date.now()
+        };
+        cancelledCount++;
+        if (isRecurring(task)) {
+          result = spawnNext(task, result);
+        }
+      }
+      return result;
+    });
+    setCleanDelaysMsg(getLang() === "he"
+      ? cancelledCount === 0 ? "אין משימות באיחור" : `בוטלו ${cancelledCount} משימות שפג תוקפן`
+      : cancelledCount === 0 ? "No overdue tasks found" : `Cancelled ${cancelledCount} overdue task${cancelledCount === 1 ? "" : "s"}`);
+  };
   const handleDelay = id => {
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
-      // Holiday tasks are never delayed
-      if (task.hebcal || task.intl || task.type === "calendar") return ts;
+      // Holiday tasks — and untouchable shared Google events — are never delayed
+      if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
       const todayDs = todayStr();
       const tomorrow = new Date(TODAY);
       tomorrow.setDate(tomorrow.getDate() + 1);
@@ -15659,12 +16075,16 @@ function App() {
     onScanGCal: handleScanGCal,
     gcalStats: gcalStats,
     gcalReady: gcalReady,
+    prefGcalForeign: prefGcalForeign,
+    onToggleGcalForeign: handleToggleGcalForeign,
     onDeleteType: type => {
       if (!type) return;
       const match = tk => (tk.type || "general") === type;
       setTasks(prev => prev.filter(tk => !match(tk)));
       setArchiveTasks(prev => (prev || []).filter(tk => !match(tk)));
     },
+    onCleanDelays: handleCleanDelays,
+    cleanDelaysMsg: cleanDelaysMsg,
     onImportIcs: newTasks => {
       if (!newTasks || !newTasks.length) return;
       setTasks(prev => {
