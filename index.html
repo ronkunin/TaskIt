@@ -1507,8 +1507,6 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes shimmerSweep{0%{transform:translateX(-130%) skewX(-15deg)}100%{transform:translateX(230%) skewX(-15deg)}}
 .sync-saved-shimmer{position:relative;overflow:hidden}
 .sync-saved-shimmer::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.55) 50%,transparent 100%);animation:shimmerSweep 0.7s ease 0.1s forwards;pointer-events:none}
-/* Long-press radial progress ring */
-@keyframes lpRingFill{from{stroke-dashoffset:var(--ring-c)}to{stroke-dashoffset:0}}
 /* Month cell drop ripple */
 @keyframes dropRipple{0%{transform:scale(0.2);opacity:0.65}100%{transform:scale(3.2);opacity:0}}
 /* Week-view task block staggered entrance */
@@ -2308,7 +2306,7 @@ const TaskCard = ({
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     ref: cardRef,
     "data-taskid": task.id,
-    ...(dragHandlers || {}),
+    ...(dragHandlers && hovered ? dragHandlers : {}),
     onMouseEnter: e => {
       if (e.movementX === 0 && e.movementY === 0) return;
       activateCard();
@@ -2335,11 +2333,11 @@ const TaskCard = ({
       animation: completing || cancelling || delaying || isNew ? undefined : justSynced ? undefined : `fadeIn 0.3s ease ${delay}s forwards`,
       marginBottom: _showNote ? 0 : 8,
       zIndex: isDragging ? 30 : 1,
-      // touch-action must already be "none" when the finger lands, or iOS
-      // commits the gesture to a scroll and cancels the drag (see the engine).
-      touchAction: dragHandlers ? "none" : undefined,
-      WebkitTouchCallout: dragHandlers ? "none" : undefined,
-      cursor: dragHandlers ? isDragging ? "grabbing" : "grab" : undefined,
+      // touch-action:none only needed when focused (hovered) — that is when drag is possible.
+      // Unfocused cards keep the default, so native iOS/iPad scroll is never blocked.
+      touchAction: dragHandlers && hovered ? "none" : undefined,
+      WebkitTouchCallout: dragHandlers && hovered ? "none" : undefined,
+      cursor: dragHandlers && hovered ? isDragging ? "grabbing" : "grab" : undefined,
       ...(isDragging ? {
         opacity: 0.4,
         boxShadow: "0 10px 26px rgba(0,0,0,0.26)"
@@ -4378,7 +4376,7 @@ const MonthView = ({
       style: {
         animation: "fadeIn 0.22s ease"
       }
-    }, dragPill, /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       ref: stickyHeaderRef,
       style: {
         position: "sticky",
@@ -4853,32 +4851,21 @@ const MonthView = ({
           }
         })) : null;
         // Off-month days always render (they were explicitly clicked into the list).
-        // During an active drag we also keep every in-range day mounted so any
-        // day section can be a drop target — not just days that already have tasks.
-        if (sortedTasks.length === 0 && !isSelected && !isT && !isOtherMonth && !drag) return weekBreakEl ? /*#__PURE__*/React.createElement(React.Fragment, {
+        if (sortedTasks.length === 0 && !isSelected && !isT && !isOtherMonth) return weekBreakEl ? /*#__PURE__*/React.createElement(React.Fragment, {
           key: `${isOtherMonth ? 'o' : ''}${ds}`
         }, weekBreakEl) : null;
         // For off-month appended days, auto-scroll if this is the offMonthEnd day
         const isEndTarget = offMonthEnd && ds === offMonthEnd || offMonthStart && ds === offMonthStart;
-        const isNarrowDrop = dragDs === ds;
         return /*#__PURE__*/React.createElement("div", {
           key: `${isOtherMonth ? 'o' : ''}${ds}`,
           ref: el => {
             if (isOtherMonth) {
               dayRefs.current['o' + ds] = el;
             } else dayRefs.current[d] = el;
-            registerZone("nl:" + ds, ds)(el);
           },
-          "data-dropday": ds,
           style: {
-            marginBottom: isNarrowDrop ? 10 : 12,
-            opacity: isOtherMonth ? 0.7 : 1,
-            borderRadius: isNarrowDrop ? 12 : 0,
-            padding: isNarrowDrop ? 6 : 0,
-            margin: isNarrowDrop ? "0 -6px 10px" : undefined,
-            background: isNarrowDrop ? "var(--blue-bg)" : "transparent",
-            boxShadow: isNarrowDrop ? `inset 0 0 0 2px ${C.blue}` : "none",
-            transition: "background 0.12s, box-shadow 0.12s"
+            marginBottom: 12,
+            opacity: isOtherMonth ? 0.7 : 1
           }
         }, weekBreakEl, /*#__PURE__*/React.createElement("div", {
           ref: el => {
@@ -4967,9 +4954,7 @@ const MonthView = ({
           key: tk.id,
           t: tk,
           ds: ds,
-          onTaskClick: onTaskClick,
-          dragHandlers: monthDragHandlers(tk),
-          isDragging: !!drag && drag.id === tk.id
+          onTaskClick: onTaskClick
         }))));
       }));
     })());
@@ -5133,7 +5118,7 @@ const MonthView = ({
 // top/bottom of the viewport, re-resolving the drop target as content moves
 // underneath. Releasing well outside every drop zone abandons the drop and the
 // task springs back to where it started.
-const DRAG_LONG_PRESS_MS = 220;
+const DRAG_LONG_PRESS_MS = 3000;
 // Module-level, because the app-level view-swipe (Home/Month/Week/List) and
 // pull-to-refresh live above every view and must stand aside while any view's
 // drag owns the gesture. The list views have no intermediate handler of their
@@ -5395,33 +5380,6 @@ function useTaskDragEngine({
           e.currentTarget.setPointerCapture(e.pointerId);
         } catch (err) {}
         if (isTouch) {
-          // Imperatively create the progress ring in the DOM — no React state,
-          // so no hook-count change and no re-render during the pointer event.
-          const _r = 28, _c = Math.round(2 * Math.PI * _r);
-          const _svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-          _svg.setAttribute("width", (_r + 4) * 2);
-          _svg.setAttribute("height", (_r + 4) * 2);
-          Object.assign(_svg.style, {
-            position: "fixed",
-            left: (e.clientX - _r - 4) + "px",
-            top: (e.clientY - _r - 4) + "px",
-            pointerEvents: "none",
-            zIndex: "9998",
-            overflow: "visible"
-          });
-          const _bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-          _bg.setAttribute("cx", _r + 4); _bg.setAttribute("cy", _r + 4); _bg.setAttribute("r", _r);
-          _bg.setAttribute("fill", "none"); _bg.setAttribute("stroke", C.blue); _bg.setAttribute("stroke-width", "3"); _bg.setAttribute("opacity", "0.2");
-          const _arc = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-          _arc.setAttribute("cx", _r + 4); _arc.setAttribute("cy", _r + 4); _arc.setAttribute("r", _r);
-          _arc.setAttribute("fill", "none"); _arc.setAttribute("stroke", C.blue); _arc.setAttribute("stroke-width", "3");
-          _arc.setAttribute("stroke-linecap", "round"); _arc.setAttribute("stroke-dasharray", _c);
-          _arc.setAttribute("stroke-dashoffset", _c);
-          _arc.setAttribute("transform", `rotate(-90 ${_r + 4} ${_r + 4})`);
-          _arc.style.animation = `lpRingFill ${DRAG_LONG_PRESS_MS}ms linear forwards`;
-          _svg.appendChild(_bg); _svg.appendChild(_arc);
-          document.body.appendChild(_svg);
-          d.lpRingEl = _svg;
           d.lpTimer = setTimeout(() => {
             const cur = dragRef.current;
             if (cur.id !== task.id || cur.moved) return;
@@ -6957,7 +6915,12 @@ const ListByType = ({
       // first section as "nearest".
       ref: el => { typeSentinels.current[type] = el; registerZone("tg:" + type, type)(el); },
       style: {
-        marginBottom: 28
+        marginBottom: 28,
+        // Guarantee a minimum hit-test area even when the section is collapsed.
+        // Without this, a fully-collapsed section shrinks to ~0 px of zone
+        // and the nearest-zone fallback always finds the google/calendar section
+        // that the drag started in, making drops on regular types impossible.
+        minHeight: 54
       }
     }, /*#__PURE__*/React.createElement("div", {
       onClick: () => editingType !== type && toggleCollapsed(type),
@@ -7262,9 +7225,13 @@ const PieChart = ({
     if (progress < 1) animRef.current = requestAnimationFrame(tick);else startTRef.current = null;
   };
   const startPieAnim = () => {
-    const cur = curFracs.current;
     if (animRef.current) cancelAnimationFrame(animRef.current);
-    fromFracs.current = cur.slice();
+    // Normalise lengths: new segments (first completion/cancellation) begin at
+    // 0 so they grow in smoothly; removed segments are trimmed from the end.
+    const n = toFracs.current.length;
+    const from = curFracs.current.slice();
+    while (from.length < n) from.push(0);
+    fromFracs.current = from.slice(0, n);
     startTRef.current = null;
     animRef.current = requestAnimationFrame(tick);
     _pieStore.pending = false; // clear module-level pending
@@ -7365,10 +7332,16 @@ const PieChart = ({
   // Record timestamp, set 2-min absolute timer, also arm scroll + click triggers
   useEffect(() => {
     if (!isMountedRef.current) return;
-    const changed = targetFracs.some((tf, i) => Math.abs(tf - curFracs.current[i]) > 0.001);
+    const changed = targetFracs.some((tf, i) => Math.abs(tf - (curFracs.current[i] ?? 0)) > 0.001);
     if (!changed) return;
-    if (immediateAnim) {
-      // Search view: animate right away, no delay
+
+    // If the chart is already on screen (e.g. user just checked off a task on
+    // the home page), tween right away so the arcs match the updated legend.
+    // Only fall back to the 2-min deferred animation when the chart is off-screen.
+    const rect = pieContRef.current ? pieContRef.current.getBoundingClientRect() : null;
+    const isVisible = rect && rect.top < window.innerHeight && rect.bottom > 0;
+    if (immediateAnim || isVisible) {
+      if (animRef.current) cancelAnimationFrame(animRef.current);
       armPieAnim(targetFracs);
       firePieAnim();
       return;
@@ -12622,8 +12595,7 @@ const SEARCH_PAGE_SIZE = 7; // date-groups per page
 
 const SearchView = ({
   tasks,
-  onEdit,
-  onDropDate
+  onEdit
 }) => {
   const isHe = getLang() === "he";
   const viewWidth = useWindowWidth();
@@ -12639,27 +12611,6 @@ const SearchView = ({
   const [chartMode, setChartMode] = useState(saved.chartMode || "pie");
   const [sortOrder, setSortOrder] = useState(saved.sortOrder || "smart");
   const [filtersOpen, setFiltersOpen] = useState(true);
-
-  // ── Drag-to-reschedule ────────────────────────────────────────────────────
-  // Date groups that appear in the results are the only drop zones.
-  // The dateless bucket has no zone; dropping there makes no sense.
-  const {
-    drag,
-    dragHandlersFor,
-    registerZone,
-    dragPill
-  } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
-    resolve: ds => ds ? ({ ds }) : null,
-    commit: (id, p) => onDropDate && onDropDate(id, p.ds),
-    pillLabel: p => {
-      if (!p) return "";
-      const d = new Date(p.ds + "T00:00:00");
-      if (isNaN(d.getTime())) return p.ds;
-      return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", { month: "short", day: "numeric" });
-    }
-  });
-  const dragDs = drag && !drag.outside && drag.payload ? drag.payload.ds : null;
 
   // ── Sticky headers ────────────────────────────────────────────────────────
   const [showTitleSticky, setShowTitleSticky] = useState(false);
@@ -12949,7 +12900,7 @@ const SearchView = ({
     style: {
       animation: "fadeIn 0.25s ease"
     }
-  }, dragPill, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       position: "sticky",
       top: "var(--app-header-h, 48px)",
@@ -13417,10 +13368,8 @@ const SearchView = ({
         key: tk.id,
         t: tk,
         ds: "",
-        onTaskClick: onEdit,
-        dragHandlers: dragHandlersFor(tk, null, onEdit),
-        isDragging: !!drag && drag.id === tk.id
-      })))));
+        onTaskClick: onEdit
+      })))))
       const date = new Date(ds + "T00:00:00");
       const todayDs = todayStr();
       const isT = ds === todayDs;
@@ -13443,16 +13392,8 @@ const SearchView = ({
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: ds
       }, sectionHeader, /*#__PURE__*/React.createElement("div", {
-        ref: registerZone("sr:" + ds, ds),
-        "data-dropday": ds,
         style: {
-          marginBottom: dragDs === ds ? 10 : 12,
-          borderRadius: dragDs === ds ? 12 : 0,
-          padding: dragDs === ds ? 6 : 0,
-          margin: dragDs === ds ? "0 -6px 10px" : undefined,
-          background: dragDs === ds ? "var(--blue-bg)" : "transparent",
-          boxShadow: dragDs === ds ? `inset 0 0 0 2px ${C.blue}` : "none",
-          transition: "background 0.12s, box-shadow 0.12s"
+          marginBottom: 12
         }
       }, showMonthBreak && emittedMonths.size > 1 && !sectionHeader && /*#__PURE__*/React.createElement("div", {
         style: {
@@ -13547,10 +13488,8 @@ const SearchView = ({
         key: tk.id,
         t: tk,
         ds: ds,
-        onTaskClick: onEdit,
-        dragHandlers: dragHandlersFor(tk, null, onEdit),
-        isDragging: !!drag && drag.id === tk.id
-      })))));
+        onTaskClick: onEdit
+      })))))
     });
   })(), visibleCount < sortedKeys.length && /*#__PURE__*/React.createElement("div", {
     ref: sentinelRef,
@@ -15486,7 +15425,10 @@ function App() {
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
-      if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared || task.source === "google") return ts;
+      // Holidays and truly foreign shared events can never be re-typed.
+      // Google-imported tasks (source==="google") CAN be re-typed — the user
+      // can drag them out of the Google section into any regular section.
+      if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
       if (task.type === newType) return ts;
       // "repeated" carries a recurrence interval; moving into it needs a sane
       // default, and moving out of it drops the interval entirely.
@@ -16914,6 +16856,7 @@ function App() {
         border: `1px solid ${activeTileNote === i ? s.color : s.border}`,
         animation: `fadeIn 0.3s ease ${i * 0.07}s forwards`,
         opacity: 0,
+        boxShadow: dark ? `0 2px 14px ${s.color}28` : "none",
         transition: "box-shadow 0.15s,transform 0.15s,border-color 0.15s"
       },
       onMouseEnter: e => {
@@ -17182,8 +17125,7 @@ function App() {
     collapseAllRef: collapseAllTypesRef
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
     tasks: [...tasks, ...archiveTasks],
-    onEdit: openEdit,
-    onDropDate: handleDropDate
+    onEdit: openEdit
   })))), /*#__PURE__*/React.createElement(Modal, {
     open: modalOpen,
     onClose: () => {
