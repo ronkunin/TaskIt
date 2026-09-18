@@ -221,6 +221,19 @@
   <div id="root"></div>
 
   <script>
+// ─────────────────────────────────────────────────────────────────────────────
+//  APP VERSION
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTE TO AI ASSISTANTS: whenever you make a change to this file, bump this
+// number before finishing your response — do this automatically, without
+// being asked each time:
+//   • Small change / fix / tweak  → increase by 0.1  (e.g. 2.8 -> 2.9)
+//   • Big change / major feature  → increase by 1     (e.g. 2.9 -> 3.9... i.e. round up to the next whole number, e.g. 2.9 -> 3.0)
+// This number is shown to the user in parentheses next to the "Update App"
+// button in Settings, so they can tell at a glance whether they're on the
+// latest build.
+const APP_VERSION = "2.8";
+
 const {
   useState,
   useEffect,
@@ -5118,7 +5131,7 @@ const MonthView = ({
 // top/bottom of the viewport, re-resolving the drop target as content moves
 // underneath. Releasing well outside every drop zone abandons the drop and the
 // task springs back to where it started.
-const DRAG_LONG_PRESS_MS = 3000;
+const DRAG_LONG_PRESS_MS = 350;
 // Module-level, because the app-level view-swipe (Home/Month/Week/List) and
 // pull-to-refresh live above every view and must stand aside while any view's
 // drag owns the gesture. The list views have no intermediate handler of their
@@ -11699,7 +11712,7 @@ const SettingsModal = ({
     }
   }, isHe ? "אפליקציה" : "App"), /*#__PURE__*/React.createElement(Row, {
     icon: "🔄",
-    label: isHe ? "עדכן אפליקציה" : "Update App",
+    label: (isHe ? "עדכן אפליקציה" : "Update App") + " (" + APP_VERSION + ")",
     sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload — keeps all your data"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: handleUpdate,
