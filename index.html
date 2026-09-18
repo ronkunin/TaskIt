@@ -132,8 +132,8 @@
     @keyframes slideInFromLeft  { from { opacity:0; transform:translateX(-28px); } to { opacity:1; transform:translateX(0); } }
     .month-enter-detail { animation: slideInFromRight 0.22s cubic-bezier(0.4,0,0.2,1) both; }
     .month-enter-calendar { animation: slideInFromLeft 0.22s cubic-bezier(0.4,0,0.2,1) both; }
-    @keyframes tileNumChange { 0%{opacity:0.2;transform:translateY(-5px) scale(0.92)} 60%{opacity:1;transform:translateY(1px) scale(1.04)} 100%{opacity:1;transform:translateY(0) scale(1)} }
-    .tile-num-pop { animation: tileNumChange 0.45s cubic-bezier(0.25,0.46,0.45,0.94) both; }
+    @keyframes tileNumChange { 0%{opacity:0;transform:scale(0.5)} 55%{opacity:1;transform:scale(1.38)} 75%{transform:scale(0.93)} 90%{transform:scale(1.06)} 100%{transform:scale(1)} }
+.tile-num-pop { animation: tileNumChange 0.48s cubic-bezier(0.34,1.56,0.64,1) both; }
   </style>
 </head>
 <body>
@@ -1499,8 +1499,20 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes noteReveal{from{transform:translateY(-100%)}to{transform:translateY(0)}}
 .task-note-reveal{animation:noteReveal 0.24s cubic-bezier(0.4,0,0.2,1) forwards;position:relative;z-index:0;overflow:hidden}
-@keyframes slideInLeft{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:translateX(0)}}
-@keyframes slideInRight{from{opacity:0;transform:translateX(-32px)}to{opacity:1;transform:translateX(0)}}
+@keyframes slideInLeft{from{opacity:0;transform:translateX(52px)}to{opacity:1;transform:translateX(0)}}
+@keyframes slideInRight{from{opacity:0;transform:translateX(-52px)}to{opacity:1;transform:translateX(0)}}
+/* Date-group accordion entrance (by-date / search result groups) */
+@keyframes dateGroupReveal{from{opacity:0;transform:translateY(18px) scale(0.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+/* Saved-to-Google shimmer sweep across the pill */
+@keyframes shimmerSweep{0%{transform:translateX(-130%) skewX(-15deg)}100%{transform:translateX(230%) skewX(-15deg)}}
+.sync-saved-shimmer{position:relative;overflow:hidden}
+.sync-saved-shimmer::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.55) 50%,transparent 100%);animation:shimmerSweep 0.7s ease 0.1s forwards;pointer-events:none}
+/* Long-press radial progress ring */
+@keyframes lpRingFill{from{stroke-dashoffset:var(--ring-c)}to{stroke-dashoffset:0}}
+/* Month cell drop ripple */
+@keyframes dropRipple{0%{transform:scale(0.2);opacity:0.65}100%{transform:scale(3.2);opacity:0}}
+/* Week-view task block staggered entrance */
+@keyframes weekBlockIn{from{opacity:0;transform:scaleY(0.35) translateY(-6px)}to{opacity:1;transform:scaleY(1) translateY(0)}}
 @keyframes particleFadeOut{0%{opacity:1}100%{opacity:0}}
 @keyframes checkPop{0%{transform:scale(0)}50%{transform:scale(1.35)}75%{transform:scale(0.88)}100%{transform:scale(1)}}
 @keyframes shockwave{0%{transform:scale(0);opacity:0.5}100%{transform:scale(3);opacity:0}}
@@ -1954,7 +1966,7 @@ const Badge = ({
       border: `1px solid ${tone.border}`,
       letterSpacing: "0.02em",
       whiteSpace: "nowrap",
-      transition: matchTone ? "color 0.2s ease, background 0.2s ease, border-color 0.2s ease" : "none"
+      transition: "color 0.25s ease, background 0.25s ease, border-color 0.25s ease"
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
@@ -2141,7 +2153,8 @@ const TaskCard = ({
         setBouncing(true);
         setCompleting(true);
         setCheckPopped(true);
-        const colors = ["#22C55E", "#34D399", "#86EFAC", "#3B82F6", "#60A5FA", "#FCD34D", "#FB923C"];
+        const typeColor = getTypeMeta(task.type).dot || "#3B82F6";
+        const colors = [typeColor, typeColor, "#22C55E", "#34D399", "#86EFAC", "#3B82F6", "#60A5FA", "#FCD34D", "#FB923C"];
         const newParticles = Array.from({
           length: 8
         }, (_, i) => {
@@ -2188,8 +2201,10 @@ const TaskCard = ({
       setBouncing(true);
       setCompleting(true);
       setCheckPopped(true);
-      // Spawn particles
-      const colors = ["#22C55E", "#34D399", "#86EFAC", "#3B82F6", "#60A5FA", "#FCD34D", "#FB923C"];
+      // Spawn particles — lead with the task's own type colour so the burst
+      // feels thematically connected, then fan out into celebratory hues.
+      const typeColor = getTypeMeta(task.type).dot || "#3B82F6";
+      const colors = [typeColor, typeColor, "#22C55E", "#34D399", "#86EFAC", "#3B82F6", "#FCD34D", "#FB923C"];
       const newParticles = Array.from({
         length: 8
       }, (_, i) => {
@@ -4055,6 +4070,10 @@ const MonthView = ({
   onResetRef,
   onDropDate
 }) => {
+  // Drop ripple: ds of the last cell that received a drop (cleared after animation).
+  // Declared BEFORE useTaskDragEngine so the commit closure has no TDZ risk.
+  const [rippleDs, setRippleDs] = useState(null);
+
   // Drag a chip onto a calendar day to move it to that date. Works the same in
   // the wide grid (chips live in the cells) and narrow (chips live in the day
   // detail list below the calendar) — the drop zones are the day cells either way.
@@ -4066,7 +4085,11 @@ const MonthView = ({
   } = useTaskDragEngine({
     isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
     resolve: ds => ds ? ({ ds }) : null,
-    commit: (id, p) => onDropDate && onDropDate(id, p.ds),
+    commit: (id, p) => {
+      onDropDate && onDropDate(id, p.ds);
+      setRippleDs(p.ds);
+      setTimeout(() => setRippleDs(null), 500);
+    },
     pillLabel: p => {
       if (!p) return "";
       const d = new Date(p.ds + "T00:00:00");
@@ -5013,6 +5036,7 @@ const MonthView = ({
     const isCellPast = !cell.other && isCurrentMonth && cell.date < realToday;
     const dayTasks = sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))));
     const isDropDayW = dragDs === ds;
+    const isRipple = rippleDs === ds;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
       ref: registerZone("mw:" + ds, ds),
@@ -5021,6 +5045,7 @@ const MonthView = ({
       style: {
         minHeight: 100,
         padding: "8px 6px",
+        position: "relative",
         background: isDropDayW ? "var(--blue-bg)" : isT ? C.blueBg : C.card,
         boxShadow: isDropDayW ? `inset 0 0 0 2px ${C.blue}` : "none",
         borderRight: (isHe ? i % 7 !== 0 : i % 7 !== 6) ? `1px solid ${C.border}` : "none",
@@ -5032,7 +5057,19 @@ const MonthView = ({
       },
       onMouseEnter: e => !isT && !dragDs && (e.currentTarget.style.background = "var(--card2)"),
       onMouseLeave: e => !isT && !dragDs && (e.currentTarget.style.background = "var(--card)")
-    }, /*#__PURE__*/React.createElement("div", {
+    }, isRipple && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        top: "50%", left: "50%",
+        width: 40, height: 40,
+        marginTop: -20, marginLeft: -20,
+        borderRadius: "50%",
+        background: C.blue,
+        pointerEvents: "none",
+        animation: "dropRipple 0.45s ease-out forwards",
+        zIndex: 10
+      }
+    }), /*#__PURE__*/React.createElement("div", {
       // Opacity for off-month/past dimming lives on this inner wrapper, not the
       // outer cell, so the cell's own borderRight/borderBottom (shared with the
       // neighboring cell) always render at full strength. Applying opacity to the
@@ -5298,6 +5335,7 @@ function useTaskDragEngine({
     d.meta = null;
     d.standDown = false;
     d.lastY = null;
+    if (d.lpRingEl) { d.lpRingEl.remove(); d.lpRingEl = null; } // always clear on finish
     setDrag(null);
     return didDrag;
   };
@@ -5317,13 +5355,28 @@ function useTaskDragEngine({
 
   // onTap fires only for a genuine tap (no drag happened).
   const dragHandlersFor = (task, meta, onTap) => {
-    if (isLocked && isLocked(task)) return {};
+    // Return null (not {}) so callers' `dragHandlers ? "none" : undefined`
+    // touchAction check correctly yields undefined for locked tasks.
+    // An empty object is truthy and would still apply touchAction:none while
+    // having no pointer handlers — freezing the page on those tasks.
+    if (isLocked && isLocked(task)) return null;
     return {
       onPointerDown: e => {
         if (e.button != null && e.button !== 0) return;
         pointerOkRef.current = true;
         const rect = e.currentTarget.getBoundingClientRect();
         const isTouch = e.pointerType === "touch";
+        // On desktop (mouse/pen), if the pointer landed on a button, link,
+        // input or any other interactive element INSIDE the card, bail out
+        // so the element's own click event fires.  setPointerCapture would
+        // route pointerup to this wrapper div, making the browser dispatch
+        // click on the common ancestor instead of on the actual button.
+        // Touch is fine: iOS/Android synthesise click from touchend
+        // independently of pointer capture.
+        if (!isTouch && e.target !== e.currentTarget &&
+            e.target.closest('button, a, input, textarea, select, [role="button"], [data-nodrag]')) {
+          return;
+        }
         const d = dragRef.current;
         d.active = false;
         d.armed = !isTouch;
@@ -5332,6 +5385,7 @@ function useTaskDragEngine({
         d.pointerId = e.pointerId;
         d.startX = e.clientX;
         d.startY = e.clientY;
+        d.startTime = Date.now();
         d.grabDy = e.clientY - rect.top;
         d.moved = false;
         d.isTouch = isTouch;
@@ -5341,12 +5395,40 @@ function useTaskDragEngine({
           e.currentTarget.setPointerCapture(e.pointerId);
         } catch (err) {}
         if (isTouch) {
+          // Imperatively create the progress ring in the DOM — no React state,
+          // so no hook-count change and no re-render during the pointer event.
+          const _r = 28, _c = Math.round(2 * Math.PI * _r);
+          const _svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          _svg.setAttribute("width", (_r + 4) * 2);
+          _svg.setAttribute("height", (_r + 4) * 2);
+          Object.assign(_svg.style, {
+            position: "fixed",
+            left: (e.clientX - _r - 4) + "px",
+            top: (e.clientY - _r - 4) + "px",
+            pointerEvents: "none",
+            zIndex: "9998",
+            overflow: "visible"
+          });
+          const _bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          _bg.setAttribute("cx", _r + 4); _bg.setAttribute("cy", _r + 4); _bg.setAttribute("r", _r);
+          _bg.setAttribute("fill", "none"); _bg.setAttribute("stroke", C.blue); _bg.setAttribute("stroke-width", "3"); _bg.setAttribute("opacity", "0.2");
+          const _arc = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          _arc.setAttribute("cx", _r + 4); _arc.setAttribute("cy", _r + 4); _arc.setAttribute("r", _r);
+          _arc.setAttribute("fill", "none"); _arc.setAttribute("stroke", C.blue); _arc.setAttribute("stroke-width", "3");
+          _arc.setAttribute("stroke-linecap", "round"); _arc.setAttribute("stroke-dasharray", _c);
+          _arc.setAttribute("stroke-dashoffset", _c);
+          _arc.setAttribute("transform", `rotate(-90 ${_r + 4} ${_r + 4})`);
+          _arc.style.animation = `lpRingFill ${DRAG_LONG_PRESS_MS}ms linear forwards`;
+          _svg.appendChild(_bg); _svg.appendChild(_arc);
+          document.body.appendChild(_svg);
+          d.lpRingEl = _svg;
           d.lpTimer = setTimeout(() => {
             const cur = dragRef.current;
             if (cur.id !== task.id || cur.moved) return;
             cur.lpTimer = null;
             cur.active = true;
             cur.armed = true;
+            if (cur.lpRingEl) { cur.lpRingEl.remove(); cur.lpRingEl = null; }
             if (navigator.vibrate) navigator.vibrate(8);
             beginActive(task, meta, cur.startX, cur.startY);
           }, DRAG_LONG_PRESS_MS);
@@ -5360,19 +5442,30 @@ function useTaskDragEngine({
           if (d.isTouch) {
             // Moved before the hold armed → this is a scroll or a view swipe,
             // not a drag. Stand down (but keep receiving moves, see below).
-            // Two thresholds: (a) any 10px movement (original guard against
-            // micro-tremor), or (b) ≥6px of clearly vertical movement (finger is
-            // scrolling, not just shaking). Condition (b) cuts the iOS dead-zone
-            // in half: touch-action:none prevents native scroll immediately on
-            // pointer-down, so the manual-scroll path must activate quickly.
+            //
+            // Three-tier adaptive threshold based on elapsed time since touch:
+            //   < 50 ms  → 1 px + 1.3× vertical dominance
+            //     Movement this early is almost always scroll intent; a
+            //     deliberate long-press hold has essentially zero movement.
+            //   50–120 ms → 3 px + 1.5× dominance
+            //     Some tremor is possible; need a bit more confidence.
+            //   > 120 ms → 6 px + 1.5× dominance
+            //     User is holding; only a clear scroll gesture cancels now.
             const _dy = Math.abs(e.clientY - d.startY);
             const _dx = Math.abs(e.clientX - d.startX);
-            const _clearlyVertical = _dy > 6 && _dy > _dx * 1.5;
+            const _elapsed = Date.now() - (d.startTime || 0);
+            const _vertThreshold = _elapsed < 50 ? 1 : _elapsed < 120 ? 3 : 6;
+            const _domRatio = _elapsed < 50 ? 1.3 : 1.5;
+            const _clearlyVertical = _dy > _vertThreshold && _dy > _dx * _domRatio;
             if ((dist > 10 || _clearlyVertical) && d.lpTimer) {
               clearTimeout(d.lpTimer);
               d.lpTimer = null;
               d.standDown = true;
-              d.lastY = e.clientY;
+              if (d.lpRingEl) { d.lpRingEl.remove(); d.lpRingEl = null; } // user is scrolling
+              // Anchor on the TOUCH ORIGIN, not the trigger point.
+              // This way the first scroll delta = total movement so far,
+              // and the page immediately catches up — no "eaten pixels".
+              d.lastY = d.startY;
             }
             // Draggable items must carry touch-action:none, because that value is
             // latched when the finger lands and it is the only thing that stops
@@ -5431,12 +5524,16 @@ function useTaskDragEngine({
   // transform, which would otherwise become the containing block for a
   // position:fixed element and offset it.
   const isHeDrag = getLang() === "he";
+
   const dragPill = drag ? /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
       left: drag.px,
       top: drag.py - 48,
-      transform: "translateX(-50%)",
+      transform: drag.outside
+        ? "translateX(-50%) rotate(6deg) scale(0.92)"
+        : "translateX(-50%) rotate(0deg) scale(1)",
+      transition: "transform 0.18s cubic-bezier(0.34,1.56,0.64,1), background-color 0.15s ease",
       zIndex: 9999,
       pointerEvents: "none",
       background: drag.outside ? "var(--rose)" : C.blue,
@@ -5931,7 +6028,7 @@ const WeekView = ({
       end,
       lane,
       laneCount
-    }) => {
+    }, idx = 0) => {
       const donOnDay = isDone(tk),
         cancelOnDay = isCancelled(tk),
         over = isOverdue(tk),
@@ -5981,8 +6078,6 @@ const WeekView = ({
         }, onTaskClick),
         onClick: e => {
           e.stopPropagation();
-          // Pointer events already decided tap-vs-drag; only fall back to
-          // click on browsers that never fired a pointerdown.
           if (pointerOkRef.current) return;
           onTaskClick(tk);
         },
@@ -5997,9 +6092,6 @@ const WeekView = ({
           fontSize: 10.5,
           fontWeight: 500,
           cursor: locked ? "pointer" : beingDragged ? "grabbing" : "grab",
-          // Must be "none" from the start on draggable blocks — see the engine
-          // note: this value is latched when the finger lands, and anything that
-          // permits a vertical pan lets iOS cancel the drag.
           touchAction: locked ? "pan-y" : "none",
           WebkitTouchCallout: "none",
           userSelect: "none",
@@ -6011,7 +6103,9 @@ const WeekView = ({
           opacity: beingDragged ? 0.35 : donOnDay ? 0.8 : cancelOnDay ? 0.7 : 1,
           textDecoration: cancelOnDay ? "line-through" : "none",
           zIndex: beingDragged ? 8 : 2,
-          lineHeight: 1.25
+          lineHeight: 1.25,
+          transformOrigin: "top center",
+          animation: beingDragged ? "none" : `weekBlockIn 0.28s cubic-bezier(0.34,1.56,0.64,1) ${Math.min(idx * 0.035, 0.25)}s both`
         }
       }, nameLine, subLine);
     };
@@ -6042,7 +6136,7 @@ const WeekView = ({
           background: "#EF4444"
         }
       })) : null;
-      const blocks = timed.map(taskBlock);
+      const blocks = timed.map((item, idx) => taskBlock(item, idx));
       const isDropTarget = !!drag && !drag.outside && drag.payload && drag.payload.ds === ds;
       const dropPreview = isDropTarget ? /*#__PURE__*/React.createElement("div", {
         style: {
@@ -6432,7 +6526,8 @@ const ListByDate = ({
         }
       })), /*#__PURE__*/React.createElement("div", {
         style: {
-          marginBottom: 24
+          marginBottom: 24,
+          animation: "dateGroupReveal 0.32s cubic-bezier(0.34,1.56,0.64,1) both"
         }
       }, /*#__PURE__*/React.createElement("div", {
         ref: el => dateSentinelRefs.current[k] = el,
@@ -6627,7 +6722,9 @@ const ListByType = ({
     registerZone,
     dragPill
   } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
+    // source==="google" tasks are draggable here so the user can move them
+    // to another type section; the resolve already blocks dropping INTO google.
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
     // Holidays and Google-imported sections must never accept a drop —
     // those tasks are externally managed and can't be re-typed.
     resolve: type => (type === "calendar" || type === "google") ? null : { type },
@@ -12525,7 +12622,8 @@ const SEARCH_PAGE_SIZE = 7; // date-groups per page
 
 const SearchView = ({
   tasks,
-  onEdit
+  onEdit,
+  onDropDate
 }) => {
   const isHe = getLang() === "he";
   const viewWidth = useWindowWidth();
@@ -12538,10 +12636,30 @@ const SearchView = ({
   const [toDate, setToDate] = useState(saved.toDate || "");
   const [visibleCount, setVisibleCount] = useState(SEARCH_PAGE_SIZE);
   const sentinelRef = useRef(null);
-  // chartMode: persisted per-search; old data without chartMode defaults to "pie"
-  const [chartMode, setChartMode] = useState(saved.chartMode || "pie"); // "pie" | "line"
-  const [sortOrder, setSortOrder] = useState(saved.sortOrder || "smart"); // "smart" = overdue→today→future then history newest→oldest, "asc" = past→future, "desc" = future→past
-  const [filtersOpen, setFiltersOpen] = useState(true); // open by default so the search options are visible on entry, without focusing/opening the keyboard
+  const [chartMode, setChartMode] = useState(saved.chartMode || "pie");
+  const [sortOrder, setSortOrder] = useState(saved.sortOrder || "smart");
+  const [filtersOpen, setFiltersOpen] = useState(true);
+
+  // ── Drag-to-reschedule ────────────────────────────────────────────────────
+  // Date groups that appear in the results are the only drop zones.
+  // The dateless bucket has no zone; dropping there makes no sense.
+  const {
+    drag,
+    dragHandlersFor,
+    registerZone,
+    dragPill
+  } = useTaskDragEngine({
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
+    resolve: ds => ds ? ({ ds }) : null,
+    commit: (id, p) => onDropDate && onDropDate(id, p.ds),
+    pillLabel: p => {
+      if (!p) return "";
+      const d = new Date(p.ds + "T00:00:00");
+      if (isNaN(d.getTime())) return p.ds;
+      return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", { month: "short", day: "numeric" });
+    }
+  });
+  const dragDs = drag && !drag.outside && drag.payload ? drag.payload.ds : null;
 
   // ── Sticky headers ────────────────────────────────────────────────────────
   const [showTitleSticky, setShowTitleSticky] = useState(false);
@@ -12831,7 +12949,7 @@ const SearchView = ({
     style: {
       animation: "fadeIn 0.25s ease"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, dragPill, /*#__PURE__*/React.createElement("div", {
     style: {
       position: "sticky",
       top: "var(--app-header-h, 48px)",
@@ -13299,7 +13417,9 @@ const SearchView = ({
         key: tk.id,
         t: tk,
         ds: "",
-        onTaskClick: onEdit
+        onTaskClick: onEdit,
+        dragHandlers: dragHandlersFor(tk, null, onEdit),
+        isDragging: !!drag && drag.id === tk.id
       })))));
       const date = new Date(ds + "T00:00:00");
       const todayDs = todayStr();
@@ -13323,8 +13443,16 @@ const SearchView = ({
       return /*#__PURE__*/React.createElement(React.Fragment, {
         key: ds
       }, sectionHeader, /*#__PURE__*/React.createElement("div", {
+        ref: registerZone("sr:" + ds, ds),
+        "data-dropday": ds,
         style: {
-          marginBottom: 12
+          marginBottom: dragDs === ds ? 10 : 12,
+          borderRadius: dragDs === ds ? 12 : 0,
+          padding: dragDs === ds ? 6 : 0,
+          margin: dragDs === ds ? "0 -6px 10px" : undefined,
+          background: dragDs === ds ? "var(--blue-bg)" : "transparent",
+          boxShadow: dragDs === ds ? `inset 0 0 0 2px ${C.blue}` : "none",
+          transition: "background 0.12s, box-shadow 0.12s"
         }
       }, showMonthBreak && emittedMonths.size > 1 && !sectionHeader && /*#__PURE__*/React.createElement("div", {
         style: {
@@ -13419,7 +13547,9 @@ const SearchView = ({
         key: tk.id,
         t: tk,
         ds: ds,
-        onTaskClick: onEdit
+        onTaskClick: onEdit,
+        dragHandlers: dragHandlersFor(tk, null, onEdit),
+        isDragging: !!drag && drag.id === tk.id
       })))));
     });
   })(), visibleCount < sortedKeys.length && /*#__PURE__*/React.createElement("div", {
@@ -16691,6 +16821,7 @@ function App() {
     return /*#__PURE__*/React.createElement("div", {
       key: syncPillState,
       onClick: () => { if (gcalConnected) gcalPullNow(); },
+      className: syncPillState === "saved" ? "sync-saved-shimmer" : undefined,
       style: {
         display: "flex",
         alignItems: "center",
@@ -16941,7 +17072,7 @@ function App() {
       border: `1px solid ${C.border}`,
       boxShadow: "0 2px 16px rgba(59,130,246,0.06)",
       marginBottom: 24,
-      animation: slideDir === "left" ? "slideInLeft 0.1s ease both" : slideDir === "right" ? "slideInRight 0.1s ease both" : undefined
+      animation: slideDir === "left" ? "slideInLeft 0.22s cubic-bezier(0.25,1,0.5,1) both" : slideDir === "right" ? "slideInRight 0.22s cubic-bezier(0.25,1,0.5,1) both" : undefined
     }
   }, view === "home" && /*#__PURE__*/React.createElement(Dashboard, {
     tasks: [...tasks, ...archiveTasks],
@@ -16981,7 +17112,6 @@ function App() {
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
-    onDelay: handleDelay,
     onRename: handleRename,
     newlyAddedIds: newlyAddedIds,
     onDropDate: handleDropDate,
@@ -17038,15 +17168,22 @@ function App() {
     },
     onRenameType: (oldType, newType) => {
       if (!newType || newType === oldType) return;
-      setTasks(ts => ts.map(t => t.type === oldType ? {
-        ...t,
-        type: newType
-      } : t));
+      const now = Date.now();
+      setTasks(ts => ts.map(t => {
+        // Skip Google-imported tasks: their type comes from the calendar they
+        // live in on Google's side, and we can't patch that field back via
+        // patchForeignEvent.  Renaming a custom type should only affect
+        // TaskIt-native tasks, where the change is included in taskSignature
+        // and picked up by the push effect automatically.
+        if (t.type !== oldType || t.source === "google") return t;
+        return { ...t, type: newType, updated: now };
+      }));
     },
     collapseAllRef: collapseAllTypesRef
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
     tasks: [...tasks, ...archiveTasks],
-    onEdit: openEdit
+    onEdit: openEdit,
+    onDropDate: handleDropDate
   })))), /*#__PURE__*/React.createElement(Modal, {
     open: modalOpen,
     onClose: () => {
