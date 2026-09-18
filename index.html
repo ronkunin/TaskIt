@@ -4064,7 +4064,7 @@ const MonthView = ({
     registerZone,
     dragPill
   } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
     resolve: ds => ds ? ({ ds }) : null,
     commit: (id, p) => onDropDate && onDropDate(id, p.ds),
     pillLabel: p => {
@@ -5360,7 +5360,15 @@ function useTaskDragEngine({
           if (d.isTouch) {
             // Moved before the hold armed → this is a scroll or a view swipe,
             // not a drag. Stand down (but keep receiving moves, see below).
-            if (dist > 10 && d.lpTimer) {
+            // Two thresholds: (a) any 10px movement (original guard against
+            // micro-tremor), or (b) ≥6px of clearly vertical movement (finger is
+            // scrolling, not just shaking). Condition (b) cuts the iOS dead-zone
+            // in half: touch-action:none prevents native scroll immediately on
+            // pointer-down, so the manual-scroll path must activate quickly.
+            const _dy = Math.abs(e.clientY - d.startY);
+            const _dx = Math.abs(e.clientX - d.startX);
+            const _clearlyVertical = _dy > 6 && _dy > _dx * 1.5;
+            if ((dist > 10 || _clearlyVertical) && d.lpTimer) {
               clearTimeout(d.lpTimer);
               d.lpTimer = null;
               d.standDown = true;
@@ -5525,7 +5533,7 @@ const WeekView = ({
   // column into a 15-minute-snapped start time, keeping the grab offset so the
   // block doesn't jump under the finger.
   const DRAG_SNAP_MIN = 15;
-  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared);
+  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google");
   const minsToTime = mins => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(Math.floor(mins % 60)).padStart(2, "0")}`;
   const timeToMins = s => {
     const [hh, mm] = (s || "0:0").split(":").map(Number);
@@ -6172,7 +6180,7 @@ const ListByDate = ({
     registerZone,
     dragPill
   } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
     resolve: ds => ({ ds }),
     commit: (id, p) => onDropDate && onDropDate(id, p.ds),
     pillLabel: p => {
@@ -6620,7 +6628,9 @@ const ListByType = ({
     dragPill
   } = useTaskDragEngine({
     isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
-    resolve: type => ({ type }),
+    // Holidays and Google-imported sections must never accept a drop —
+    // those tasks are externally managed and can't be re-typed.
+    resolve: type => (type === "calendar" || type === "google") ? null : { type },
     commit: (id, p) => onDropType && onDropType(id, p.type),
     pillLabel: p => p ? getTypeMeta(p.type).label : ""
   });
@@ -6843,16 +6853,16 @@ const ListByType = ({
     const isHe = getLang() === "he";
     return /*#__PURE__*/React.createElement("div", {
       key: type,
+      // Register the whole section card (header + body) as the single drop zone.
+      // Using the outer wrapper avoids getBoundingClientRect() inaccuracies that
+      // occur when the zone element is inside a CSS grid 0fr / overflow:hidden
+      // animation chain, which caused the hit-test to always fall back to the
+      // first section as "nearest".
+      ref: el => { typeSentinels.current[type] = el; registerZone("tg:" + type, type)(el); },
       style: {
         marginBottom: 28
       }
     }, /*#__PURE__*/React.createElement("div", {
-      ref: el => typeSentinels.current[type] = el,
-      style: {
-        height: 0
-      }
-    }), /*#__PURE__*/React.createElement("div", {
-      ref: registerZone("ty-h:" + type, type),
       onClick: () => editingType !== type && toggleCollapsed(type),
       style: {
         display: "flex",
@@ -6947,7 +6957,6 @@ const ListByType = ({
         transition: "opacity 0.25s ease"
       }
     }, /*#__PURE__*/React.createElement("div", {
-      ref: registerZone("ty:" + type, type),
       style: {
         paddingTop: 4,
         borderRadius: 12,
@@ -10181,7 +10190,7 @@ const Dashboard = ({
     registerZone: upRegisterZone,
     dragPill: upDragPill
   } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
     resolve: ds => ds ? ({ ds }) : null,
     commit: (id, p) => onDropDate && onDropDate(id, p.ds),
     pillLabel: p => {
@@ -10252,8 +10261,6 @@ const Dashboard = ({
   nowDay.setHours(0, 0, 0, 0);
   const todayDsNow = localDs(nowDay);
   const tomorrowDs = localDs(new Date(nowDay.getFullYear(), nowDay.getMonth(), nowDay.getDate() + 1));
-  const yesterdayDs = localDs(new Date(nowDay.getFullYear(), nowDay.getMonth(), nowDay.getDate() - 1));
-  const isOverdueDrop = upDragDs === yesterdayDs;
   const days = [{
     ds: todayDsNow,
     label: t("today"),
@@ -10526,15 +10533,8 @@ const Dashboard = ({
         color: C.text
       }
     }, t("upNext"))), overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
-      "data-dropday": yesterdayDs,
       style: {
-        marginBottom: isOverdueDrop ? 10 : 16,
-        borderRadius: isOverdueDrop ? 12 : 0,
-        padding: isOverdueDrop ? 6 : 0,
-        margin: isOverdueDrop ? "-6px -6px 10px" : undefined,
-        background: isOverdueDrop ? C.redBg : "transparent",
-        boxShadow: isOverdueDrop ? `inset 0 0 0 2px ${C.red}` : "none",
-        transition: "background-color 0.12s, box-shadow 0.12s"
+        marginBottom: 16
       }
     }, /*#__PURE__*/React.createElement("div", {
       ref: sentinelOverdue,
