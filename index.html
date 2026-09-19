@@ -3408,6 +3408,80 @@ const renderTaskShareCanvas = ({
 // iOS -- return from getComputedStyle, which otherwise throws
 // "Attempting to parse an unsupported color function" and aborts the whole
 // capture.
+// Wraps a raw html2canvas capture (Up Next / Week / Month) in the same TaskIt
+// branding frame used by the single-task share image: a top strip with the
+// logo, wordmark and tagline (always English/LTR, exactly like the task
+// share), a divider, then side + bottom padding in the app's own background
+// color (its light blue in light mode, its dark navy in dark mode) around the
+// captured table, which is itself forced to a plain white card so the PNG
+// reads cleanly regardless of which screen it came from. `pixelRatio` is the
+// `scale` the capture was taken at, so the framing can be specified in
+// ordinary CSS pixels and scaled up to match.
+const composeShareFrame = (contentCanvas, pixelRatio) => {
+  const bgColor = resolveCssColor("var(--bg)");
+  const textColor = resolveCssColor("var(--text)");
+  const text3Color = resolveCssColor("var(--text3)");
+  const borderColor = resolveCssColor("var(--border)");
+  const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const brandFont = `800 19px ${FONT}`;
+  const taglineFont = `500 12px ${FONT}`;
+  const PAD = 28; // side + bottom padding, CSS px
+  const BRAND = 30; // logo square size, CSS px
+  const cw = contentCanvas.width / pixelRatio;
+  const ch = contentCanvas.height / pixelRatio;
+  const W = cw + PAD * 2;
+  const brandBlockH = PAD + BRAND + 14 /* gap */ + 1 /* divider */ + 16 /* gap */;
+  const H = brandBlockH + ch + PAD;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(W * pixelRatio);
+  canvas.height = Math.round(H * pixelRatio);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(pixelRatio, pixelRatio);
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, W, H);
+  // ── logo + wordmark + tagline, identical styling to the task-share image ──
+  const lx = PAD,
+    cy = PAD;
+  const grad = ctx.createLinearGradient(lx, cy, lx + BRAND, cy + BRAND);
+  grad.addColorStop(0, "#3B82F6");
+  grad.addColorStop(1, "#2563EB");
+  drawRoundedRectPath(ctx, lx, cy, BRAND, BRAND, 9);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  const k = BRAND * 0.5 / 24,
+    ox = lx + BRAND * 0.25,
+    oy = cy + BRAND * 0.25;
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2.4;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(ox + 20 * k, oy + 6 * k);
+  ctx.lineTo(ox + 9 * k, oy + 17 * k);
+  ctx.lineTo(ox + 4 * k, oy + 12 * k);
+  ctx.stroke();
+  ctx.direction = "ltr";
+  ctx.font = brandFont;
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("TaskIt", lx + BRAND + 10, cy + BRAND / 2 + 1);
+  ctx.font = taglineFont;
+  ctx.fillStyle = text3Color;
+  ctx.textAlign = "right";
+  ctx.fillText("Just Task It.", W - PAD, cy + BRAND / 2 + 1);
+  // divider
+  const dy = PAD + BRAND + 14;
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(PAD, dy);
+  ctx.lineTo(W - PAD, dy);
+  ctx.stroke();
+  // captured content
+  ctx.drawImage(contentCanvas, PAD, brandBlockH, cw, ch);
+  return canvas;
+};
 let _html2canvasPromise = null;
 const loadHtml2Canvas = () => {
   if (window.html2canvas) return Promise.resolve(window.html2canvas);
@@ -3424,22 +3498,24 @@ const loadHtml2Canvas = () => {
   });
   return _html2canvasPromise;
 };
-// Captures `el` at high resolution against the app's current card/background
-// color (so rounded corners and edges don't turn transparent-black), then
-// copies the PNG to the clipboard exactly like the single-task share button,
-// falling back to a direct download (with the same toasts) if the clipboard
-// API is unavailable or the write is rejected. Every failure path -- a slow
-// or missing CDN, html2canvas throwing on some CSS it doesn't understand, a
-// rejected clipboard write -- always ends in a toast, never silence.
+// Captures `el` at high resolution against a plain white background (so the
+// table itself always reads as a clean white card, whatever the app's theme
+// happens to be, and rounded corners/edges never turn transparent-black),
+// then copies the PNG to the clipboard exactly like the single-task share
+// button, falling back to a direct download (with the same toasts) if the
+// clipboard API is unavailable or the write is rejected. Every failure path
+// -- a slow or missing CDN, html2canvas throwing on some CSS it doesn't
+// understand, a rejected clipboard write -- always ends in a toast, never
+// silence.
 const shareElementAsImage = async (el, filename) => {
   if (!el) return;
   const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("share-image-timeout")), ms))]);
   try {
     const html2canvas = await withTimeout(loadHtml2Canvas(), 10000);
-    const bg = resolveCssColor("var(--bg)");
-    const canvas = await withTimeout(html2canvas(el, {
-      backgroundColor: bg,
-      scale: Math.max(2, Math.min(3, (window.devicePixelRatio || 1) * 2)),
+    const captureScale = Math.max(2, Math.min(3, (window.devicePixelRatio || 1) * 2));
+    const rawCanvas = await withTimeout(html2canvas(el, {
+      backgroundColor: "#FFFFFF",
+      scale: captureScale,
       useCORS: true,
       // The share button that triggered this capture (and anything else marked
       // this way) shouldn't appear inside the image it produces.
@@ -3463,6 +3539,9 @@ const shareElementAsImage = async (el, filename) => {
         });
       }
     }), 15000);
+    // Frame the raw capture with padding, a light/dark background and the
+    // TaskIt branding strip before it ever reaches the clipboard or disk.
+    const canvas = composeShareFrame(rawCanvas, captureScale);
     try {
       if (!(navigator.clipboard && window.ClipboardItem)) throw new Error("no-clipboard-api");
       const blobPromise = new Promise(resolve => canvas.toBlob(resolve, "image/png"));
@@ -4980,7 +5059,8 @@ const MonthView = ({
   onSelectDay,
   onTaskClick,
   onResetRef,
-  onDropDate
+  onDropDate,
+  onShareReady
 }) => {
   // Drop ripple: ds of the last cell that received a drop (cleared after animation).
   // Declared BEFORE useTaskDragEngine so the commit closure has no TDZ risk.
@@ -5037,6 +5117,16 @@ const MonthView = ({
       setSharingMonth(false);
     }
   };
+  // Register this screen's share action with the global top-bar share
+  // button. Kept in a ref so the effect (registered once) always calls the
+  // latest version without needing to re-run on every render.
+  const shareMonthRef = useRef(shareMonthImage);
+  shareMonthRef.current = shareMonthImage;
+  useEffect(() => {
+    if (!onShareReady) return;
+    onShareReady(() => shareMonthRef.current());
+    return () => onShareReady(null);
+  }, [onShareReady]);
   // Compute fresh "today" each render so the view stays correct if the app runs past midnight
   const realToday = new Date();
   realToday.setHours(0, 0, 0, 0);
@@ -5210,11 +5300,7 @@ const MonthView = ({
     style: {
       color: C.blue
     }
-  }, year)), /*#__PURE__*/React.createElement(ShareImageButton, {
-    onClick: shareMonthImage,
-    busy: sharingMonth,
-    title: t("shareMonth")
-  }));
+  }, year)));
 
   // ── Swipe state (must live at top level — hooks cannot be inside conditionals) ──
   const swipeRef = useRef({
@@ -5358,11 +5444,7 @@ const MonthView = ({
         alignItems: "center",
         gap: 6
       }
-    }, /*#__PURE__*/React.createElement(ShareImageButton, {
-      onClick: shareMonthImage,
-      busy: sharingMonth,
-      title: t("shareMonth")
-    }), /*#__PURE__*/React.createElement(NavBtn, {
+    }, /*#__PURE__*/React.createElement(NavBtn, {
       onClick: () => onNav(-1)
     }, /*#__PURE__*/React.createElement(Icon, {
       name: isHe ? "chevRight" : "chevLeft",
@@ -5984,6 +6066,10 @@ const MonthView = ({
   }, cells.map((cell, i) => {
     const ds = localDs(cell.date);
     const isT = !cell.other && cell.date.toDateString() === realToday.toDateString();
+    // Kept separate from `isT` (used above for task inclusion, e.g. pulling an
+    // undated done/cancelled task into today's cell) so the share capture
+    // only turns off the *visual* "today" emphasis, not the actual content.
+    const showToday = isT && !captureWide;
     const isCellPast = !cell.other && isCurrentMonth && cell.date < realToday;
     const dayTasks = sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))));
     const isDropDayW = dragDs === ds;
@@ -5997,7 +6083,7 @@ const MonthView = ({
         minHeight: 100,
         padding: "8px 6px",
         position: "relative",
-        background: isDropDayW ? "var(--blue-bg)" : isT ? C.blueBg : C.card,
+        background: isDropDayW ? "var(--blue-bg)" : showToday ? C.blueBg : C.card,
         boxShadow: isDropDayW ? `inset 0 0 0 2px ${C.blue}` : "none",
         borderRight: (isHe ? i % 7 !== 0 : i % 7 !== 6) ? `1px solid ${C.border}` : "none",
         borderBottom: i < cells.length - 7 ? `1px solid ${C.border}` : "none",
@@ -6037,10 +6123,10 @@ const MonthView = ({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: isT ? C.blue : "transparent",
+        background: showToday ? C.blue : "transparent",
         fontSize: 12,
-        fontWeight: isT ? 700 : 500,
-        color: isT ? "#fff" : cell.other ? C.text5 : isCellPast ? C.text4 : C.text2,
+        fontWeight: showToday ? 700 : 500,
+        color: showToday ? "#fff" : cell.other ? C.text5 : isCellPast ? C.text4 : C.text2,
         marginBottom: 4
       }
     }, cell.day), dayTasks.slice(0, 3).map(tk => /*#__PURE__*/React.createElement(DayChip, {
@@ -6544,7 +6630,8 @@ const WeekView = ({
   onNav,
   onTaskClick,
   onDayClick,
-  onReschedule
+  onReschedule,
+  onShareReady
 }) => {
   const width = useWindowWidth();
   const height = useWindowHeight();
@@ -6578,6 +6665,16 @@ const WeekView = ({
       setSharingWeek(false);
     }
   };
+  // Register this screen's share action with the global top-bar share
+  // button. Kept in a ref so the effect (registered once) always calls the
+  // latest version without needing to re-run on every render.
+  const shareWeekRef = useRef(shareWeekImage);
+  shareWeekRef.current = shareWeekImage;
+  useEffect(() => {
+    if (!onShareReady) return;
+    onShareReady(() => shareWeekRef.current());
+    return () => onShareReady(null);
+  }, [onShareReady]);
 
   // ── Drag-to-reschedule (shared engine) ──────────────────────────────────────
   // Zones are the seven day columns; the resolver turns the pointer's y inside a
@@ -6754,11 +6851,7 @@ const WeekView = ({
       alignItems: "center",
       gap: 8
     }
-  }, /*#__PURE__*/React.createElement(ShareImageButton, {
-    onClick: shareWeekImage,
-    busy: sharingWeek,
-    title: t("shareWeek")
-  }), narrow && /*#__PURE__*/React.createElement("div", {
+  }, narrow && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6
@@ -6813,6 +6906,13 @@ const WeekView = ({
     const DAY_START = Math.max(0, Math.min(9, Math.floor(earliestStart / 60)));
     const DAY_END = Math.min(24, Math.max(17, Math.ceil(latestEnd / 60)));
     const gridHeight = (DAY_END - DAY_START) * HOUR_PX;
+    // The share image must always come out landscape, however many hours the
+    // grid ends up spanning (a day with an early and a late task can stretch
+    // this to the full 24h range). Rather than a fixed width, size the forced
+    // capture width off the grid's own height so the result keeps a wide,
+    // readable aspect ratio no matter how tall the content is.
+    const estCaptureContentH = gridHeight + 46 /* header row */ + (maxUntimed ? maxUntimed * 26 + 16 : 0) + 20;
+    const weekCaptureWidth = Math.min(2600, Math.max(1100, Math.round(estCaptureContentH * 1.85)));
     const hoursArr = Array.from({
       length: DAY_END - DAY_START
     }, (_, i) => DAY_START + i);
@@ -6829,11 +6929,16 @@ const WeekView = ({
       ds,
       isT
     }, i) => {
+      // While a share-image capture is in flight, the "today" emphasis (blue
+      // header highlight) is switched off -- a saved/shared image has no
+      // "now" once it's out of the app, so singling out one day just reads as
+      // a stray highlight rather than useful information.
+      const showToday = isT && !captureWide;
       const dow = /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 10,
           fontWeight: 600,
-          color: isT ? "#2563EB" : "#94A3B8",
+          color: showToday ? "#2563EB" : "#94A3B8",
           letterSpacing: "0.06em",
           marginBottom: 3
         }
@@ -6847,10 +6952,10 @@ const WeekView = ({
           alignItems: "center",
           justifyContent: "center",
           margin: "0 auto",
-          background: isT ? C.blue : "transparent",
+          background: showToday ? C.blue : "transparent",
           fontSize: 14,
           fontWeight: 700,
-          color: isT ? "#fff" : C.text2
+          color: showToday ? "#fff" : C.text2
         }
       }, day.getDate());
       return /*#__PURE__*/React.createElement("div", {
@@ -6861,12 +6966,12 @@ const WeekView = ({
           textAlign: "center",
           cursor: "pointer",
           borderBottom: `1px solid ${C.border3}`,
-          background: isT ? C.blueBg : "transparent",
+          background: showToday ? C.blueBg : "transparent",
           borderRadius: "10px 10px 0 0",
           transition: "background 0.15s"
         },
         onMouseEnter: e => e.currentTarget.style.background = "var(--blue-bg)",
-        onMouseLeave: e => e.currentTarget.style.background = isT ? "var(--blue-bg)" : "transparent"
+        onMouseLeave: e => e.currentTarget.style.background = showToday ? "var(--blue-bg)" : "transparent"
       }, dow, num);
     });
     const headerRow = /*#__PURE__*/React.createElement("div", {
@@ -7134,7 +7239,10 @@ const WeekView = ({
       isT,
       timed
     }, i) => {
-      const nowLine = isT && nowMinutes >= DAY_START * 60 && nowMinutes <= DAY_END * 60 ? /*#__PURE__*/React.createElement("div", {
+      // Suppressed during a share-image capture -- "right now" is a
+      // moment-in-time indicator that stops being meaningful the instant the
+      // image is saved, so it's left off the shared PNG entirely.
+      const nowLine = isT && !captureWide && nowMinutes >= DAY_START * 60 && nowMinutes <= DAY_END * 60 ? /*#__PURE__*/React.createElement("div", {
         style: {
           position: "absolute",
           top: (nowMinutes - DAY_START * 60) * pxPerMin,
@@ -7234,7 +7342,17 @@ const WeekView = ({
       }
     }, untimedTray, scrollWrap);
     return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-      ref: weekCaptureRef
+      ref: weekCaptureRef,
+      // A full day's worth of hourly rows is inherently tall -- on a narrow
+      // phone, where this element is otherwise exactly screen-width, that
+      // makes the shared PNG come out portrait and hard to read. Forcing an
+      // explicit desktop-sized width just for the capture (independent of the
+      // real viewport) keeps the grid the same shape it would be on a wide
+      // screen, so the share image always comes out landscape.
+      style: captureWide ? {
+        width: weekCaptureWidth,
+        maxWidth: "none"
+      } : undefined
     }, headerRow, swipeWrap), dragPill);
   })());
 };
@@ -11398,7 +11516,8 @@ const Dashboard = ({
   setFilteredCharts,
   prefLookahead = true,
   newlyAddedIds,
-  onDropDate
+  onDropDate,
+  onShareReady
 }) => {
   // Up Next drag: move a task between the Today and Tomorrow sections (and out
   // of Overdue into either). Overdue itself is a drag source only — "overdue"
@@ -11442,6 +11561,16 @@ const Dashboard = ({
       setSharingUpNext(false);
     }
   };
+  // Register this screen's share action with the global top-bar share
+  // button. Kept in a ref so the effect (registered once) always calls the
+  // latest version without needing to re-run on every render.
+  const shareUpNextRef = useRef(shareUpNextImage);
+  shareUpNextRef.current = shareUpNextImage;
+  useEffect(() => {
+    if (!onShareReady) return;
+    onShareReady(() => shareUpNextRef.current());
+    return () => onShareReady(null);
+  }, [onShareReady]);
   const sentinelUpNext = useRef(null);
   const sentinelOverdue = useRef(null);
   const sentinelToday = useRef(null);
@@ -11836,11 +11965,7 @@ const Dashboard = ({
         fontWeight: 700,
         color: C.text
       }
-    }, t("upNext"))), /*#__PURE__*/React.createElement(ShareImageButton, {
-      onClick: shareUpNextImage,
-      busy: sharingUpNext,
-      title: t("shareUpNext")
-    })), overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
+    }, t("upNext")))), overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 16
       }
@@ -15745,6 +15870,29 @@ function App() {
   }
   const [archiveTasks, setArchiveTasks] = useState([]); // loaded in background after first paint
   const [view, setView] = useState("home");
+  // ── Global "share this screen" button (top bar) ───────────────────────────
+  // Home, Week and Month each know how to render themselves as a share image,
+  // but the button that triggers it lives in the top bar, outside those
+  // components. Whichever of the three is mounted registers its own share
+  // function here (and unregisters it on unmount), so the top button always
+  // calls the right one -- and is disabled everywhere else, since the other
+  // screens have nothing sensible to share.
+  const shareActionRef = useRef(null);
+  const [shareReady, setShareReady] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const registerShareAction = React.useCallback(fn => {
+    shareActionRef.current = fn;
+    setShareReady(!!fn);
+  }, []);
+  const handleTopShare = async () => {
+    if (!shareActionRef.current || shareBusy) return;
+    setShareBusy(true);
+    try {
+      await shareActionRef.current();
+    } finally {
+      setShareBusy(false);
+    }
+  };
   const [slideDir, setSlideDir] = useState("");
   const slideKey = React.useRef(0);
   const SLIDE_ORDER = ["home", "month", "week", "all-tasks", "search"];
@@ -17656,6 +17804,38 @@ function App() {
     size: 16,
     color: view === "search" ? C.blue : C.text3
   })), /*#__PURE__*/React.createElement("button", {
+    onClick: handleTopShare,
+    disabled: !shareReady || shareBusy,
+    title: shareReady ? (getLang() === "he" ? "שתף כתמונה" : "Share as image") : (getLang() === "he" ? "שיתוף זמין רק במסך הבית, השבוע או החודש" : "Sharing is only available on Home, Week or Month"),
+    "aria-label": getLang() === "he" ? "שתף כתמונה" : "Share as image",
+    style: {
+      width: 34,
+      height: 34,
+      borderRadius: 10,
+      border: `1px solid ${C.border2}`,
+      background: C.card2,
+      cursor: shareReady && !shareBusy ? "pointer" : "default",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      transition: "all 0.15s",
+      opacity: shareReady ? 1 : 0.4
+    },
+    onMouseEnter: e => {
+      if (!shareReady || shareBusy) return;
+      e.currentTarget.style.background = "var(--blue-bg)";
+      e.currentTarget.style.borderColor = "var(--blue-border)";
+    },
+    onMouseLeave: e => {
+      e.currentTarget.style.background = "var(--card2)";
+      e.currentTarget.style.borderColor = "var(--border2)";
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "share",
+    size: 16,
+    color: shareReady ? C.text3 : C.text5
+  })), /*#__PURE__*/React.createElement("button", {
     onClick: () => setDataModalOpen(true),
     title: getLang() === "he" ? "הגדרות" : "Settings",
     "aria-label": getLang() === "he" ? "הגדרות" : "Settings",
@@ -17883,6 +18063,28 @@ function App() {
     name: "search",
     size: 15,
     color: view === "search" ? C.blue : C.text3
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: handleTopShare,
+    disabled: !shareReady || shareBusy,
+    title: shareReady ? (getLang() === "he" ? "שתף כתמונה" : "Share as image") : (getLang() === "he" ? "שיתוף זמין רק במסך הבית, השבוע או החודש" : "Sharing is only available on Home, Week or Month"),
+    "aria-label": getLang() === "he" ? "שתף כתמונה" : "Share as image",
+    style: {
+      width: 32,
+      height: 32,
+      borderRadius: 9,
+      border: `1px solid ${C.border2}`,
+      background: C.card2,
+      cursor: shareReady && !shareBusy ? "pointer" : "default",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      opacity: shareReady ? 1 : 0.4
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "share",
+    size: 15,
+    color: shareReady ? C.text3 : C.text5
   })), /*#__PURE__*/React.createElement("button", {
     onClick: () => setDataModalOpen(true),
     style: {
@@ -18532,7 +18734,8 @@ function App() {
     setFilteredCharts: setFilteredCharts,
     prefLookahead: prefLookahead,
     newlyAddedIds: newlyAddedIds,
-    onDropDate: handleDropDate
+    onDropDate: handleDropDate,
+    onShareReady: registerShareAction
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
     tasks: [...tasks, ...archiveTasks],
     curDate: calDate,
@@ -18544,14 +18747,16 @@ function App() {
     onSelectDay: ds => setCalSelectedDate(ds),
     onTaskClick: openEdit,
     onResetRef: resetMonthViewRef,
-    onDropDate: handleDropDate
+    onDropDate: handleDropDate,
+    onShareReady: registerShareAction
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
     tasks: [...tasks, ...archiveTasks],
     curDate: calDate,
     onNav: handleWeekNav,
     onTaskClick: openEdit,
     onDayClick: openNew,
-    onReschedule: handleReschedule
+    onReschedule: handleReschedule,
+    onShareReady: registerShareAction
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
     tasks: [...tasks, ...archiveTasks],
     onToggle: handleToggle,
