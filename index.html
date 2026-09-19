@@ -266,6 +266,13 @@ const T = {
     editTask: "Edit Task",
     newTaskTitle: "New Task",
     fillDetails: "Fill in the task details below",
+    shareTask: "Share task as image",
+    shareCopied: "Image copied to clipboard",
+    shareFailed: "Couldn't copy — image downloaded instead",
+    shareUpNext: "Share upcoming tasks as image",
+    shareWeek: "Share week as image",
+    shareMonth: "Share month as image",
+    sharePreparing: "Preparing image…",
     taskName: "Task Name",
     taskNamePlaceholder: "What needs to be done?",
     type: "Type",
@@ -416,6 +423,13 @@ const T = {
     editTask: "עריכת משימה",
     newTaskTitle: "משימה חדשה",
     fillDetails: "מלא את פרטי המשימה",
+    shareTask: "שתף משימה כתמונה",
+    shareCopied: "התמונה הועתקה ללוח",
+    shareFailed: "ההעתקה נכשלה — התמונה הורדה במקום",
+    shareUpNext: "שתף את המשימות הקרובות כתמונה",
+    shareWeek: "שתף את השבוע כתמונה",
+    shareMonth: "שתף את החודש כתמונה",
+    sharePreparing: "מכין תמונה…",
     taskName: "שם המשימה",
     taskNamePlaceholder: "מה צריך לעשות?",
     type: "סוג",
@@ -676,11 +690,22 @@ const TYPE_META = {
 };
 
 // Custom type colors -- distinct from built-ins (blue, indigo, teal, sky, amber)
-// Custom type colors -- Bold palette (the default): deeper/richer versions of the built-in hues.
-const CUSTOM_COLORS_VIVID = ["#DB2777", "#DC2626", "#C2410C", "#4D7C0F", "#047857", "#6D28D9", "#0E7490", "#7C3AED"];
-// "Boldest" palette: same hues, pushed to full saturation.
-const CUSTOM_COLORS_BOLDEST = ["#E11D74", "#E11D1D", "#EA580C", "#65A30D", "#059669", "#7C3AED", "#0891B2", "#9333EA"];
-const getCustomColors = () => (typeof window !== "undefined" && window.__palette === "boldest") ? CUSTOM_COLORS_BOLDEST : CUSTOM_COLORS_VIVID;
+// "Boldest" is now the only palette, so these are tuned to match its punch.
+// Crucially, the built-in row backgrounds (--indigo-bg, --amber-bg, --blue-bg...)
+// are solid, richly-saturated colors of their own -- NOT the accent color at low
+// alpha. A low-alpha overlay (e.g. color+"18") barely tints a near-black dark
+// card, so custom-type rows looked flat and glow-less next to the built-in ones.
+// Each hue below therefore gets its own explicit accent/bg/border trio per
+// theme, matching the built-ins' recipe instead of deriving bg/border from
+// the accent via alpha.
+const CUSTOM_COLORS_LIGHT = ["#BE185D", "#B91C1C", "#C2410C", "#4D7C0F", "#047857", "#6D28D9", "#0E7490", "#86198F"];
+const CUSTOM_BG_LIGHT = ["#FFD3E8", "#FFD6D6", "#FFDAB8", "#D9F5A8", "#AEEEDD", "#DED2FF", "#B9EAF5", "#F5C6F5"];
+const CUSTOM_BORDER_LIGHT = ["#E85FA0", "#F87171", "#FB9550", "#A3D65C", "#34D399", "#A78BFA", "#5FD0E0", "#E29FE2"];
+const CUSTOM_COLORS_DARK = ["#FF4FA3", "#FF6B6B", "#FF9540", "#A3E635", "#34EAAE", "#B69CFF", "#3EE0F5", "#E27BFA"];
+const CUSTOM_BG_DARK = ["#4A1233", "#4A1616", "#4A2A08", "#33420C", "#0B3D2E", "#2E2166", "#0A3A47", "#3E1250"];
+const CUSTOM_BORDER_DARK = ["#C23B76", "#D9534F", "#C2660C", "#7CA829", "#1E9E77", "#5B48B8", "#157C93", "#8A2FA8"];
+const isDarkNow = () => typeof window !== "undefined" && !!window.__dark;
+const getCustomColors = () => isDarkNow() ? CUSTOM_COLORS_DARK : CUSTOM_COLORS_LIGHT;
 // Sequential assignment so <=8 customs never share a color; hash fallback for >8
 const _customColorIndex = {};
 let _customColorCounter = 0;
@@ -696,12 +721,16 @@ const getCustomColorIndex = type => {
 };
 const customTypeMeta = type => {
   const label = type.charAt(0).toUpperCase() + type.slice(1);
-  const color = getCustomColors()[getCustomColorIndex(type)];
+  const idx = getCustomColorIndex(type);
+  const dark = isDarkNow();
+  const color = (dark ? CUSTOM_COLORS_DARK : CUSTOM_COLORS_LIGHT)[idx];
+  const bg = (dark ? CUSTOM_BG_DARK : CUSTOM_BG_LIGHT)[idx];
+  const border = (dark ? CUSTOM_BORDER_DARK : CUSTOM_BORDER_LIGHT)[idx];
   return {
     label,
     color,
-    bg: color + "18",
-    border: color + "44",
+    bg,
+    border,
     dot: color
   };
 };
@@ -1988,6 +2017,29 @@ const Icon = ({
     filter: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polygon", {
       points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
     })),
+    share: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("circle", {
+      cx: "18",
+      cy: "5",
+      r: "3"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "6",
+      cy: "12",
+      r: "3"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "18",
+      cy: "19",
+      r: "3"
+    }), /*#__PURE__*/React.createElement("line", {
+      x1: "8.59",
+      y1: "10.51",
+      x2: "15.42",
+      y2: "6.49"
+    }), /*#__PURE__*/React.createElement("line", {
+      x1: "8.59",
+      y1: "13.49",
+      x2: "15.42",
+      y2: "17.51"
+    })),
     sliders: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("line", {
       x1: "4",
       y1: "21",
@@ -2907,6 +2959,569 @@ if (typeof window !== "undefined") {
   window.DEFAULT_TASK_LENGTH = DEFAULT_TASK_LENGTH;
 }
 
+// ── Share task as image ─────────────────────────────────────────────────────
+// Resolves any CSS color -- a plain hex string, or a var(--x) reference -- to
+// its live computed value by round-tripping it through a throwaway element's
+// computed style. Canvas fillStyle can't consume var() itself, and this way
+// the exported image always matches the app's current theme (light/dark).
+const resolveCssColor = value => {
+  if (typeof document === "undefined") return value;
+  const probe = document.createElement("div");
+  probe.style.color = value;
+  document.body.appendChild(probe);
+  const resolved = getComputedStyle(probe).color || value;
+  document.body.removeChild(probe);
+  return resolved;
+};
+const wrapCanvasText = (ctx, text, maxWidth) => {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    const test = cur ? cur + " " + w : w;
+    if (cur && ctx.measureText(test).width > maxWidth) {
+      lines.push(cur);
+      cur = w;
+    } else {
+      cur = test;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+};
+const truncateCanvasLines = (lines, maxLines) => {
+  if (lines.length <= maxLines) return lines;
+  const kept = lines.slice(0, maxLines);
+  kept[maxLines - 1] = kept[maxLines - 1].replace(/[\s.,;:]+$/, "") + "…";
+  return kept;
+};
+const drawRoundedRectPath = (ctx, x, y, w, h, r) => {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+};
+// Small toast, reusing the same pill already styled/positioned for the
+// splash screen's "data copied" feedback so this doesn't need its own CSS.
+const appToast = msg => {
+  if (typeof document === "undefined") return;
+  let el = document.getElementById("splash-copy-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "splash-copy-toast";
+    el.style.cssText = "position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:#1E293B;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;opacity:0;transition:opacity 0.3s;pointer-events:none;white-space:nowrap;z-index:100000;";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.opacity = "1";
+  clearTimeout(window.__appToastTimer);
+  window.__appToastTimer = setTimeout(() => {
+    el.style.opacity = "0";
+  }, 2500);
+};
+// Small vector icons for the share image (canvas can't reuse the app's SVG
+// <Icon> set). `s` is the half-size, so an icon spans roughly 2*s pixels.
+const drawShareIcon = (ctx, kind, cx, cy, color, s) => {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  if (kind === "dot") {
+    ctx.arc(cx, cy, s * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (kind === "check") {
+    ctx.moveTo(cx - s * 0.8, cy + s * 0.05);
+    ctx.lineTo(cx - s * 0.25, cy + s * 0.6);
+    ctx.lineTo(cx + s * 0.85, cy - s * 0.55);
+    ctx.stroke();
+  } else if (kind === "x") {
+    ctx.moveTo(cx - s * 0.65, cy - s * 0.65);
+    ctx.lineTo(cx + s * 0.65, cy + s * 0.65);
+    ctx.moveTo(cx + s * 0.65, cy - s * 0.65);
+    ctx.lineTo(cx - s * 0.65, cy + s * 0.65);
+    ctx.stroke();
+  } else if (kind === "alert") {
+    ctx.lineWidth = 1.4;
+    ctx.moveTo(cx, cy - s * 0.9);
+    ctx.lineTo(cx + s, cy + s * 0.8);
+    ctx.lineTo(cx - s, cy + s * 0.8);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - s * 0.25);
+    ctx.lineTo(cx, cy + s * 0.25);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy + s * 0.52, 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (kind === "hourglass") {
+    const w = s * 0.7;
+    ctx.moveTo(cx - w, cy - s * 0.9);
+    ctx.lineTo(cx + w, cy - s * 0.9);
+    ctx.lineTo(cx - w, cy + s * 0.9);
+    ctx.lineTo(cx + w, cy + s * 0.9);
+    ctx.closePath();
+    ctx.stroke();
+  } else if (kind === "repeat") {
+    const r = s * 0.8;
+    const e = Math.PI * 1.75;
+    ctx.arc(cx, cy, r, Math.PI * 0.25, e);
+    ctx.stroke();
+    const ex = cx + r * Math.cos(e),
+      ey = cy + r * Math.sin(e);
+    const tx = -Math.sin(e),
+      ty = Math.cos(e);
+    const nx = -ty,
+      ny = tx;
+    ctx.beginPath();
+    ctx.moveTo(ex + tx * s * 0.6, ey + ty * s * 0.6);
+    ctx.lineTo(ex + nx * s * 0.55, ey + ny * s * 0.55);
+    ctx.lineTo(ex - nx * s * 0.55, ey - ny * s * 0.55);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+};
+// Length as it reads in the share image -- in words rather than digits:
+// "שעה וחצי", "שעתיים וחצי", "45 דקות", "4 שעות" / "1 hour 30 min", "45 min".
+const fmtShareLength = mins => {
+  const he = getLang() === "he";
+  const h = Math.floor(mins / 60),
+    m = mins % 60;
+  if (h === 0) return he ? m === 1 ? "דקה" : `${m} דקות` : `${m} min`;
+  const hp = he ? h === 1 ? "שעה" : h === 2 ? "שעתיים" : `${h} שעות` : `${h} ${h === 1 ? "hour" : "hours"}`;
+  if (m === 0) return hp;
+  if (he) return m === 30 ? `${hp} וחצי` : m === 15 ? `${hp} ורבע` : `${hp} ו-${m} דקות`;
+  return `${hp} ${m} min`;
+};
+// Builds a PNG-ready canvas summarizing a task -- TaskIt branding on top, then
+// the type tag plus a completed / cancelled / late tag when relevant, the name,
+// date/time, length and repeat tags (when set), and the note -- styled to match
+// the app's current theme so the shared image looks native.
+// `runLayout` executes the exact same measure-then-draw sequence twice (once
+// with ctx=null purely to find the final height, once for real) so the
+// measured height and the drawn content can never drift apart.
+// `recur` is the already-parsed value (number of days / "month" / "year" / null)
+// and `status` is one of "done" | "cancelled" | "late" | null.
+const renderTaskShareCanvas = ({
+  name,
+  date,
+  time,
+  length,
+  type,
+  note,
+  recur,
+  status
+}) => {
+  const isHe = getLang() === "he";
+  const m = getTypeMeta(type);
+  const cardColor = resolveCssColor("var(--card)");
+  const textColor = resolveCssColor("var(--text)");
+  const text2Color = resolveCssColor("var(--text2)");
+  const text3Color = resolveCssColor("var(--text3)");
+  const borderColor = resolveCssColor("var(--border)");
+  const scale = 2;
+  const W = 640;
+  const PAD = 28;
+  const contentW = W - PAD * 2;
+  const align = isHe ? "right" : "left";
+  const xEdge = isHe ? W - PAD : PAD;
+  const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const nameFont = `700 23px ${FONT}`;
+  const metaFont = `600 14px ${FONT}`;
+  const typeFont = `700 11px ${FONT}`;
+  const noteFont = `400 14px ${FONT}`;
+  const brandFont = `800 19px ${FONT}`;
+  const taglineFont = `500 12px ${FONT}`;
+  const meas = document.createElement("canvas").getContext("2d");
+  meas.font = nameFont;
+  const displayName = (name || "").trim() || (isHe ? "משימה ללא שם" : "Untitled task");
+  const nameLines = truncateCanvasLines(wrapCanvasText(meas, displayName, contentW), 3);
+  const lengthMins = Number(length);
+  const hasLength = Number.isFinite(lengthMins) && lengthMins > 0;
+  const recurLabel = !recur ? "" : recur === "month" ? isHe ? "כל חודש" : "Every month" : recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", recur);
+  // Date, time, length and repeat all live on one line in the same style,
+  // wrapping onto a second line only if they don't fit.
+  const metaParts = [];
+  if (date) metaParts.push(fmtDate(date));
+  if (time) metaParts.push(time);
+  if (hasLength) metaParts.push(fmtShareLength(lengthMins));
+  if (recurLabel) metaParts.push(recurLabel);
+  // Each part is drawn on its own (with a separate bullet between) rather than as
+  // one joined string, so mixed Hebrew / digits / Latin never get bidi-reordered.
+  const metaSep = "   •   ";
+  meas.font = metaFont;
+  const metaSepW = meas.measureText(metaSep).width;
+  const metaLines = [];
+  let metaCur = null,
+    metaCurW = 0;
+  metaParts.forEach(part => {
+    const w = meas.measureText(part).width;
+    if (metaCur && metaCurW + metaSepW + w <= contentW) {
+      metaCur.push({
+        part,
+        w
+      });
+      metaCurW += metaSepW + w;
+    } else {
+      metaCur = [{
+        part,
+        w
+      }];
+      metaCurW = w;
+      metaLines.push(metaCur);
+    }
+  });
+  const trimmedNote = (note || "").trim();
+  let noteLines = [];
+  if (trimmedNote) {
+    meas.font = noteFont;
+    noteLines = truncateCanvasLines(wrapCanvasText(meas, trimmedNote, contentW), 6);
+  }
+  const clampLabel = (label, maxW) => {
+    if (meas.measureText(label).width <= maxW) return label;
+    let s = label;
+    while (s.length > 1 && meas.measureText(s + "…").width > maxW) s = s.slice(0, -1);
+    return s + "…";
+  };
+  const iconW = 10,
+    chipInnerGap = 7,
+    chipPadX = 12,
+    chipH = 26;
+  // Each "item" is {w, draw(ctx, x, y)} so rows can be measured and drawn by the
+  // same flow code, mirrored automatically for RTL.
+  const makeChip = spec => {
+    meas.font = typeFont;
+    const label = clampLabel(spec.label, 300);
+    const lw = meas.measureText(label).width;
+    const w = chipPadX * 2 + iconW + chipInnerGap + lw;
+    return {
+      w,
+      draw: (ctx, x, y) => {
+        drawRoundedRectPath(ctx, x, y, w, chipH, chipH / 2);
+        ctx.fillStyle = spec.bg;
+        ctx.fill();
+        ctx.strokeStyle = spec.border;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        const iconCx = isHe ? x + w - chipPadX - iconW / 2 : x + chipPadX + iconW / 2;
+        drawShareIcon(ctx, spec.icon, iconCx, y + chipH / 2, spec.color, iconW / 2);
+        ctx.font = typeFont;
+        ctx.fillStyle = spec.color;
+        ctx.textAlign = align;
+        ctx.textBaseline = "middle";
+        const labelX = isHe ? iconCx - iconW / 2 - chipInnerGap : iconCx + iconW / 2 + chipInnerGap;
+        ctx.fillText(label, labelX, y + chipH / 2 + 0.5);
+      }
+    };
+  };
+  const chipItems = [makeChip({
+    label: (m.label || "").toUpperCase(),
+    icon: "dot",
+    color: resolveCssColor(m.color),
+    bg: resolveCssColor(m.bg),
+    border: resolveCssColor(m.border)
+  })];
+  if (status === "done") chipItems.push(makeChip({
+    label: t("completed").toUpperCase(),
+    icon: "check",
+    color: resolveCssColor(C.green),
+    bg: resolveCssColor(C.greenBg),
+    border: resolveCssColor(C.greenBorder)
+  }));else if (status === "cancelled") chipItems.push(makeChip({
+    label: t("cancelled").toUpperCase(),
+    icon: "x",
+    color: resolveCssColor(C.rose),
+    bg: resolveCssColor(C.roseBg),
+    border: resolveCssColor(C.roseBorder)
+  }));else if (status === "late") chipItems.push(makeChip({
+    label: t("overdue").toUpperCase(),
+    icon: "alert",
+    color: resolveCssColor(C.red),
+    bg: resolveCssColor(C.redBg),
+    border: resolveCssColor(C.redBorder)
+  }));
+  // Lays items out left-to-right (right-to-left in Hebrew), wrapping when a row
+  // is full. Returns the height used; only draws when ctx is given.
+  const flowRow = (ctx, items, y, h, gap) => {
+    let off = 0,
+      row = 0;
+    items.forEach(it => {
+      if (off > 0 && off + it.w > contentW) {
+        off = 0;
+        row++;
+      }
+      if (ctx) {
+        const x = isHe ? W - PAD - off - it.w : PAD + off;
+        it.draw(ctx, x, y + row * (h + 8));
+      }
+      off += it.w + gap;
+    });
+    return (row + 1) * h + row * 8;
+  };
+  const BRAND = 30;
+  // Branding is deliberately identical in every language: English text, LTR layout.
+  const tagline = "Just Task It.";
+  const runLayout = ctx => {
+    let cy = PAD;
+    // ── TaskIt branding: logo + wordmark on the start side, tagline on the end
+    if (ctx) {
+      const lx = PAD;
+      const grad = ctx.createLinearGradient(lx, cy, lx + BRAND, cy + BRAND);
+      grad.addColorStop(0, "#3B82F6");
+      grad.addColorStop(1, "#2563EB");
+      drawRoundedRectPath(ctx, lx, cy, BRAND, BRAND, 9);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      const k = BRAND * 0.5 / 24,
+        ox = lx + BRAND * 0.25,
+        oy = cy + BRAND * 0.25;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2.4;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(ox + 20 * k, oy + 6 * k);
+      ctx.lineTo(ox + 9 * k, oy + 17 * k);
+      ctx.lineTo(ox + 4 * k, oy + 12 * k);
+      ctx.stroke();
+      ctx.direction = "ltr";
+      ctx.font = brandFont;
+      ctx.fillStyle = textColor;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText("TaskIt", lx + BRAND + 10, cy + BRAND / 2 + 1);
+      ctx.font = taglineFont;
+      ctx.fillStyle = text3Color;
+      ctx.textAlign = "right";
+      ctx.fillText(tagline, W - PAD, cy + BRAND / 2 + 1);
+      ctx.direction = isHe ? "rtl" : "ltr";
+    }
+    cy += BRAND + 14;
+    if (ctx) {
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(PAD, cy);
+      ctx.lineTo(W - PAD, cy);
+      ctx.stroke();
+    }
+    cy += 16;
+    // ── type tag + completed / cancelled / late tag
+    cy += flowRow(ctx, chipItems, cy, chipH, 8) + 18;
+    if (ctx) {
+      ctx.font = nameFont;
+      ctx.fillStyle = textColor;
+      ctx.textAlign = align;
+      ctx.textBaseline = "alphabetic";
+    }
+    nameLines.forEach((line, i) => {
+      const lineY = cy + (i + 1) * 30 - 8;
+      if (ctx) ctx.fillText(line, xEdge, lineY);
+    });
+    cy += nameLines.length * 30;
+    if (metaLines.length) {
+      cy += 12;
+      if (ctx) {
+        ctx.font = metaFont;
+        ctx.fillStyle = text3Color;
+        ctx.textAlign = align;
+        ctx.textBaseline = "alphabetic";
+      }
+      metaLines.forEach((line, i) => {
+        if (!ctx) return;
+        const y = cy + (i + 1) * 20 - 6;
+        let off = 0;
+        line.forEach((seg, k) => {
+          ctx.textAlign = align;
+          ctx.fillText(seg.part, isHe ? xEdge - off : xEdge + off, y);
+          off += seg.w;
+          if (k < line.length - 1) {
+            ctx.textAlign = "center";
+            ctx.fillText("•", isHe ? xEdge - off - metaSepW / 2 : xEdge + off + metaSepW / 2, y);
+            off += metaSepW;
+          }
+        });
+      });
+      cy += metaLines.length * 20;
+    }
+    if (noteLines.length) {
+      cy += 16;
+      if (ctx) {
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(PAD, cy);
+        ctx.lineTo(W - PAD, cy);
+        ctx.stroke();
+      }
+      cy += 16;
+      if (ctx) {
+        ctx.font = noteFont;
+        ctx.fillStyle = text2Color;
+        ctx.textAlign = align;
+        ctx.textBaseline = "alphabetic";
+      }
+      noteLines.forEach((line, i) => {
+        const lineY = cy + (i + 1) * 20 - 6;
+        if (ctx) ctx.fillText(line, xEdge, lineY);
+      });
+      cy += noteLines.length * 20;
+    }
+    cy += PAD;
+    return cy;
+  };
+  const H = Math.max(140, runLayout(null));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(W * scale);
+  canvas.height = Math.round(H * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(scale, scale);
+  ctx.direction = isHe ? "rtl" : "ltr";
+  drawRoundedRectPath(ctx, 0.5, 0.5, W - 1, H - 1, 20);
+  ctx.fillStyle = cardColor;
+  ctx.fill();
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  runLayout(ctx);
+  return canvas;
+};
+
+// ── Share a whole screen area (Up Next / Week / Month) as an image ──────────
+// Unlike the single-task canvas above (hand-drawn so it looks good no matter
+// what's in it), these three shares just need to reproduce a real, already-
+// laid-out part of the screen -- a list, a week grid, a month grid -- pixel
+// for pixel. Redrawing those by hand would mean re-implementing every grid,
+// wrap and badge rule a second time in canvas and keeping it in sync forever,
+// so instead this snapshots the live DOM node with html2canvas-pro (a
+// maintained fork of html2canvas), loaded lazily from a CDN the first time
+// any of these buttons is used. The "-pro" fork specifically fixes the
+// original html2canvas's inability to parse modern CSS color syntax
+// (`color()`, `oklch()`, etc.) that some browsers -- notably Safari on
+// iOS -- return from getComputedStyle, which otherwise throws
+// "Attempting to parse an unsupported color function" and aborts the whole
+// capture.
+let _html2canvasPromise = null;
+const loadHtml2Canvas = () => {
+  if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  if (_html2canvasPromise) return _html2canvasPromise;
+  _html2canvasPromise = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.8/dist/html2canvas-pro.min.js";
+    s.onload = () => resolve(window.html2canvas);
+    s.onerror = () => {
+      _html2canvasPromise = null;
+      reject(new Error("html2canvas failed to load"));
+    };
+    document.head.appendChild(s);
+  });
+  return _html2canvasPromise;
+};
+// Captures `el` at high resolution against the app's current card/background
+// color (so rounded corners and edges don't turn transparent-black), then
+// copies the PNG to the clipboard exactly like the single-task share button,
+// falling back to a direct download (with the same toasts) if the clipboard
+// API is unavailable or the write is rejected. Every failure path -- a slow
+// or missing CDN, html2canvas throwing on some CSS it doesn't understand, a
+// rejected clipboard write -- always ends in a toast, never silence.
+const shareElementAsImage = async (el, filename) => {
+  if (!el) return;
+  const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("share-image-timeout")), ms))]);
+  try {
+    const html2canvas = await withTimeout(loadHtml2Canvas(), 10000);
+    const bg = resolveCssColor("var(--bg)");
+    const canvas = await withTimeout(html2canvas(el, {
+      backgroundColor: bg,
+      scale: Math.max(2, Math.min(3, (window.devicePixelRatio || 1) * 2)),
+      useCORS: true,
+      // The share button that triggered this capture (and anything else marked
+      // this way) shouldn't appear inside the image it produces.
+      ignoreElements: node => !!(node.dataset && node.dataset.shareIgnore),
+      // Cloning these nodes into html2canvas's own offscreen document restarts
+      // any CSS animation on them (entrance fade-ins, staggered delays) from
+      // scratch, so whichever cards are still mid-delay at the instant it
+      // rasterizes would otherwise render half-faded or fully invisible.
+      // Freezing every clone at its resting style avoids that. Sticky headers
+      // and backdrop blur are also normalized, since html2canvas doesn't
+      // honor either the way a real browser does and can render them clipped,
+      // duplicated, or (for some backdrop-filter values) throw outright.
+      onclone: clonedDoc => {
+        clonedDoc.querySelectorAll("*").forEach(n => {
+          n.style.animation = "none";
+          n.style.transition = "none";
+          n.style.webkitAnimation = "none";
+          n.style.backdropFilter = "none";
+          n.style.webkitBackdropFilter = "none";
+          if (n.style.position === "sticky") n.style.position = "static";
+        });
+      }
+    }), 15000);
+    try {
+      if (!(navigator.clipboard && window.ClipboardItem)) throw new Error("no-clipboard-api");
+      const blobPromise = new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+      await navigator.clipboard.write([new ClipboardItem({
+        "image/png": blobPromise
+      })]);
+      appToast(t("shareCopied"));
+    } catch (err) {
+      try {
+        const url = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (e2) {
+        // ignore -- toast below still informs the user either way
+      }
+      appToast(t("shareFailed"));
+    }
+  } catch (captureErr) {
+    // html2canvas failed to load, hung, or threw on this element's CSS.
+    console.error("shareElementAsImage failed:", captureErr);
+    appToast(t("shareFailed"));
+  }
+};
+// Small square icon button matching the existing share-task button in the
+// task modal, reused here for Up Next / Week / Month so all four share
+// entry points look identical.
+const ShareImageButton = ({
+  onClick,
+  busy,
+  title
+}) => /*#__PURE__*/React.createElement("button", {
+  type: "button",
+  onClick,
+  disabled: busy,
+  title,
+  "data-share-ignore": "true",
+  style: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    border: `1px solid ${C.border2}`,
+    background: C.card2,
+    cursor: busy ? "default" : "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    opacity: busy ? 0.6 : 1,
+    flexShrink: 0
+  }
+}, /*#__PURE__*/React.createElement(Icon, {
+  name: "share",
+  size: 14,
+  color: "#94A3B8"
+}));
+
 //  MODAL 
 const Modal = ({
   open,
@@ -2938,6 +3553,7 @@ const Modal = ({
   const [showSugg, setShowSugg] = useState(false);
   const [showTypeSugg, setShowTypeSugg] = useState(false);
   const [error, setError] = useState("");
+  const [sharing, setSharing] = useState(false);
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
   const nameRef = useRef();
@@ -3151,6 +3767,75 @@ const Modal = ({
     size: 12,
     color: "var(--text3)"
   }), " ", showNote ? t("removeNote") : t("addNote"));
+  const runShare = async payload => {
+    if (sharing) return;
+    setSharing(true);
+    const canvas = renderTaskShareCanvas(payload);
+    try {
+      if (!(navigator.clipboard && window.ClipboardItem)) throw new Error("no-clipboard-api");
+      const blobPromise = new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+      // Pass the (async) blob promise straight into ClipboardItem rather than
+      // awaiting it first -- Safari only allows clipboard writes triggered
+      // synchronously from the click, and this keeps that chain intact.
+      await navigator.clipboard.write([new ClipboardItem({
+        "image/png": blobPromise
+      })]);
+      appToast(t("shareCopied"));
+    } catch (err) {
+      try {
+        const url = canvas.toDataURL("image/png");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${(payload.name || (getLang() === "he" ? "משימה" : "task")).trim().slice(0, 40) || "task"}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (e2) {
+        // ignore -- toast below still informs the user either way
+      }
+      appToast(t("shareFailed"));
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  // Edit / new-task form: reflects what's currently typed. Status tags come from
+  // the stored task (done / cancelled); "late" is judged on the form's own
+  // date/time so it matches what the task would show as once saved.
+  const handleShare = () => {
+    const recurParsed = parseRecur(form.recur);
+    let status = null;
+    if (editTask && isCancelled(editTask)) status = "cancelled";else if (editTask && isDone(editTask)) status = "done";else if (isOverdue({
+      date: form.date,
+      time: form.time
+    })) status = "late";
+    runShare({
+      name: form.name,
+      date: form.date,
+      time: form.time,
+      length: form.length,
+      type: form.type,
+      note: form.note,
+      recur: recurParsed === "invalid" ? null : recurParsed,
+      status
+    });
+  };
+  // Read-only entries (holidays, shared Google events): shares the stored task.
+  const handleShareReadOnly = () => {
+    if (!editTask) return;
+    const isHoliday = !!editTask.hebcal;
+    const status = isCancelled(editTask) ? "cancelled" : isDone(editTask) ? "done" : !isHoliday && isOverdue(editTask) ? "late" : null;
+    runShare({
+      name: taskDisplayName(editTask),
+      date: editTask.date,
+      time: editTask.time,
+      length: editTask.length,
+      type: isHoliday ? "calendar" : "google",
+      note: editTask.note,
+      recur: isRecurring(editTask) ? editTask.recur : null,
+      status
+    });
+  };
 
   // Hebcal holidays: show read-only modal with only status actions
   if (editTask?.hebcal || editTask?.googleShared) {
@@ -3229,7 +3914,34 @@ const Modal = ({
         color: C.text,
         lineHeight: 1.2
       }
-    }, taskDisplayName(editTask)))), /*#__PURE__*/React.createElement("button", {
+    }, taskDisplayName(editTask)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      onClick: handleShareReadOnly,
+      disabled: sharing,
+      title: t("shareTask"),
+      style: {
+        width: 32,
+        height: 32,
+        borderRadius: 8,
+        border: `1px solid ${C.border2}`,
+        background: C.card2,
+        cursor: sharing ? "default" : "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: sharing ? 0.6 : 1
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "share",
+      size: 14,
+      color: "#94A3B8"
+    })), /*#__PURE__*/React.createElement("button", {
       onClick: onClose,
       style: {
         width: 32,
@@ -3246,7 +3958,7 @@ const Modal = ({
       name: "x",
       size: 14,
       color: "#94A3B8"
-    }))), editTask.date && /*#__PURE__*/React.createElement("div", {
+    })))), editTask.date && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 13,
         color: C.text3,
@@ -3379,7 +4091,34 @@ const Modal = ({
       color: C.text4,
       marginTop: 2
     }
-  }, t("fillDetails"))), /*#__PURE__*/React.createElement("button", {
+  }, t("fillDetails"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: handleShare,
+    disabled: sharing,
+    title: t("shareTask"),
+    style: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      border: `1px solid ${C.border2}`,
+      background: C.card2,
+      cursor: sharing ? "default" : "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      opacity: sharing ? 0.6 : 1
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "share",
+    size: 14,
+    color: "#94A3B8"
+  })), /*#__PURE__*/React.createElement("button", {
     onClick: onClose,
     style: {
       width: 32,
@@ -3396,7 +4135,7 @@ const Modal = ({
     name: "x",
     size: 14,
     color: "#94A3B8"
-  }))), /*#__PURE__*/React.createElement("div", {
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 16,
       position: "relative"
@@ -3852,7 +4591,7 @@ const Modal = ({
       onBlur: e => e.target.style.borderColor = "var(--border)"
     }, /*#__PURE__*/React.createElement("option", {
       value: ""
-    }, t("lengthNone")), LENGTH_OPTIONS.map(mins => /*#__PURE__*/React.createElement("option", {
+    }, t("lengthNone")), (Number(form.length) > 0 && !LENGTH_OPTIONS.includes(Number(form.length)) ? [...LENGTH_OPTIONS, Number(form.length)].sort((x, y) => x - y) : LENGTH_OPTIONS).map(mins => /*#__PURE__*/React.createElement("option", {
       key: mins,
       value: String(mins)
     }, fmtLength(mins))))));
@@ -4274,7 +5013,30 @@ const MonthView = ({
   const monthDragHandlers = tk => dragHandlersFor(tk, null, onTaskClick);
   const width = useWindowWidth();
   const height = useWindowHeight();
-  const narrow = height > width;
+  const rawNarrow = height > width;
+  // While a share-image capture is in flight, force the wide (grid) layout
+  // even on a narrow phone screen -- that's the version worth sharing.
+  const [captureWide, setCaptureWide] = useState(false);
+  const narrow = captureWide ? false : rawNarrow;
+  const monthWideCaptureRef = useRef(null);
+  const [sharingMonth, setSharingMonth] = useState(false);
+  const shareMonthImage = async () => {
+    if (sharingMonth) return;
+    setSharingMonth(true);
+    try {
+      if (rawNarrow) {
+        appToast(t("sharePreparing"));
+        await new Promise(resolve => {
+          setCaptureWide(true);
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+      }
+      await shareElementAsImage(monthWideCaptureRef.current, `${getLang() === "he" ? "חודש" : "month"}.png`);
+    } finally {
+      setCaptureWide(false);
+      setSharingMonth(false);
+    }
+  };
   // Compute fresh "today" each render so the view stays correct if the app runs past midnight
   const realToday = new Date();
   realToday.setHours(0, 0, 0, 0);
@@ -4448,7 +5210,11 @@ const MonthView = ({
     style: {
       color: C.blue
     }
-  }, year)));
+  }, year)), /*#__PURE__*/React.createElement(ShareImageButton, {
+    onClick: shareMonthImage,
+    busy: sharingMonth,
+    title: t("shareMonth")
+  }));
 
   // ── Swipe state (must live at top level — hooks cannot be inside conditionals) ──
   const swipeRef = useRef({
@@ -4589,9 +5355,14 @@ const MonthView = ({
     }, year)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
+        alignItems: "center",
         gap: 6
       }
-    }, /*#__PURE__*/React.createElement(NavBtn, {
+    }, /*#__PURE__*/React.createElement(ShareImageButton, {
+      onClick: shareMonthImage,
+      busy: sharingMonth,
+      title: t("shareMonth")
+    }), /*#__PURE__*/React.createElement(NavBtn, {
       onClick: () => onNav(-1)
     }, /*#__PURE__*/React.createElement(Icon, {
       name: isHe ? "chevRight" : "chevLeft",
@@ -5162,7 +5933,10 @@ const MonthView = ({
       animation: "fadeIn 0.25s ease"
     }
   }, navBar, dragPill, /*#__PURE__*/React.createElement("div", {
-    ref: calGridRef,
+    ref: node => {
+      calGridRef.current = node;
+      monthWideCaptureRef.current = node;
+    },
     onTouchStart: onTouchStart,
     onTouchMove: onTouchMove,
     onTouchEnd: onTouchEnd,
@@ -5721,7 +6495,10 @@ const layoutDayTasks = dayTasks => {
     return {
       task: tk,
       start,
-      end: start + len
+      // Only the part that falls on this day is laid out: a long task (e.g. a
+      // multi-day event that starts 00:00) is clipped at midnight instead of
+      // spilling out of the bottom of the grid.
+      end: Math.min(start + len, 24 * 60)
     };
   }).sort((a, b) => a.start - b.start || b.end - a.end);
   const laneEnds = [];
@@ -5771,9 +6548,36 @@ const WeekView = ({
 }) => {
   const width = useWindowWidth();
   const height = useWindowHeight();
-  const narrow = height > width;
+  const rawNarrow = height > width;
+  // While a share-image capture is in flight, the grid is forced into its
+  // wide (desktop) layout -- bigger hour labels, roomier columns -- even on a
+  // narrow phone screen, since that's the legible version worth sharing.
+  const [captureWide, setCaptureWide] = useState(false);
+  const narrow = captureWide ? false : rawNarrow;
   const scrollRef = useRef();
   const isHe = getLang() === "he";
+  const weekCaptureRef = useRef(null);
+  const [sharingWeek, setSharingWeek] = useState(false);
+  const shareWeekImage = async () => {
+    if (sharingWeek) return;
+    setSharingWeek(true);
+    try {
+      if (rawNarrow) {
+        appToast(t("sharePreparing"));
+        // Flip to the wide layout off-screen-equivalent (it's the same visible
+        // grid, just re-sized) and wait a couple of frames for the browser to
+        // actually paint it before snapshotting.
+        await new Promise(resolve => {
+          setCaptureWide(true);
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+      }
+      await shareElementAsImage(weekCaptureRef.current, `${getLang() === "he" ? "שבוע" : "week"}.png`);
+    } finally {
+      setCaptureWide(false);
+      setSharingWeek(false);
+    }
+  };
 
   // ── Drag-to-reschedule (shared engine) ──────────────────────────────────────
   // Zones are the seven day columns; the resolver turns the pointer's y inside a
@@ -5800,22 +6604,31 @@ const WeekView = ({
     pointerOkRef
   } = useTaskDragEngine({
     isLocked: isDragLocked,
-    resolve: (ds, x, y, rect, d) => {
+    // Zone data is { ds, allDay }: the seven timed day columns, plus the all-day
+    // (timeless) row above them. Dropping on the all-day row makes the task
+    // timeless; dropping on a column gives it a time — so a task can be dragged
+    // between the two in either direction.
+    resolve: (zone, x, y, rect, d) => {
       const g = dragMetaRef.current;
       if (!g) return null;
+      if (zone.allDay) return { ds: zone.ds, allDay: true };
       const dur = d.meta && d.meta.dur || 60;
-      let mins = g.DAY_START * 60 + (y - d.grabDy - rect.top) / g.pxPerMin;
+      // An all-day chip is short, so the offset the finger grabbed it at says
+      // nothing about where a full-height block should sit. Anchor the new
+      // block's top just above the finger instead of using that offset.
+      const grab = d.meta && d.meta.fromAllDay ? Math.min(d.grabDy, 8) : d.grabDy;
+      let mins = g.DAY_START * 60 + (y - grab - rect.top) / g.pxPerMin;
       mins = Math.round(mins / DRAG_SNAP_MIN) * DRAG_SNAP_MIN;
       mins = Math.min(mins, g.DAY_END * 60 - dur);
       mins = Math.max(mins, g.DAY_START * 60);
-      return { ds, mins };
+      return { ds: zone.ds, mins };
     },
-    commit: (id, p) => onReschedule && onReschedule(id, p.ds, minsToTime(p.mins)),
+    commit: (id, p) => onReschedule && onReschedule(id, p.ds, p.allDay ? "" : minsToTime(p.mins)),
     pillLabel: p => {
       if (!p) return "";
       const d = new Date(p.ds + "T00:00:00");
       const dow = isNaN(d.getTime()) ? "" : getDaysShort()[d.getDay()] + " ";
-      return dow + minsToTime(p.mins);
+      return dow + (p.allDay ? (isHe ? "כל היום" : "All day") : minsToTime(p.mins));
     }
   });
 
@@ -5935,7 +6748,17 @@ const WeekView = ({
     month: "short",
     day: "numeric",
     year: "numeric"
-  })), narrow && /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(ShareImageButton, {
+    onClick: shareWeekImage,
+    busy: sharingWeek,
+    title: t("shareWeek")
+  }), narrow && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6
@@ -5953,7 +6776,7 @@ const WeekView = ({
   }, /*#__PURE__*/React.createElement(Icon, {
     name: getLang() === "he" ? "chevLeft" : "chevRight",
     size: 14
-  }))));
+  })))));
   return /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.25s ease"
@@ -6081,23 +6904,36 @@ const WeekView = ({
         cancelOnDay = isCancelled(tk),
         over = isOverdue(tk),
         m = getTypeMeta(tk.type);
+      const locked = isDragLocked(tk);
+      const beingDragged = drag && drag.id === tk.id;
       return /*#__PURE__*/React.createElement("div", {
         key: tk.id,
+        ...dragHandlersFor(tk, {
+          dur: getTaskLength(tk) || 60,
+          fromAllDay: true
+        }, onTaskClick),
         onClick: e => {
           e.stopPropagation();
+          // A draggable chip's tap is already handled on pointer-up. Locked
+          // chips (holidays, shared events) have no pointer handlers at all, so
+          // their click must always go through.
+          if (!locked && pointerOkRef.current) return;
           onTaskClick(tk);
         },
         style: {
           padding: "3px 7px",
           borderRadius: 6,
           marginBottom: 4,
-          cursor: "pointer",
+          cursor: locked ? "pointer" : beingDragged ? "grabbing" : "grab",
+          touchAction: locked ? "pan-y" : "none",
+          WebkitTouchCallout: "none",
+          userSelect: "none",
           fontSize: 10.5,
           fontWeight: 500,
           background: donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : m.bg,
           color: donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : m.color,
           borderInlineStart: `2px solid ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}`,
-          opacity: donOnDay ? 0.78 : cancelOnDay ? 0.7 : 1,
+          opacity: beingDragged ? 0.35 : donOnDay ? 0.78 : cancelOnDay ? 0.7 : 1,
           textDecoration: cancelOnDay ? "line-through" : "none",
           overflow: "hidden",
           textOverflow: "ellipsis",
@@ -6107,25 +6943,58 @@ const WeekView = ({
       }, taskDisplayName(tk));
     };
     const untimedCells = dayData.map(({
+      ds,
       untimed,
       isT
-    }, i) => /*#__PURE__*/React.createElement("div", {
-      key: i,
-      style: {
-        padding: "6px 4px 0",
-        minWidth: 0,
-        overflow: "hidden",
-        borderInlineStart: `1px solid var(--grid-line)`,
-        backgroundColor: isT ? "rgba(59,130,246,0.035)" : "transparent"
-      }
-    }, untimed.map(untimedChip)));
-    const untimedTray = maxUntimed > 0 ? /*#__PURE__*/React.createElement("div", {
+    }, i) => {
+      const isAllDayTarget = !!drag && !drag.outside && drag.payload && drag.payload.allDay && drag.payload.ds === ds;
+      return /*#__PURE__*/React.createElement("div", {
+        key: i,
+        ref: registerZone("ad" + i, {
+          ds,
+          allDay: true
+        }),
+        style: {
+          position: "relative",
+          boxSizing: "border-box",
+          // Always at least one chip tall so the row is a real drop target even
+          // in a week with no timeless tasks, and doesn't jump when one lands.
+          minHeight: 30,
+          padding: "6px 4px 0",
+          minWidth: 0,
+          overflow: "hidden",
+          borderInlineStart: `1px solid var(--grid-line)`,
+          backgroundColor: isAllDayTarget ? "rgba(59,130,246,0.10)" : isT ? "rgba(59,130,246,0.035)" : "transparent",
+          transition: "background-color 0.12s"
+        }
+      }, untimed.map(untimedChip), isAllDayTarget ? /*#__PURE__*/React.createElement("div", {
+        // Overlay, not an in-flow element, so previewing the drop can never
+        // change the row's height and shift the grid under the finger.
+        style: {
+          position: "absolute",
+          inset: 2,
+          borderRadius: 6,
+          border: `2px dashed ${C.blue}`,
+          background: "var(--blue-bg)",
+          pointerEvents: "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 9.5,
+          fontWeight: 700,
+          color: C.blue,
+          zIndex: 3
+        }
+      }, isHe ? "כל היום" : "All day") : null);
+    });
+    const untimedTray = /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: gridTemplate,
         gap: 0,
         marginBottom: 0,
-        paddingBottom: 0
+        paddingBottom: 0,
+        borderBottom: `1px solid var(--grid-line)`
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -6138,7 +7007,7 @@ const WeekView = ({
       name: "noteIcon",
       size: 10,
       color: "#CBD5E1"
-    })), untimedCells) : null;
+    })), untimedCells);
 
     // --- hour gutter ---
     const hourLabels = hoursArr.map(h => /*#__PURE__*/React.createElement("div", {
@@ -6228,7 +7097,7 @@ const WeekView = ({
         }, onTaskClick),
         onClick: e => {
           e.stopPropagation();
-          if (pointerOkRef.current) return;
+          if (!locked && pointerOkRef.current) return;
           onTaskClick(tk);
         },
         style: {
@@ -6287,12 +7156,12 @@ const WeekView = ({
         }
       })) : null;
       const blocks = timed.map((item, idx) => taskBlock(item, idx));
-      const isDropTarget = !!drag && !drag.outside && drag.payload && drag.payload.ds === ds;
+      const isDropTarget = !!drag && !drag.outside && drag.payload && !drag.payload.allDay && drag.payload.ds === ds;
       const dropPreview = isDropTarget ? /*#__PURE__*/React.createElement("div", {
         style: {
           position: "absolute",
           top: (drag.payload.mins - DAY_START * 60) * pxPerMin,
-          height: Math.max((drag.meta && drag.meta.dur || 60) * pxPerMin - 1, 18),
+          height: Math.max(Math.min(drag.meta && drag.meta.dur || 60, DAY_END * 60 - drag.payload.mins) * pxPerMin - 1, 18),
           insetInlineStart: 1.5,
           insetInlineEnd: 1.5,
           borderRadius: 6,
@@ -6311,7 +7180,9 @@ const WeekView = ({
       }, minsToTime(drag.payload.mins)) : null;
       return /*#__PURE__*/React.createElement("div", {
         key: i,
-        ref: registerZone("col" + i, ds),
+        ref: registerZone("col" + i, {
+          ds
+        }),
         onClick: e => {
           if (e.target !== e.currentTarget) return;
           // Don't open "new task" on the click that ends a drag.
@@ -6362,7 +7233,9 @@ const WeekView = ({
         willChange: "transform"
       }
     }, untimedTray, scrollWrap);
-    return /*#__PURE__*/React.createElement(React.Fragment, null, headerRow, swipeWrap, dragPill);
+    return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      ref: weekCaptureRef
+    }, headerRow, swipeWrap), dragPill);
   })());
 };
 
@@ -7514,7 +8387,17 @@ const PieChart = ({
     // Normalise lengths: new segments (first completion/cancellation) begin at
     // 0 so they grow in smoothly; removed segments are trimmed from the end.
     const n = toFracs.current.length;
-    const from = curFracs.current.slice();
+    let from = curFracs.current.slice();
+    // If none of this <svg>'s arcs has been drawn yet, there is nothing on screen
+    // to tween from — all the viewer sees is the gray placeholder ring. That
+    // happens when the svg was created after the last draw: data arriving after
+    // "No data", or the chart switching from the single full ring (which has no
+    // arcs) to several slices. Tweening from the stale fractions there made the
+    // biggest slice (pending) appear instantly as a nearly full ring and then
+    // merely shrink, instead of sweeping in like the rest. Start from zero so
+    // every slice grows in.
+    const painted = pathRefs.current.some(el => el && el.getAttribute("d"));
+    if (!painted) from = from.map(() => 0);
     while (from.length < n) from.push(0);
     fromFracs.current = from.slice(0, n);
     startTRef.current = null;
@@ -7785,7 +8668,26 @@ const PieChart = ({
       display: "block"
     },
     onMouseLeave: () => setHovered(null)
-  }, segments.map((seg, i) => /*#__PURE__*/React.createElement("path", {
+  },
+  // Gray placeholder ring. The arcs below are filled in imperatively and the
+  // animation that draws them can be deferred (until the chart scrolls into
+  // view), so a freshly created chart used to be a blank hole until then. This
+  // ring sits behind them: it shows while nothing is drawn yet, is visible
+  // through the unfilled part while arcs grow in, and is fully covered once the
+  // pie is complete (the arcs' own white outline hides its edges).
+  /*#__PURE__*/React.createElement("circle", {
+    "data-pie-track": "1",
+    cx: cx,
+    cy: cy,
+    r: (r + ri) / 2,
+    fill: "none",
+    stroke: C.text5,
+    strokeWidth: r - ri,
+    opacity: 0.35,
+    style: {
+      pointerEvents: "none"
+    }
+  }), segments.map((seg, i) => /*#__PURE__*/React.createElement("path", {
     key: i,
     ref: el => pathRefs.current[i] = el,
     d: initDs[i] || "",
@@ -10529,6 +11431,17 @@ const Dashboard = ({
   const [stickySection, setStickySection] = useState(null); // null | 'upnext' | 'overview'
   const [stickyDay, setStickyDay] = useState(null); // null | 'today' | 'tomorrow' | 'overdue'
   const stickyBarRef = useRef(null);
+  const upNextCaptureRef = useRef(null);
+  const [sharingUpNext, setSharingUpNext] = useState(false);
+  const shareUpNextImage = async () => {
+    if (sharingUpNext) return;
+    setSharingUpNext(true);
+    try {
+      await shareElementAsImage(upNextCaptureRef.current, `${getLang() === "he" ? "המשימות-הקרובות" : "up-next"}.png`);
+    } finally {
+      setSharingUpNext(false);
+    }
+  };
   const sentinelUpNext = useRef(null);
   const sentinelOverdue = useRef(null);
   const sentinelToday = useRef(null);
@@ -10890,6 +11803,7 @@ const Dashboard = ({
     }
   }, "📂"), " ", t("loadTasks"))), anyUpNext && (() => {
     return /*#__PURE__*/React.createElement("div", {
+      ref: upNextCaptureRef,
       style: {
         marginBottom: 28
       }
@@ -10902,8 +11816,15 @@ const Dashboard = ({
       style: {
         display: "flex",
         alignItems: "center",
+        justifyContent: "space-between",
         gap: 8,
         marginBottom: 14
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8
       }
     }, /*#__PURE__*/React.createElement(Icon, {
       name: "calendar",
@@ -10915,7 +11836,11 @@ const Dashboard = ({
         fontWeight: 700,
         color: C.text
       }
-    }, t("upNext"))), overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
+    }, t("upNext"))), /*#__PURE__*/React.createElement(ShareImageButton, {
+      onClick: shareUpNextImage,
+      busy: sharingUpNext,
+      title: t("shareUpNext")
+    })), overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 16
       }
@@ -14348,7 +15273,9 @@ const GCal = (() => {
       // zone, so every timed task drifted by the UTC offset each time it round-tripped.
       // Send the local wall-clock time and let timeZone mean what it says.
       const startLocal = `${task.date}T${time}:00`;
-      const mins = Number(task.length) > 0 ? Number(task.length) : 30;
+      // Same default the week grid draws an unset length with (1h), so the event
+      // in Google is the size it looks like here.
+      const mins = Number(task.length) > 0 ? Number(task.length) : DEFAULT_TASK_LENGTH;
       const end = new Date(new Date(startLocal).getTime() + mins * 60000);
       body.start = { dateTime: startLocal, timeZone: tz, date: null };
       body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz, date: null };
@@ -14637,6 +15564,8 @@ const GCal = (() => {
     return "gf" + hex;
   }
 
+  const roundLengthToQuarter = mins => Math.max(15, Math.round(mins / 15) * 15);
+
   function foreignEventToTask(calendarId, calSummary, shared, event) {
     const untitled = getLang() === "he" ? "(ללא כותרת)" : "(untitled)";
     const patch = {
@@ -14652,16 +15581,41 @@ const GCal = (() => {
       created: event.created ? new Date(event.created).getTime() : Date.now(),
       updated: event.updated ? new Date(event.updated).getTime() : Date.now()
     };
+    // googleRawLength / googleAllDay remember what the event really looked like in
+    // Google, so writing an edit back never silently reshapes it (see
+    // patchForeignEvent). They're always set explicitly so a stale value can't
+    // survive a later pull's merge.
+    patch.googleRawLength = null;
+    patch.googleAllDay = false;
     if (event.start?.dateTime) {
       const d = new Date(event.start.dateTime);
       const e = event.end?.dateTime ? new Date(event.end.dateTime) : null;
       patch.date = localDs(d);
       patch.time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-      patch.length = e ? Math.max(5, Math.round((e - d) / 60000)) : null;
+      if (e) {
+        // Length is smoothed to the nearest quarter hour (00/15/30/45 min) so it
+        // always reads cleanly in the form, diary grid and share image; never
+        // shorter than 15 min.
+        const raw = Math.round((e - d) / 60000);
+        patch.length = roundLengthToQuarter(raw);
+        patch.googleRawLength = raw;
+      } else {
+        patch.length = null;
+      }
     } else if (event.start?.date) {
       patch.date = event.start.date;
-      patch.time = "";
-      patch.length = null;
+      // Google's all-day end date is exclusive. One day stays a plain all-day
+      // (timeless) task; a longer one becomes a task starting 00:00 on its first
+      // day whose length is the whole span, in minutes (days * 24h).
+      const spanDays = event.end?.date ? Math.round((new Date(event.end.date + "T00:00:00") - new Date(event.start.date + "T00:00:00")) / 864e5) : 1;
+      if (spanDays > 1) {
+        patch.time = "00:00";
+        patch.length = spanDays * 1440;
+        patch.googleAllDay = true;
+      } else {
+        patch.time = "";
+        patch.length = null;
+      }
     } else {
       patch.date = "";
       patch.time = "";
@@ -14717,10 +15671,23 @@ const GCal = (() => {
     body.description = task.note ? String(task.note).slice(0, 7000) : null;
     if (String(task.date || "").trim()) {
       const time = normTime(task.time);
-      if (time) {
+      // An imported multi-day all-day event (00:00 start, whole-day length) that
+      // hasn't been reshaped locally goes back to Google as the all-day event it
+      // was, not as a 00:00 timed one.
+      const allDayDays = task.googleAllDay && time === "00:00" && Number(task.length) > 0 && Number(task.length) % 1440 === 0 ? Number(task.length) / 1440 : 0;
+      if (allDayDays) {
+        const endD = new Date(task.date + "T00:00:00");
+        endD.setDate(endD.getDate() + allDayDays);
+        body.start = { date: task.date, dateTime: null, timeZone: null };
+        body.end = { date: localDs(endD), dateTime: null, timeZone: null };
+      } else if (time) {
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
         const startLocal = `${task.date}T${time}:00`;
-        const mins = Number(task.length) > 0 ? Number(task.length) : 30;
+        // Same default the week grid draws an unset length with (1h), so the event
+      // in Google is the size it looks like here.
+      // If the length is still just the quarter-hour rounding of what Google has,
+      // send Google's exact original back instead of the rounded figure.
+      const mins = task.googleRawLength > 0 && roundLengthToQuarter(task.googleRawLength) === Number(task.length) ? task.googleRawLength : Number(task.length) > 0 ? Number(task.length) : DEFAULT_TASK_LENGTH;
         const end = new Date(new Date(startLocal).getTime() + mins * 60000);
         // Same "clear the unused field" fix as taskToEventBody: without this,
         // switching a timeless imported event to timed leaves Google's old
@@ -15655,7 +16622,16 @@ function App() {
         gcalEnqueue(() => GCal.deleteForeignEvent(editTask.googleCalendarId, editTask.googleEventId)).catch(() => {});
         delete gcalForeignPushed.current[editTask.id];
       }
-      setTasks(ts => ts.map(t => t.id === editTask.id ? {
+      // An archived task (an old done/cancelled one) isn't in `tasks`, so the map
+      // below would find nothing and the edit would be silently dropped. Route it
+      // through the same move-back-into-the-list step the drag handlers use.
+      const archivedHandled = moveArchivedTask(editTask.id, {
+        ...form,
+        done: !!editTask.done,
+        cancelled: !!editTask.cancelled,
+        ...(convertingFromGoogle ? { source: undefined, googleCalendarId: undefined, googleEventId: undefined, googleCalendarName: undefined, googleShared: undefined } : {})
+      });
+      if (!archivedHandled) setTasks(ts => ts.map(t => t.id === editTask.id ? {
         ...t,
         ...form,
         done: t.done || false,
@@ -15900,18 +16876,49 @@ function App() {
       } : t);
     });
   };
+  // Done/cancelled tasks beyond the newest ARCHIVE_BUFFER live in archiveTasks,
+  // not tasks — but every view still shows them and lets you pick them up. The
+  // reschedule/drop handlers only searched `tasks`, so dropping one was silently
+  // ignored and it snapped back. Bring it back into the active list with the new
+  // date/time (the same move "restore from archive" makes). Keeping it in the
+  // active list is also what lets the push effect send the change to Google;
+  // if the task is still among the oldest finished ones, persistTasks simply
+  // files it back into the archive afterwards, carrying the new values with it.
+  // Returns true when the id was an archived task (handled here), else false.
+  const moveArchivedTask = (id, patch) => {
+    if (tasks.some(t => t.id === id)) return false;
+    const arch = archiveTasks.find(t => t.id === id);
+    if (!arch) return false;
+    if (arch.hebcal || arch.intl || arch.type === "calendar" || arch.googleShared) return true;
+    const norm = v => v == null || v === false ? "" : JSON.stringify(v);
+    if (Object.keys(patch).every(k => norm(arch[k]) === norm(patch[k]))) return true; // nothing changes
+    const revived = { ...arch, ...patch, updated: Date.now() };
+    setTasks(ts => ts.some(t => t.id === id) ? ts : [...ts, revived]);
+    setArchiveTasks(arr => {
+      const updated = (arr || []).filter(t => t.id !== id);
+      _cacheArchiveToLocal(updated);
+      return updated;
+    });
+    return true;
+  };
   // Drag-to-reschedule from the week grid: move a task to another day/time.
   const handleReschedule = (id, newDate, newTime) => {
+    if (moveArchivedTask(id, { date: newDate, time: newTime || "", ...(newTime ? {} : { length: null }) })) return;
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
       // Same guards as delay: holidays and shared Google events never move.
       if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
-      if (task.date === newDate && task.time === newTime) return ts;
+      if (task.date === newDate && (task.time || "") === (newTime || "")) return ts;
+      // newTime === "" means the task was dropped on the all-day row. It becomes
+      // timeless, and a duration with no time means nothing (the edit modal
+      // enforces the same rule), so drop it rather than leave orphaned state
+      // that would later make the modal invent a time for it.
       return ts.map(t => t.id === id ? {
         ...t,
         date: newDate,
-        time: newTime,
+        time: newTime || "",
+        ...(newTime ? {} : { length: null }),
         updated: Date.now()
       } : t);
     });
@@ -15919,6 +16926,7 @@ function App() {
   // Drag-to-move in the list/month/up-next views: change only the date, keeping
   // the task's time of day intact.
   const handleDropDate = (id, newDate) => {
+    if (moveArchivedTask(id, { date: newDate })) return;
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -16250,6 +17258,9 @@ function App() {
   });
   // Expose lang globally so t() works in all components without prop-drilling
   if (typeof window !== "undefined") window.__lang = lang;
+  // Expose dark-mode state globally so custom-type color helpers can pick
+  // the right (light vs dark) bold hue without prop-drilling
+  if (typeof window !== "undefined") window.__dark = dark;
   if (typeof window !== "undefined") window.__openLoad = () => {
     setDataModalTab("load");
     setDataModalOpen(true);
