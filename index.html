@@ -134,6 +134,8 @@
     .month-enter-calendar { animation: slideInFromLeft 0.22s cubic-bezier(0.4,0,0.2,1) both; }
     @keyframes tileNumChange { 0%{opacity:0;transform:scale(0.5)} 55%{opacity:1;transform:scale(1.38)} 75%{transform:scale(0.93)} 90%{transform:scale(1.06)} 100%{transform:scale(1)} }
 .tile-num-pop { animation: tileNumChange 0.48s cubic-bezier(0.34,1.56,0.64,1) both; }
+    @keyframes tileClickPulse { 0%{transform:scale(1)} 35%{transform:scale(0.93)} 70%{transform:scale(1.04)} 100%{transform:scale(1)} }
+.tile-click-pulse { animation: tileClickPulse 0.32s cubic-bezier(0.34,1.56,0.64,1) both; }
   </style>
 </head>
 <body>
@@ -232,7 +234,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "2.8";
+const APP_VERSION = "3.4";
 
 const {
   useState,
@@ -1611,6 +1613,14 @@ const Icon = ({
     }), /*#__PURE__*/React.createElement("path", {
       d: "M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"
     })),
+    gripDots: /*#__PURE__*/React.createElement(React.Fragment, null, [[9, 6], [15, 6], [9, 12], [15, 12], [9, 18], [15, 18]].map(([cx, cy], i) => /*#__PURE__*/React.createElement("circle", {
+      key: i,
+      cx: cx,
+      cy: cy,
+      r: 1.6,
+      fill: "currentColor",
+      stroke: "none"
+    }))),
     trash: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polyline", {
       points: "3 6 5 6 21 6"
     }), /*#__PURE__*/React.createElement("path", {
@@ -9438,6 +9448,8 @@ const FilteredPieCard = ({
   onUnlock,
   onMoveUp,
   onMoveDown,
+  onTitlePointerDown,
+  isDraggingChart = false,
   prefLookahead = true
 }) => {
   const [inputVal, setInputVal] = useState(initialFilter);
@@ -9635,9 +9647,15 @@ const FilteredPieCard = ({
       borderRadius: 16,
       padding: 24,
       border: `1px solid ${!locked ? C.border2 : C.border}`,
-      boxShadow: C.shadow,
+      boxShadow: isDraggingChart ? "0 8px 24px rgba(0,0,0,0.18)" : C.shadow,
+      opacity: isDraggingChart ? 0.6 : 1,
+      transform: isDraggingChart ? "scale(1.02)" : undefined,
+      transition: isDraggingChart ? "none" : "opacity 0.15s, transform 0.15s",
       animation: "fadeIn 0.35s ease both",
-      flex: 1,
+      flex: locked ? "none" : 1,
+      minHeight: locked ? 200 : undefined,
+      maxHeight: locked ? 360 : undefined,
+      overflowY: locked ? "auto" : "visible",
       display: "flex",
       flexDirection: "column"
     }
@@ -9697,14 +9715,27 @@ const FilteredPieCard = ({
     const defaultTitle = chartType === "bar-date" ? (isHe ? "גרף עמודות" : "Count Plot") + dateLabel + typeLabel + keyLabel : chartType === "line" ? (isHe ? "גרף קווי" : "Line Chart") + dateLabel + typeLabel + keyLabel : chartType === "treemap" ? (isHe ? "מפת עץ" : "Treemap") + dateLabel + keyLabel : chartType === "gauge" ? (isHe ? "מד" : "Gauge") + dateLabel + typeLabel + keyLabel : filter ? filter + dateLabel + typeLabel : activeTypeFilter ? getTypeMeta(activeTypeFilter).label + dateLabel + keyLabel : timeRange === "today" ? t("todaySnapshot") + typeLabel : t("allTasks") + dateLabel + typeLabel;
     const displayTitle = titleVal.trim() || defaultTitle;
     return /*#__PURE__*/React.createElement("div", {
+      onPointerDown: locked && onTitlePointerDown ? onTitlePointerDown : undefined,
       style: {
         fontSize: 15,
         fontWeight: 700,
         color: C.text,
         marginBottom: 14,
-        unicodeBidi: "plaintext"
+        unicodeBidi: "plaintext",
+        display: "flex",
+        flexDirection: getLang() === "he" ? "row-reverse" : "row",
+        alignItems: "center",
+        gap: 6,
+        cursor: locked && onTitlePointerDown ? isDraggingChart ? "grabbing" : "grab" : undefined,
+        touchAction: locked && onTitlePointerDown ? "none" : undefined,
+        WebkitTouchCallout: locked && onTitlePointerDown ? "none" : undefined,
+        userSelect: isDraggingChart ? "none" : undefined
       }
-    }, locked ? displayTitle : getLang() === "he" ? "ערוך גרף מסונן" : "Edit Filter Chart");
+    }, locked && onTitlePointerDown && /*#__PURE__*/React.createElement(Icon, {
+      name: "gripDots",
+      size: 14,
+      color: C.text3
+    }), /*#__PURE__*/React.createElement("span", null, locked ? displayTitle : getLang() === "he" ? "ערוך גרף מסונן" : "Edit Filter Chart"));
   })())), !locked && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 12
@@ -10364,6 +10395,64 @@ const Dashboard = ({
   const stickyDayLabel = stickyDay === 'overdue' ? t("overdue") : stickyDay === 'today' ? t("today") : stickyDay === 'tomorrow' ? t("tomorrow") : null;
   const stickyRow1Label = stickySection === 'overview' ? isHe ? "מבט על" : "Overview" : isHe ? "הבא בתור" : "Up Next";
   const stickyRow1Icon = stickySection === 'overview' ? "bar-chart" : "calendar";
+
+  // ── Chart reorder (grab-and-drop by title) ───────────────────────────────
+  // Kept deliberately simple: press the chart's title, move over another
+  // chart, release. Works with mouse and touch via Pointer Events. The array
+  // is reordered live as you drag (like the up/down buttons, just continuous),
+  // so there's nothing extra to "commit" on release.
+  const chartNodeRefs = useRef({}); // chart id -> wrapper DOM node
+  const filteredChartsRef = useRef(filteredCharts);
+  filteredChartsRef.current = filteredCharts;
+  const [dragChartId, setDragChartId] = useState(null);
+  const beginChartDrag = (e, chartId) => {
+    if (e.button !== undefined && e.button !== 0) return; // left-click / primary touch only
+    const startX = e.clientX,
+      startY = e.clientY;
+    const THRESHOLD = 4;
+    let dragging = false;
+    const onMove = ev => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < THRESHOLD && Math.abs(ev.clientY - startY) < THRESHOLD) return;
+        dragging = true;
+        setDragChartId(chartId);
+      }
+      ev.preventDefault();
+      const fromIdx = filteredChartsRef.current.findIndex(c => c.id === chartId);
+      if (fromIdx === -1) return;
+      let bestId = chartId,
+        bestDist = Infinity;
+      Object.entries(chartNodeRefs.current).forEach(([cid, node]) => {
+        if (!node) return;
+        const r = node.getBoundingClientRect();
+        const dist = Math.hypot(ev.clientX - (r.left + r.width / 2), ev.clientY - (r.top + r.height / 2));
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestId = cid;
+        }
+      });
+      const toIdx = filteredChartsRef.current.findIndex(c => c.id === bestId);
+      if (toIdx !== -1 && toIdx !== fromIdx) {
+        setFilteredCharts(cs => {
+          const arr = [...cs];
+          const [moved] = arr.splice(fromIdx, 1);
+          arr.splice(toIdx, 0, moved);
+          return arr;
+        });
+      }
+    };
+    const onUp = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      document.body.style.userSelect = "";
+      setDragChartId(null);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+    document.body.style.userSelect = "none";
+  };
   return /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.3s ease"
@@ -10821,13 +10910,31 @@ const Dashboard = ({
   }, isHe ? "מבט על" : "Overview")), tasks.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
+      // auto-fill (not auto-fit) packs as many ~280px+ columns per row as
+      // will fit on wide screens, but — unlike auto-fit — keeps any leftover
+      // trailing columns in the grid instead of collapsing them, so a row
+      // with fewer cards than fit doesn't stretch those cards to fill the
+      // gap. Every card ends up the same width, and wide screens fit more
+      // per line automatically as space allows.
+      gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))",
       gap: 16,
       padding: "16px 16px",
-      alignItems: "stretch"
+      // "start" (not "stretch") so each card's box hugs its own content
+      // height instead of being force-stretched to match the tallest card
+      // in the row, which was leaving a lot of empty space under shorter
+      // charts (e.g. the pie/gauge cards next to a taller line/treemap card).
+      alignItems: "start"
     }
-  }, filteredCharts.map((chart, idx) => /*#__PURE__*/React.createElement(FilteredPieCard, {
+  }, filteredCharts.map((chart, idx) => /*#__PURE__*/React.createElement("div", {
     key: chart.id,
+    ref: el => {
+      if (el) chartNodeRefs.current[chart.id] = el;else delete chartNodeRefs.current[chart.id];
+    },
+    style: {
+      minWidth: 0,
+      width: "100%"
+    }
+  }, /*#__PURE__*/React.createElement(FilteredPieCard, {
     tasks: tasks,
     initialFilter: chart.filter || "",
     initialTimeRange: chart.timeRange || "all",
@@ -10835,6 +10942,8 @@ const Dashboard = ({
     initialTitle: chart.title || "",
     initialChartType: chart.chartType || "pie",
     initialLocked: chart.locked,
+    onTitlePointerDown: e => beginChartDrag(e, chart.id),
+    isDraggingChart: dragChartId === chart.id,
     onFilterChange: f => setFilteredCharts(cs => cs.map(c => c.id === chart.id ? {
       ...c,
       filter: f
@@ -10888,7 +10997,7 @@ const Dashboard = ({
       return a;
     }) : null,
     prefLookahead: prefLookahead
-  }))), tasks.length > 0 && /*#__PURE__*/React.createElement("div", {
+  })))), tasks.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "center",
@@ -12286,72 +12395,92 @@ const SettingsModal = ({
       padding: isHe ? "8px 50px 12px 0" : "8px 0 12px 50px",
       direction: isHe ? "rtl" : "ltr"
     }
-  }, cleanDelaysMsg), /*#__PURE__*/React.createElement(Row, {
-    icon: "🏷️",
-    label: isHe ? "מחק משימות לפי סוג" : "Delete tasks by type",
-    sub: delType
-      ? (isHe
-          ? `${typeCounts[delType] || 0} משימות ייעלמו — כולל הארכיון`
-          : `${typeCounts[delType] || 0} task${(typeCounts[delType] || 0) === 1 ? "" : "s"} will be removed — archive included`)
-      : (isHe ? "בחר סוג כדי למחוק את כל המשימות שלו" : "Pick a type to wipe every task under it"),
-    danger: true
-  }, /*#__PURE__*/React.createElement("select", {
+  }, cleanDelaysMsg), /*#__PURE__*/React.createElement("div", {
+    style: { padding: "14px 0", borderBottom: `1px solid ${C.border}` }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 14, direction: isHe ? "rtl" : "ltr" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 36, height: 36, borderRadius: 10, background: C.redBg,
+      border: `1px solid ${C.redBorder}`, display: "flex",
+      alignItems: "center", justifyContent: "center", flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", { style: { fontSize: 18 } }, "🏷️")),
+  /*#__PURE__*/React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 14, fontWeight: 600, color: C.red, lineHeight: 1.2 }
+    }, isHe ? "מחק משימות לפי סוג" : "Delete tasks by type"),
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11, color: C.text4, marginTop: 2 }
+    }, isHe ? "כולל הארכיון" : "Archive included")),
+  /*#__PURE__*/React.createElement("select", {
     value: delType,
     onChange: e => { setDelType(e.target.value); setDelConfirm(false); setDelMsg(""); },
     style: {
-      padding: "7px 10px",
-      borderRadius: 10,
-      border: `1px solid ${C.border2}`,
+      width: 116, flexShrink: 0,
+      padding: "7px 10px", borderRadius: 20,
+      border: `1.5px solid ${delType ? C.redBorder : C.border2}`,
       background: C.card2,
-      color: C.text,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      flexShrink: 0,
-      maxWidth: 150
+      color: delType ? C.red : C.text3,
+      fontSize: 12, fontWeight: 600, cursor: "pointer",
+      textOverflow: "ellipsis",
+      transition: "border-color 0.15s, color 0.15s"
     }
-  }, /*#__PURE__*/React.createElement("option", { value: "" }, isHe ? "בחר סוג…" : "Choose type…"), deletableTypes.map(tp => /*#__PURE__*/React.createElement("option", {
-    key: tp,
-    value: tp
-  }, `${getTypeMeta(tp).label} (${typeCounts[tp]})`)))), delType && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("option", { value: "" }, isHe ? "בחר סוג" : "Pick type"),
+  deletableTypes.map(tp => /*#__PURE__*/React.createElement("option", {
+    key: tp, value: tp
+  }, `${getTypeMeta(tp).label} (${typeCounts[tp]})`)))),
+  /*#__PURE__*/React.createElement("div", {
     style: {
-      display: "flex",
-      gap: 8,
-      alignItems: "center",
-      padding: isHe ? "0 50px 12px 0" : "0 0 12px 50px",
-      marginTop: -4,
+      overflow: "hidden",
+      maxHeight: delType ? 56 : 0,
+      opacity: delType ? 1 : 0,
+      transition: "max-height 0.22s cubic-bezier(0.4,0,0.2,1), opacity 0.18s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex", alignItems: "center", justifyContent: "flex-end",
+      gap: 8, flexWrap: "nowrap", paddingTop: 10,
       direction: isHe ? "rtl" : "ltr"
     }
   }, delConfirm
-    ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
-        onClick: () => setDelConfirm(false),
-        style: {
-          padding: "7px 12px", borderRadius: 20,
-          border: `1px solid ${C.border}`, background: C.card2, color: C.text3,
-          fontSize: 12, fontWeight: 600, cursor: "pointer"
-        }
-      }, isHe ? "ביטול" : "Cancel"), /*#__PURE__*/React.createElement("button", {
-        onClick: runDeleteType,
-        style: {
-          padding: "7px 14px", borderRadius: 20, border: "none",
-          background: "linear-gradient(135deg,#EF4444,#DC2626)", color: "#fff",
-          fontSize: 12, fontWeight: 700, cursor: "pointer",
-          boxShadow: "0 2px 8px rgba(239,68,68,0.4)"
-        }
-      }, isHe
-        ? `למחוק ${typeCounts[delType] || 0}?`
-        : `Delete ${typeCounts[delType] || 0}?`))
+    ? /*#__PURE__*/React.createElement(React.Fragment, null,
+        /*#__PURE__*/React.createElement("span", {
+          style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: C.red, lineHeight: 1.3 }
+        }, isHe
+          ? `למחוק ${typeCounts[delType] || 0}? לא ניתן לבטל.`
+          : `Delete ${typeCounts[delType] || 0}? Can't undo.`),
+        /*#__PURE__*/React.createElement("button", {
+          onClick: e => { e.currentTarget.blur(); setDelConfirm(false); },
+          style: {
+            padding: "7px 12px", borderRadius: 20, flexShrink: 0,
+            border: `1px solid ${C.border}`, background: C.card2, color: C.text3,
+            fontSize: 12, fontWeight: 600, cursor: "pointer"
+          }
+        }, isHe ? "ביטול" : "Cancel"),
+        /*#__PURE__*/React.createElement("button", {
+          onClick: e => { e.currentTarget.blur(); runDeleteType(); },
+          style: {
+            padding: "7px 14px", borderRadius: 20, border: "none", flexShrink: 0,
+            background: "linear-gradient(135deg,#EF4444,#DC2626)", color: "#fff",
+            fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap",
+            boxShadow: "0 2px 8px rgba(239,68,68,0.4)"
+          }
+        }, isHe ? "מחק" : "Delete"))
     : /*#__PURE__*/React.createElement("button", {
-        onClick: () => setDelConfirm(true),
+        onClick: e => { e.currentTarget.blur(); setDelConfirm(true); },
         disabled: !(typeCounts[delType] > 0),
         style: {
-          padding: "7px 16px", borderRadius: 20,
+          padding: "7px 16px", borderRadius: 20, flexShrink: 0,
           border: `1.5px solid ${C.redBorder}`, background: C.redBg, color: C.red,
-          fontSize: 13, fontWeight: 600,
+          fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
           cursor: typeCounts[delType] > 0 ? "pointer" : "default",
           opacity: typeCounts[delType] > 0 ? 1 : 0.5
         }
-      }, isHe ? "מחק הכל" : "Delete all")), delMsg && /*#__PURE__*/React.createElement("div", {
+      }, isHe
+        ? `מחק ${typeCounts[delType] || 0} משימות`
+        : `Delete ${typeCounts[delType] || 0} task${(typeCounts[delType] || 0) === 1 ? "" : "s"}`)))),
+  delMsg && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: C.text3,
@@ -13671,8 +13800,30 @@ const GCal = (() => {
   // background tab) used to leave a promise pending forever. Because every API call
   // is queued behind the previous one, one hung promise froze the entire sync — which
   // is what "not loading, only updating" looked like. Now it always settles.
-  async function ensureToken(interactive) {
-    if (accessToken && Date.now() < tokenExpiresAt - 120000) return accessToken;
+  // Remembering which Google account this is lets Google answer the silent
+  // renewal without guessing (or asking) which account to use. Calendar's own
+  // "primary" calendar id IS the account's email, so no extra scope is needed.
+  const LS_HINT = "taskit_gcal_hint";
+  const getHint = () => { try { return localStorage.getItem(LS_HINT) || ""; } catch { return ""; } };
+  const setHint = v => { try { v ? localStorage.setItem(LS_HINT, v) : localStorage.removeItem(LS_HINT); } catch {} };
+  function learnHint(token) {
+    if (!token || getHint()) return;
+    fetch(`${API}/calendars/primary`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d && typeof d.id === "string" && d.id.includes("@")) setHint(d.id); })
+      .catch(() => {});
+  }
+
+  // Every caller that needs a token while one is already being requested just
+  // waits for that same answer, instead of each one overwriting the shared
+  // callback and leaving the earlier ones hanging until the timeout.
+  let waiters = [];
+  const settleAll = (ok, val) => { const w = waiters; waiters = []; w.forEach(f => f(ok, val)); };
+  const renewListeners = new Set();
+  const notifyRenewed = () => { renewListeners.forEach(cb => { try { cb(); } catch {} }); };
+
+  async function ensureToken(interactive, force) {
+    if (!force && accessToken && Date.now() < tokenExpiresAt - 120000) return accessToken;
     await loadGis();
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -13681,33 +13832,96 @@ const GCal = (() => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        waiters = waiters.filter(f => f !== finish);
         ok ? resolve(val) : reject(val);
       };
       timer = setTimeout(
         () => finish(false, Object.assign(new Error("Google sign-in did not respond"), { code: "token_timeout" })),
         TOKEN_TIMEOUT_MS
       );
+      const alreadyAsking = waiters.length > 0;
+      waiters.push(finish);
+      if (alreadyAsking && !interactive) return; // share the request already in flight
       try {
         if (!tokenClient) {
           tokenClient = google.accounts.oauth2.initTokenClient({
             client_id: CLIENT_ID,
             scope: SCOPE,
-            callback: () => {}
+            callback: resp => {
+              if (resp.error) { settleAll(false, Object.assign(new Error(resp.error_description || resp.error), { code: resp.error })); return; }
+              accessToken = resp.access_token;
+              tokenExpiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
+              saveToken(accessToken, tokenExpiresAt);
+              scheduleRenew();
+              learnHint(accessToken);
+              settleAll(true, accessToken);
+            },
+            error_callback: err => settleAll(false, Object.assign(new Error(err?.message || "Google sign-in was dismissed"), { code: err?.type || "popup_failed" }))
           });
         }
-        tokenClient.callback = resp => {
-          if (resp.error) { finish(false, Object.assign(new Error(resp.error_description || resp.error), { code: resp.error })); return; }
-          accessToken = resp.access_token;
-          tokenExpiresAt = Date.now() + (resp.expires_in || 3600) * 1000;
-          saveToken(accessToken, tokenExpiresAt);
-          finish(true, accessToken);
-        };
-        tokenClient.error_callback = err => finish(false, Object.assign(new Error(err?.message || "Google sign-in was dismissed"), { code: err?.type || "popup_failed" }));
-        tokenClient.requestAccessToken({ prompt: interactive ? "consent" : "" });
+        const hint = getHint();
+        // With a known account that already granted access there is no need to
+        // force the consent screen again on a manual reconnect.
+        tokenClient.requestAccessToken({ prompt: interactive && !hint ? "consent" : "", ...(hint ? { hint } : {}) });
       } catch (e) {
         finish(false, e);
       }
     });
+  }
+
+  // ── Renew before it expires, and use the person's taps when we must ───────
+  // Google only lets a browser-only app hold a token for ~1 hour, so the goal is
+  // to swap it for a new one *early* (while the app is open and the old token is
+  // still good), instead of being caught with an expired one and a blocked
+  // silent request. If the silent attempt is refused (iOS often does), the very
+  // next tap anywhere in the app retries it from inside that tap, where browsers
+  // allow the sign-in popup.
+  const RENEW_EARLY_MS = 5 * 60000;
+  const RENEW_WINDOW_MS = 10 * 60000;
+  let renewTimer = null;
+  let lastRenewFail = 0;
+  let gestureArmed = false;
+  const tokenUsable = (margin = 30000) => !!(accessToken && Date.now() < tokenExpiresAt - margin);
+
+  function scheduleRenew() {
+    clearTimeout(renewTimer);
+    if (!accessToken) return;
+    const wait = Math.max(5000, tokenExpiresAt - Date.now() - RENEW_EARLY_MS);
+    renewTimer = setTimeout(() => { renewIfNeeded(); }, wait);
+  }
+
+  function armGestureRenew() {
+    if (gestureArmed) return;
+    gestureArmed = true;
+    const handler = () => {
+      document.removeEventListener("click", handler, true);
+      gestureArmed = false;
+      if (!isConnected()) return;
+      ensureToken(false, true)
+        .then(() => { lastRenewFail = 0; if (isConnected()) notifyRenewed(); })
+        .catch(() => { lastRenewFail = Date.now(); });
+    };
+    document.addEventListener("click", handler, true);
+  }
+
+  async function renewIfNeeded() {
+    if (!isConnected()) return false;
+    if (document.visibilityState !== "visible") return tokenUsable();
+    if (tokenUsable(RENEW_WINDOW_MS)) return true;
+    if (Date.now() - lastRenewFail < 60000) return tokenUsable();
+    try {
+      await ensureToken(false, true);
+      lastRenewFail = 0;
+      if (isConnected()) notifyRenewed();
+      return true;
+    } catch {
+      lastRenewFail = Date.now();
+      // Only keep the tap-to-renew armed once the token is (nearly) gone, so
+      // taps are not hijacked while the current one still has plenty of life.
+      if (!tokenUsable(3 * 60000)) armGestureRenew();
+      else { clearTimeout(renewTimer); renewTimer = setTimeout(() => { renewIfNeeded(); }, 90000); }
+      return tokenUsable();
+    }
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -13749,13 +13963,20 @@ const GCal = (() => {
       try { google.accounts.oauth2.revoke(accessToken, () => {}); } catch {}
     }
     accessToken = null; tokenExpiresAt = 0; calMap = null; calMapAt = 0;
+    clearTimeout(renewTimer);
+    setHint("");
     setConnected(false);
     clearSavedToken();
   }
 
   async function tryRestoreSilently() {
     if (!isConnected()) return false;
-    try { await ensureToken(false); return true; } catch { return false; }
+    try {
+      await ensureToken(false);
+      scheduleRenew();
+      learnHint(accessToken);
+      return true;
+    } catch { return false; }
   }
 
   // ── Calendars (discovered remotely, never cached across sessions) ──────────
@@ -14299,7 +14520,8 @@ const GCal = (() => {
   }
 
   return {
-    isConnected, connect, disconnect, tryRestoreSilently,
+    isConnected, connect, disconnect, tryRestoreSilently, renewIfNeeded,
+    onRenewed: cb => { renewListeners.add(cb); return () => renewListeners.delete(cb); },
     pushTask, deleteTask, pullAll, reconcileAndDedupe,
     eventToTaskPatch, ensureCalendarId, shouldSync, syncSkipReason,
     taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds,
@@ -14387,8 +14609,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [specialLoading, setSpecialLoading] = useState(null); // "updating" | "resetting" | null
   const [dataModalTab, setDataModalTab] = useState("copy");
-  const [activeTileNote, setActiveTileNote] = useState(null);
-  const lastTileNoteRef = useRef(0);
+  const [tileClicks, setTileClicks] = useState({});
   // Bottom bar drag state
   const barDragRef = useRef({
     dragging: false,
@@ -14827,6 +15048,26 @@ function App() {
     }
   }, []);
 
+  // Renew the Google token early, and again whenever the app comes back to the
+  // foreground, regains focus, or the network returns — instead of waiting for
+  // the token to expire in the middle of a sync.
+  useEffect(() => {
+    const unsub = GCal.onRenewed(() => { setGcalConnected(true); setGcalNeedsLogin(false); });
+    const kick = () => { if (GCal.isConnected()) GCal.renewIfNeeded(); };
+    const onVis = () => { if (document.visibilityState === "visible") kick(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", kick);
+    window.addEventListener("pageshow", kick);
+    window.addEventListener("online", kick);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", kick);
+      window.removeEventListener("pageshow", kick);
+      window.removeEventListener("online", kick);
+      unsub();
+    };
+  }, []);
+
   // Keep the counters honest whenever either side of the comparison moves.
   useEffect(() => {
     if (!gcalConnected) return;
@@ -14980,7 +15221,7 @@ function App() {
     return () => clearTimeout(fabIdleTimer.current);
   }, []);
   useEffect(() => {
-    setActiveTileNote(null);
+    setTileClicks({});
   }, [view]);
   useEffect(() => {
     const pruned = persistTasks(tasks, setArchiveTasks);
@@ -15443,11 +15684,25 @@ function App() {
       // can drag them out of the Google section into any regular section.
       if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
       if (task.type === newType) return ts;
+      // Same conversion as the manual edit-modal path (see handleSave): a
+      // "google" task re-typed to a real TaskIt type stops being a mirror of
+      // the original Google event. Without this, the task keeps
+      // source==="google" and its googleEventId, so it's skipped by the
+      // normal TaskIt push effect (which defers "google" tasks to
+      // patchForeignEvent) — nothing ever persists the new type anywhere,
+      // and the next foreign pull re-imports the untouched original event,
+      // silently reverting the drag on refresh.
+      const convertingFromGoogle = task.source === "google" && newType !== "google";
+      if (convertingFromGoogle && !task.googleShared) {
+        gcalEnqueue(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
+        delete gcalForeignPushed.current[task.id];
+      }
       // "repeated" carries a recurrence interval; moving into it needs a sane
       // default, and moving out of it drops the interval entirely.
       const patch = {
         type: newType,
-        updated: Date.now()
+        updated: Date.now(),
+        ...(convertingFromGoogle ? { source: undefined, googleCalendarId: undefined, googleEventId: undefined, googleCalendarName: undefined, googleShared: undefined } : {})
       };
       if (newType === "repeated" && !task.recur) patch.recur = 7;
       if (newType !== "repeated" && task.recur) patch.recur = null;
@@ -16811,25 +17066,12 @@ function App() {
       }
     }, pillInfoW.label));
   })()), (() => {
-    const tileDescs = [{
-      en: "Pending tasks from today through Saturday, plus overdue. Includes projected recurring task occurrences.",
-      he: "משימות ממתינות מהיום עד שבת, כולל איחורים ותדירויות עתידיות של משימות חוזרות."
-    }, {
-      en: "Tasks completed this week.",
-      he: "משימות שהושלמו השבוע."
-    }, {
-      en: "Tasks past their due date, still pending.",
-      he: "משימות שעבר תאריכן ועדיין ממתינות."
-    }, {
-      en: "Pending tasks due today, including all overdue from previous days.",
-      he: "משימות ממתינות להיום, כולל כל הבאיחור מימים קודמים."
-    }];
-    return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
         gridTemplateColumns: "repeat(4,1fr)",
         gap: 6,
-        marginBottom: activeTileNote !== null ? 8 : 16
+        marginBottom: 16
       }
     }, [{
       val: totalActive,
@@ -16857,16 +17099,16 @@ function App() {
       border: C.amberBorder
     }].map((s, i) => /*#__PURE__*/React.createElement("div", {
       key: i,
-      onClick: () => {
-        if (activeTileNote !== i) lastTileNoteRef.current = i;
-        setActiveTileNote(activeTileNote === i ? null : i);
-      },
+      onClick: () => setTileClicks(c => ({
+        ...c,
+        [i]: (c[i] || 0) + 1
+      })),
       style: {
         padding: "8px 10px",
         borderRadius: 10,
         background: s.bg,
         cursor: "pointer",
-        border: `1px solid ${activeTileNote === i ? s.color : s.border}`,
+        border: `1px solid ${s.border}`,
         animation: `fadeIn 0.3s ease ${i * 0.07}s forwards`,
         opacity: 0,
         boxShadow: dark ? `0 2px 14px ${s.color}28` : "none",
@@ -16879,6 +17121,12 @@ function App() {
       onMouseLeave: e => {
         e.currentTarget.style.boxShadow = "none";
         e.currentTarget.style.transform = "translateY(0)";
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      key: `tile-click-${i}-${tileClicks[i] || 0}`,
+      className: "tile-click-pulse",
+      style: {
+        display: "inline-block"
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -16900,32 +17148,7 @@ function App() {
         color: C.text4,
         marginTop: 3
       }
-    }, s.label)))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        overflow: "hidden",
-        maxHeight: activeTileNote !== null ? "120px" : "0px",
-        opacity: activeTileNote !== null ? 1 : 0,
-        transform: activeTileNote !== null ? "translateY(0)" : "translateY(-6px)",
-        transition: "max-height 0.28s cubic-bezier(0.4,0,0.2,1), opacity 0.22s ease, transform 0.22s ease",
-        marginBottom: activeTileNote !== null ? 16 : 0
-      }
-    }, (() => {
-      const idx = activeTileNote !== null ? activeTileNote : lastTileNoteRef.current;
-      const bgs = [C.blueBg, C.greenBg, C.redBg, C.amberBg];
-      const borders = [C.blueBorder, C.greenBorder, C.redBorder, C.amberBorder];
-      return /*#__PURE__*/React.createElement("div", {
-        style: {
-          padding: "10px 14px",
-          borderRadius: 10,
-          background: bgs[idx],
-          border: `1px solid ${borders[idx]}`,
-          fontSize: 12,
-          color: C.text2,
-          lineHeight: 1.5,
-          transition: "background 0.2s,border-color 0.2s"
-        }
-      }, getLang() === "he" ? tileDescs[idx].he : tileDescs[idx].en);
-    })()));
+    }, s.label)))));
   })(), (() => {
     const isHe = getLang() === "he";
     const prompts = [];
