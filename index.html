@@ -233,7 +233,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "4.0";
+const APP_VERSION = "4.1";
 
 const {
   useState,
@@ -14295,7 +14295,10 @@ const GCal = (() => {
     const prefix = task.done ? "✔ " : task.cancelled ? "✖ " : "";
     const body = {
       summary: (prefix + String(task.name || "")).slice(0, 1000),
-      description: task.note ? String(task.note).slice(0, 7000) : undefined,
+      // null, not undefined: undefined keys are dropped by JSON.stringify, which
+      // would leave a stale old note on the Google event forever once the local
+      // note is cleared. null is a real value and actually clears it.
+      description: task.note ? String(task.note).slice(0, 7000) : null,
       extendedProperties: {
         private: {
           taskitId: String(task.id),
@@ -14317,11 +14320,26 @@ const GCal = (() => {
         }
       }
     };
-    if (isHolidayTask(task)) body.transparency = "transparent"; // a marker, not a commitment
+    // Explicit either way, never left unset: transparency is exactly as prone to
+    // staleness as start/end above. A holiday or dateless task syncs as
+    // "transparent" (free); if it's only set in that branch and simply omitted
+    // otherwise, a task that later gets a real date/time keeps showing as
+    // transparent/free forever, since a PATCH that doesn't mention the field
+    // leaves Google's existing value untouched.
+    body.transparency = (isHolidayTask(task) || isDateless(task)) ? "transparent" : "opaque";
+    // Google's PATCH endpoint merges the *sub-fields* of start/end rather than
+    // replacing the object wholesale: if an event was previously all-day (start =
+    // {date}) and we PATCH in start = {dateTime, timeZone} without also clearing
+    // "date", Google keeps the old "date" around alongside the new "dateTime" and
+    // rejects the event as invalid (a start can't have both). Sending the unused
+    // key explicitly as null clears it, which is the documented way to drop a
+    // field in a Google API patch. Every branch below sets all three of
+    // date/dateTime/timeZone, explicitly nulling whichever two don't apply, so a
+    // task can freely move between dateless, all-day and timed without leaving a
+    // stale field behind for Google to choke on.
     if (isDateless(task)) {
-      body.start = { date: ANCHOR_DATE };
-      body.end = { date: ANCHOR_END };
-      body.transparency = "transparent";
+      body.start = { date: ANCHOR_DATE, dateTime: null, timeZone: null };
+      body.end = { date: ANCHOR_END, dateTime: null, timeZone: null };
       return body;
     }
     const time = normTime(task.time);
@@ -14332,13 +14350,13 @@ const GCal = (() => {
       const startLocal = `${task.date}T${time}:00`;
       const mins = Number(task.length) > 0 ? Number(task.length) : 30;
       const end = new Date(new Date(startLocal).getTime() + mins * 60000);
-      body.start = { dateTime: startLocal, timeZone: tz };
-      body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz };
+      body.start = { dateTime: startLocal, timeZone: tz, date: null };
+      body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz, date: null };
     } else {
       const d = new Date(task.date + "T00:00:00");
       const next = new Date(d); next.setDate(next.getDate() + 1);
-      body.start = { date: task.date };
-      body.end = { date: localDs(next) };
+      body.start = { date: task.date, dateTime: null, timeZone: null };
+      body.end = { date: localDs(next), dateTime: null, timeZone: null };
     }
     return body;
   }
@@ -14372,6 +14390,27 @@ const GCal = (() => {
   }
 
   const remoteSigOf = event => event.extendedProperties?.private?.sig || null;
+
+  // Compares an already-pulled Google event's *visible* fields against the
+  // canonical body this task would produce — ignoring the stored "sig" extended
+  // property, which is invisible in Google Calendar's own UI. A manual edit
+  // there (rename, redate, add a note, add a time) never touches that property,
+  // so trusting it alone would call a drifted event "in sync" forever. This is
+  // what lets a pull actually notice the drift so it can be corrected. Only the
+  // presence of a time is compared, not its exact string, since Google returns
+  // dateTime with a timezone offset appended and a byte-for-byte match isn't
+  // the point — whether it's still date-only vs. timed is.
+  function eventMatchesTask(event, task) {
+    const body = taskToEventBody(task);
+    if ((event.summary || "") !== body.summary) return false;
+    if ((event.description || null) !== (body.description == null ? null : body.description)) return false;
+    if ((event.start?.date || null) !== (body.start.date || null)) return false;
+    if (!!event.start?.dateTime !== !!body.start.dateTime) return false;
+    if ((event.end?.date || null) !== (body.end.date || null)) return false;
+    if (!!event.end?.dateTime !== !!body.end.dateTime) return false;
+    if ((event.transparency || "opaque") !== body.transparency) return false;
+    return true;
+  }
 
   // ── Push ──────────────────────────────────────────────────────────────────
   // knownLoc, when given, is the calendar id the caller last saw this task's event
@@ -14683,13 +14722,17 @@ const GCal = (() => {
         const startLocal = `${task.date}T${time}:00`;
         const mins = Number(task.length) > 0 ? Number(task.length) : 30;
         const end = new Date(new Date(startLocal).getTime() + mins * 60000);
-        body.start = { dateTime: startLocal, timeZone: tz };
-        body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz };
+        // Same "clear the unused field" fix as taskToEventBody: without this,
+        // switching a timeless imported event to timed leaves Google's old
+        // start.date sitting next to the new start.dateTime and the PATCH is
+        // rejected.
+        body.start = { dateTime: startLocal, timeZone: tz, date: null };
+        body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz, date: null };
       } else {
         const d = new Date(task.date + "T00:00:00");
         const next = new Date(d); next.setDate(next.getDate() + 1);
-        body.start = { date: task.date };
-        body.end = { date: localDs(next) };
+        body.start = { date: task.date, dateTime: null, timeZone: null };
+        body.end = { date: localDs(next), dateTime: null, timeZone: null };
       }
     }
     await apiFetch(`/calendars/${enc(task.googleCalendarId)}/events/${enc(task.googleEventId)}`, {
@@ -14712,7 +14755,8 @@ const GCal = (() => {
     pushTask, deleteTask, pullAll, reconcileAndDedupe,
     eventToTaskPatch, ensureCalendarId, shouldSync, syncSkipReason,
     taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds,
-    listForeignCalendars, pullForeign, patchForeignEvent, deleteForeignEvent, foreignTaskId
+    listForeignCalendars, pullForeign, patchForeignEvent, deleteForeignEvent, foreignTaskId,
+    isHolidayTask, eventMatchesTask
   };
 })();
 
@@ -14956,12 +15000,28 @@ function App() {
       const remote = {};
       const byId = {};
       const loc = {};
+      // Looked up by id so a holiday event's actual fields can be checked
+      // against what's already stored locally, not against a patch built from
+      // whatever Google currently has (which is exactly what might have drifted).
+      const localById = {};
+      for (const t of tasks) localById[t.id] = t;
+      const NEEDS_REPAIR = "__needs_repair__"; // never equals a real taskSignature() output
       for (const { event, calendarId } of events) {
         const tid = event.extendedProperties?.private?.taskitId;
         if (!tid) continue;
-        remote[tid] = GCal.remoteSigOf(event) || "";
         byId[tid] = event;
         loc[tid] = calendarId;
+        const localTask = localById[tid];
+        // Holiday events are a read-only mirror of what TaskIt itself computed —
+        // never meant to be edited, locally or on Google's side. Nothing stops
+        // someone renaming, redating, or adding a time/note to one directly in
+        // Google Calendar, though, and the stored "sig" survives that untouched
+        // (it's not a field the Calendar UI exposes), so it alone would call a
+        // drifted event "in sync" forever. Recording a signature that can never
+        // match forces the push effect below to restore it instead.
+        remote[tid] = (localTask && GCal.isHolidayTask(localTask) && !GCal.eventMatchesTask(event, localTask))
+          ? NEEDS_REPAIR
+          : (GCal.remoteSigOf(event) || "");
       }
       const hadBefore = gcalRemote.current;
       gcalRemote.current = remote;
@@ -14974,8 +15034,13 @@ function App() {
         let next = ts;
         for (const [tid, event] of Object.entries(byId)) {
           if (archivedIds.has(tid)) continue;
-          const patch = GCal.eventToTaskPatch(event);
           const existing = next.find(t => t.id === tid);
+          // Never let a pulled event overwrite an existing holiday task's own
+          // fields — see the NEEDS_REPAIR comment above. The task stays exactly
+          // what TaskIt generated; it's Google's copy that gets corrected, by
+          // the push effect, not the other way around.
+          if (existing && GCal.isHolidayTask(existing)) continue;
+          const patch = GCal.eventToTaskPatch(event);
           if (!existing) {
             next = next === ts ? [...ts] : next;
             next.push({ id: tid, created: Date.now(), ...patch });
@@ -14992,6 +15057,11 @@ function App() {
           const isFirstPull = Object.keys(hadBefore).length === 0;
           next = (next === ts ? [...ts] : next).filter(t => {
             if (t.source === "google") return true; // lives in a foreign calendar, handled by gcalPullForeignNow
+            // Holiday tasks are regenerated locally, not "owned" by whatever
+            // Google currently has. If someone deletes the event in Google, that
+            // is something to recreate on the next push, never a reason to give
+            // up on the task and remove it here.
+            if (GCal.isHolidayTask(t)) return true;
             if (!GCal.shouldSync(t)) return true;
             if (byId[t.id]) return true;
             if (isFirstPull) return !initialLocalIds.current.has(t.id);
