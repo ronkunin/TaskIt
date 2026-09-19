@@ -2843,6 +2843,27 @@ const DeleteButton = ({
 // null/undefined length = not set, treated as 60 minutes (1 hour) by default.
 const DEFAULT_TASK_LENGTH = 60;
 const LENGTH_OPTIONS = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360, 420, 480, 540, 600, 660, 720];
+// Every chart type (pie/bar/line/treemap/gauge) renders at a different
+// natural height, which made chart cards look mismatched side by side.
+// This gives every chart the same fixed-height, centered box to render in.
+// (Two variants: fixed-size charts like pie/gauge just get centered in both
+// directions; full-width charts like bar/line/treemap need to keep stretching
+// to the card's width, so only their vertical centering is handled here.)
+const CHART_BOX_STYLE = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  height: 200,
+  marginTop: 4
+};
+const CHART_BOX_STYLE_WIDE = {
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "center",
+  height: 200,
+  width: "100%",
+  marginTop: 4
+};
 const fmtLength = mins => {
   const he = getLang() === "he";
   const h = Math.floor(mins / 60),
@@ -3026,16 +3047,23 @@ const Modal = ({
         return;
       }
     }
-    if (form.time && form.date === "" && !isRecurring({
+    // A time needs a date to anchor it (unless the task is recurring, which
+    // doesn't need one). Rather than blocking save with an error, quietly
+    // anchor it to today — this is what lets a timeless task pick up a time.
+    let finalDate = form.date;
+    if (form.time && finalDate === "" && !isRecurring({
       type: form.type,
       recur: form.recur
     })) {
-      setError(t("dateRequired"));
-      return;
+      finalDate = todayStr();
     }
-    if (form.length && !form.time) {
-      setError(getLang() === "he" ? "יש להגדיר שעה לפני הגדרת משך" : "Please set a time before setting a duration.");
-      return;
+    // A duration needs a time to attach to. Rather than blocking save,
+    // default it to the next hour, same as tapping the time field does.
+    let finalTime = form.time;
+    if (form.length && !finalTime) {
+      const _n = new Date();
+      _n.setHours(_n.getHours() + 1, 0, 0, 0);
+      finalTime = String(_n.getHours()).padStart(2, "0") + ":00";
     }
     setError("");
     const finalType = form.type === "repeated" && !form.recur ? "regular"
@@ -3051,7 +3079,8 @@ const Modal = ({
     onSave({
       ...form,
       type: finalType,
-      date: form.date || "",
+      date: finalDate || "",
+      time: finalTime || "",
       recur: finalRecur,
       length: finalLength,
       note: finalNote
@@ -3654,7 +3683,20 @@ const Modal = ({
     onClick: IS_IOS ? e => { try { e.target.showPicker(); } catch {} } : undefined
   }), form.date && /*#__PURE__*/React.createElement("button", {
     type: "button",
-    onClick: e => { e.stopPropagation(); set("date", ""); },
+    onClick: e => {
+      e.stopPropagation();
+      // Clearing the date makes this a timeless task again — a time (and
+      // any duration) with no date doesn't mean anything, unless the task
+      // is recurring, so drop those too instead of leaving orphaned state.
+      const stillAnchored = isRecurring({ type: form.type, recur: form.recur });
+      setForm(f => ({
+        ...f,
+        date: "",
+        time: stillAnchored ? f.time : "",
+        length: stillAnchored ? f.length : ""
+      }));
+      setError("");
+    },
     style: {
       position: "absolute",
       right: 6,
@@ -3713,7 +3755,12 @@ const Modal = ({
     }
   }), form.time && /*#__PURE__*/React.createElement("button", {
     type: "button",
-    onClick: () => set("time", ""),
+    onClick: () => {
+      // A duration with no time to attach to doesn't mean anything, so
+      // clear it along with the time instead of leaving it stranded.
+      setForm(f => ({ ...f, time: "", length: "" }));
+      setError("");
+    },
     style: {
       position: "absolute",
       right: 6,
@@ -3787,7 +3834,18 @@ const Modal = ({
       }),
       value: form.length,
       onChange: e => {
-        set("length", e.target.value);
+        const val = e.target.value;
+        // A duration needs a time to attach to — if none is set yet,
+        // default it to the next hour so the two fields stay consistent
+        // right away, instead of only patching it up at save time.
+        if (val && !form.time) {
+          const _n = new Date();
+          _n.setHours(_n.getHours() + 1, 0, 0, 0);
+          const _hh = String(_n.getHours()).padStart(2, "0");
+          setForm(f => ({ ...f, length: val, time: _hh + ":00" }));
+        } else {
+          set("length", val);
+        }
         setError("");
       },
       onFocus: e => e.target.style.borderColor = "#93C5FD",
@@ -9436,7 +9494,7 @@ const GaugeChart = ({
   }, [hovered]);
   const isHe = getLang() === "he";
   const dispVal = hovered === 'green' ? `${rate}%` : hovered === 'red' ? `${cancRate}%` : total;
-  const dispColor = hovered === 'green' ? "#22C55E" : hovered === 'red' ? "#FB7185" : "var(--text)";
+  const dispColor = hovered === 'green' ? "var(--green)" : hovered === 'red' ? "var(--red)" : "var(--text)";
   const dispSub = hovered === 'green' ? isHe ? "הושלם" : "Completed" : hovered === 'red' ? isHe ? "בוטל" : "Cancelled" : isHe ? "משימות" : "missions";
 
   // Static grey arc radii
@@ -9474,7 +9532,7 @@ const GaugeChart = ({
   }), /*#__PURE__*/React.createElement("path", {
     ref: greenPathRef,
     d: initGreenD || "",
-    fill: "#22C55E",
+    fill: "var(--green)",
     style: {
       cursor: "pointer",
       display: initGreenD ? "" : "none",
@@ -9486,7 +9544,7 @@ const GaugeChart = ({
   }), /*#__PURE__*/React.createElement("path", {
     ref: redPathRef,
     d: initRedD || "",
-    fill: "#FB7185",
+    fill: "var(--red)",
     style: {
       cursor: "pointer",
       display: initRedD ? "" : "none",
@@ -10234,20 +10292,24 @@ const FilteredPieCard = ({
     };
     if (chartType === "bar-date") {
       const bd = buildDate();
-      return /*#__PURE__*/React.createElement(BarChart, {
+      return /*#__PURE__*/React.createElement("div", {
+        style: CHART_BOX_STYLE_WIDE
+      }, /*#__PURE__*/React.createElement(BarChart, {
         key: `bar-${bd.length}-${prefLookahead}-${timeRange}`,
         height: 130,
         data: bd
-      });
+      }));
     }
     if (chartType === "line") {
-      return /*#__PURE__*/React.createElement(LineChart, {
+      return /*#__PURE__*/React.createElement("div", {
+        style: CHART_BOX_STYLE_WIDE
+      }, /*#__PURE__*/React.createElement(LineChart, {
         key: `line-${prefLookahead}-${timeRange}`,
         tasks: filtered,
         timeRange: timeRange,
-        height: 160,
+        height: 130,
         prefLookahead: prefLookahead
-      });
+      }));
     }
     if (chartType === "treemap") {
       const filteredWithCalendar = tasks.filter(t => !filter || t.name.toLowerCase().includes(filter)).filter(t => !activeTypeFilter || t.type === activeTypeFilter).filter(t => passesTimeRange(t));
@@ -10261,18 +10323,16 @@ const FilteredPieCard = ({
           length: count
         }, () => tk);
       }) : filteredWithCalendar;
-      return /*#__PURE__*/React.createElement(TreeMap, {
+      return /*#__PURE__*/React.createElement("div", {
+        style: CHART_BOX_STYLE_WIDE
+      }, /*#__PURE__*/React.createElement(TreeMap, {
         tasks: expandedForTreemap,
         height: 160
-      });
+      }));
     }
     if (chartType === "gauge") {
       return /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          justifyContent: "center",
-          marginTop: 4
-        }
+        style: CHART_BOX_STYLE
       }, /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
@@ -10342,11 +10402,7 @@ const FilteredPieCard = ({
     }
     // Default: pie
     return /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        justifyContent: "center",
-        marginTop: 4
-      }
+      style: CHART_BOX_STYLE
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
@@ -11913,41 +11969,6 @@ const SettingsModal = ({
     onToggle: toggleDark,
     color: "#6366F1"
   })), /*#__PURE__*/React.createElement(Row, {
-    icon: "🎨",
-    label: isHe ? "פלטת צבעים" : "Color Palette",
-    sub: palette === "boldest"
-      ? (isHe ? "נועז במיוחד — הכי עז וססגוני" : "Boldest — the strongest, most colorful")
-      : (isHe ? "נועז — צבעים עזים יותר" : "Bold — richer, punchier colors")
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      borderRadius: 20,
-      border: `1.5px solid ${C.border2}`,
-      padding: 2,
-      flexShrink: 0,
-      background: C.card2
-    }
-  }, [{
-    id: "vivid",
-    label: isHe ? "נועז" : "Bold"
-  }, {
-    id: "boldest",
-    label: isHe ? "נועז במיוחד" : "Boldest"
-  }].map(opt => /*#__PURE__*/React.createElement("button", {
-    key: opt.id,
-    onClick: () => onSetPalette(opt.id),
-    style: {
-      padding: "5px 12px",
-      borderRadius: 18,
-      border: "none",
-      background: (palette || "vivid") === opt.id ? "linear-gradient(135deg,#3B82F6,#2563EB)" : "transparent",
-      color: (palette || "vivid") === opt.id ? "#fff" : C.text3,
-      fontSize: 12,
-      fontWeight: 700,
-      cursor: "pointer",
-      transition: "all 0.15s"
-    }
-  }, opt.label)))), /*#__PURE__*/React.createElement(Row, {
     icon: "🌐",
     label: isHe ? "שפה" : "Language",
     sub: isHe ? "עברית / English" : "Hebrew / English"
@@ -16164,17 +16185,11 @@ function App() {
     setDataModalOpen(true);
   };
 
-  // Color palette: "vivid" (Bold, the default) or "boldest". The old "Classic"
-  // palette is gone, so anything else that was saved (including "default") maps to Bold.
-  const [palette, setPalette] = useState(() => {
-    const saved = localStorage.getItem(PALETTE_KEY);
-    return saved === "boldest" ? "boldest" : "vivid";
-  });
-  const setPaletteAndSave = p => {
-    if (p !== "vivid" && p !== "boldest") return;
-    localStorage.setItem(PALETTE_KEY, p);
-    setPalette(p);
-  };
+  // Color palette: locked to "boldest" — the only palette now offered.
+  // (The old "Bold"/vivid option was removed from Settings; anything saved
+  // from before, including "vivid", now just resolves to "boldest".)
+  const [palette] = useState("boldest");
+  const setPaletteAndSave = () => {}; // no-op: nothing left to switch between
   // Expose palette globally so custom-type color helpers can read it without prop-drilling
   if (typeof window !== "undefined") window.__palette = palette;
 
