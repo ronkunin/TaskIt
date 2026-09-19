@@ -1308,6 +1308,72 @@ const fmtDate = ds => {
 };
 const localDs = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+// ── Shared by every "share as image" multi-column layout (By Type, Up Next) ──
+// A single long vertical list would make for an extremely tall photo once
+// there are more than a handful of tasks, so these captures spread groups
+// across up to 8 columns depending on how many tasks are actually being
+// shown -- more tasks, more (and slightly narrower) columns, capped at 8.
+const shareColumnCount = totalTasks => {
+  if (totalTasks <= 0) return 1;
+  for (let cols = 1; cols < 8; cols++) {
+    if (totalTasks <= cols * (cols + 4)) return cols;
+  }
+  return 8;
+};
+// Fixed-height row so every task box in a multi-column share photo lines up
+// evenly, regardless of how long any individual task's name happens to be --
+// long names are truncated with an ellipsis rather than wrapping and growing
+// that one box taller than its neighbors. `options` (from the share options
+// dialog) controls whether overdue/completed/cancelled status is visually
+// marked at all, and whether the date/time/repeat detail line shows.
+const renderShareTaskRow = (task, options) => {
+  const isHe = getLang() === "he";
+  const markOverdue = !options || options.markOverdue !== false;
+  const markCompleted = !options || options.markCompleted !== false;
+  const showDetails = !options || options.showDetails !== false;
+  const doneT = markCompleted && isDone(task);
+  const cancelledT = markCompleted && isCancelled(task);
+  const overdueT = markOverdue && !doneT && !cancelledT && isOverdue(task);
+  const nameColor = cancelledT ? C.text4 : overdueT ? C.red : doneT ? C.green : C.text;
+  const recurLabel = !task.recur ? "" : task.recur === "month" ? isHe ? "כל חודש" : "Every month" : task.recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", task.recur);
+  const metaParts = showDetails ? [task.date ? fmtDate(task.date) : "", task.time || "", recurLabel].filter(Boolean) : [];
+  return /*#__PURE__*/React.createElement("div", {
+    key: task.id,
+    style: {
+      height: 50,
+      boxSizing: "border-box",
+      padding: "7px 12px",
+      borderRadius: 10,
+      border: `1px solid ${overdueT ? C.redBorder : C.border}`,
+      background: overdueT ? C.redBg : C.card,
+      marginBottom: 8,
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "center",
+      gap: 2,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: nameColor,
+      textDecoration: cancelledT ? "line-through" : "none",
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis"
+    }
+  }, taskDisplayName(task)), metaParts.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      color: overdueT ? C.red : doneT ? C.green : C.text4,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis"
+    }
+  }, metaParts.join(" · ")));
+};
+
 // New simple model: each task is independent
 // recur = interval in days; when completed a new task is spawned with date+recur
 const isRecurring = t => !!(t.recur && (t.recur === "month" || t.recur === "year" || typeof t.recur === "number" && t.recur > 0 || typeof t.recur === "string" && parseInt(t.recur) > 0));
@@ -1760,6 +1826,11 @@ const Icon = ({
     })),
     chevDown: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polyline", {
       points: "6 9 12 15 18 9"
+    })),
+    collapseAll: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polyline", {
+      points: "6 9 12 13 18 9"
+    }), /*#__PURE__*/React.createElement("polyline", {
+      points: "6 15 12 11 18 15"
     })),
     calendar: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("rect", {
       x: "3",
@@ -3127,7 +3198,11 @@ const renderTaskShareCanvas = ({
   const text3Color = resolveCssColor("var(--text3)");
   const borderColor = resolveCssColor("var(--border)");
   const scale = 2;
-  const W = 640;
+  // Narrower and with a height floor taller than the width, so a short task
+  // (little more than a name and a date) still reads as a vertical card
+  // instead of a wide, mostly-empty horizontal strip. Richer content (a
+  // note, more chips) grows past this floor naturally.
+  const W = 420;
   const PAD = 28;
   const contentW = W - PAD * 2;
   const align = isHe ? "right" : "left";
@@ -3270,49 +3345,6 @@ const renderTaskShareCanvas = ({
   const tagline = "Just Task It.";
   const runLayout = ctx => {
     let cy = PAD;
-    // ── TaskIt branding: logo + wordmark on the start side, tagline on the end
-    if (ctx) {
-      const lx = PAD;
-      const grad = ctx.createLinearGradient(lx, cy, lx + BRAND, cy + BRAND);
-      grad.addColorStop(0, "#3B82F6");
-      grad.addColorStop(1, "#2563EB");
-      drawRoundedRectPath(ctx, lx, cy, BRAND, BRAND, 9);
-      ctx.fillStyle = grad;
-      ctx.fill();
-      const k = BRAND * 0.5 / 24,
-        ox = lx + BRAND * 0.25,
-        oy = cy + BRAND * 0.25;
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 2.4;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      ctx.moveTo(ox + 20 * k, oy + 6 * k);
-      ctx.lineTo(ox + 9 * k, oy + 17 * k);
-      ctx.lineTo(ox + 4 * k, oy + 12 * k);
-      ctx.stroke();
-      ctx.direction = "ltr";
-      ctx.font = brandFont;
-      ctx.fillStyle = textColor;
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText("TaskIt", lx + BRAND + 10, cy + BRAND / 2 + 1);
-      ctx.font = taglineFont;
-      ctx.fillStyle = text3Color;
-      ctx.textAlign = "right";
-      ctx.fillText(tagline, W - PAD, cy + BRAND / 2 + 1);
-      ctx.direction = isHe ? "rtl" : "ltr";
-    }
-    cy += BRAND + 14;
-    if (ctx) {
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(PAD, cy);
-      ctx.lineTo(W - PAD, cy);
-      ctx.stroke();
-    }
-    cy += 16;
     // ── type tag + completed / cancelled / late tag
     cy += flowRow(ctx, chipItems, cy, chipH, 8) + 18;
     if (ctx) {
@@ -3377,20 +3409,76 @@ const renderTaskShareCanvas = ({
     cy += PAD;
     return cy;
   };
-  const H = Math.max(140, runLayout(null));
+  const CH = Math.max(Math.round(W * 1.3), runLayout(null));
+  // Outer frame: app background, branding + divider up top, then the task
+  // card inset with its own margin -- same structure as the week / month /
+  // Up Next / etc. share images, instead of the card filling the whole photo.
+  const bgColor = resolveCssColor("var(--bg)");
+  const FRAME_PAD = 28;
+  const brandBlockH = FRAME_PAD + BRAND + 14 /* gap */ + 1 /* divider */ + 16 /* gap */;
+  const OW = W + FRAME_PAD * 2;
+  const OH = brandBlockH + CH + FRAME_PAD;
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(W * scale);
-  canvas.height = Math.round(H * scale);
+  canvas.width = Math.round(OW * scale);
+  canvas.height = Math.round(OH * scale);
   const ctx = canvas.getContext("2d");
   ctx.scale(scale, scale);
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, OW, OH);
+  // ── logo + wordmark + tagline, identical styling to the other share images ──
+  const lx = FRAME_PAD,
+    by = FRAME_PAD;
+  const grad = ctx.createLinearGradient(lx, by, lx + BRAND, by + BRAND);
+  grad.addColorStop(0, "#3B82F6");
+  grad.addColorStop(1, "#2563EB");
+  drawRoundedRectPath(ctx, lx, by, BRAND, BRAND, 9);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  const k = BRAND * 0.5 / 24,
+    ox = lx + BRAND * 0.25,
+    oy = by + BRAND * 0.25;
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2.4;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(ox + 20 * k, oy + 6 * k);
+  ctx.lineTo(ox + 9 * k, oy + 17 * k);
+  ctx.lineTo(ox + 4 * k, oy + 12 * k);
+  ctx.stroke();
+  ctx.direction = "ltr";
+  ctx.font = brandFont;
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("TaskIt", lx + BRAND + 10, by + BRAND / 2 + 1);
+  ctx.font = taglineFont;
+  ctx.fillStyle = text3Color;
+  ctx.textAlign = "right";
+  ctx.fillText(tagline, OW - FRAME_PAD, by + BRAND / 2 + 1);
   ctx.direction = isHe ? "rtl" : "ltr";
-  drawRoundedRectPath(ctx, 0.5, 0.5, W - 1, H - 1, 20);
+  // divider
+  const dy = FRAME_PAD + BRAND + 14;
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(FRAME_PAD, dy);
+  ctx.lineTo(OW - FRAME_PAD, dy);
+  ctx.stroke();
+  // ── the task card itself, inset within the frame ──
+  drawRoundedRectPath(ctx, FRAME_PAD + 0.5, brandBlockH + 0.5, W - 1, CH - 1, 0);
   ctx.fillStyle = cardColor;
   ctx.fill();
   ctx.strokeStyle = borderColor;
   ctx.lineWidth = 1;
   ctx.stroke();
+  // Card content is drawn in its own (0,0)-origin coordinate space, same as
+  // before -- just translated into place inside the inset card.
+  ctx.save();
+  ctx.translate(FRAME_PAD, brandBlockH);
+  ctx.direction = isHe ? "rtl" : "ltr";
   runLayout(ctx);
+  ctx.restore();
   return canvas;
 };
 
@@ -3413,24 +3501,32 @@ const renderTaskShareCanvas = ({
 // logo, wordmark and tagline (always English/LTR, exactly like the task
 // share), a divider, then side + bottom padding in the app's own background
 // color (its light blue in light mode, its dark navy in dark mode) around the
-// captured table, which is itself forced to a plain white card so the PNG
-// reads cleanly regardless of which screen it came from. `pixelRatio` is the
+// captured table, which is itself filled with the app's own card color (so
+// it matches light/dark theme) so the PNG reads cleanly regardless of which
+// screen it came from. `pixelRatio` is the
 // `scale` the capture was taken at, so the framing can be specified in
 // ordinary CSS pixels and scaled up to match.
-const composeShareFrame = (contentCanvas, pixelRatio) => {
+const composeShareFrame = (contentCanvas, pixelRatio, frameOptions) => {
+  const {
+    title,
+    titleAccent
+  } = frameOptions || {};
   const bgColor = resolveCssColor("var(--bg)");
   const textColor = resolveCssColor("var(--text)");
   const text3Color = resolveCssColor("var(--text3)");
   const borderColor = resolveCssColor("var(--border)");
+  const blueColor = resolveCssColor("var(--blue)");
   const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   const brandFont = `800 19px ${FONT}`;
   const taglineFont = `500 12px ${FONT}`;
+  const titleFont = `700 21px ${FONT}`;
   const PAD = 28; // side + bottom padding, CSS px
   const BRAND = 30; // logo square size, CSS px
+  const TITLE_H = title ? 21 + 16 /* title line height + gap before content */ : 0;
   const cw = contentCanvas.width / pixelRatio;
   const ch = contentCanvas.height / pixelRatio;
   const W = cw + PAD * 2;
-  const brandBlockH = PAD + BRAND + 14 /* gap */ + 1 /* divider */ + 16 /* gap */;
+  const brandBlockH = PAD + BRAND + 14 /* gap */ + 1 /* divider */ + 16 /* gap */ + TITLE_H;
   const H = brandBlockH + ch + PAD;
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(W * pixelRatio);
@@ -3478,6 +3574,39 @@ const composeShareFrame = (contentCanvas, pixelRatio) => {
   ctx.moveTo(PAD, dy);
   ctx.lineTo(W - PAD, dy);
   ctx.stroke();
+  // optional title row (e.g. "October 2026" or a week's date range), styled
+  // like the in-app heading it echoes -- base text in the regular text
+  // color, an optional accent (the month view's year) in blue. The brand
+  // strip above always stays English/LTR by design, but this row is
+  // user-facing content, so it follows the app's own reading direction:
+  // right-aligned and RTL for Hebrew, left-aligned and LTR otherwise.
+  if (title) {
+    const isRtl = getLang() === "he";
+    const ty = dy + 1 + 16 + TITLE_H / 2 - 8;
+    ctx.font = titleFont;
+    ctx.textBaseline = "middle";
+    if (isRtl) {
+      ctx.direction = "rtl";
+      ctx.textAlign = "right";
+      ctx.fillStyle = textColor;
+      ctx.fillText(title, W - PAD, ty);
+      if (titleAccent) {
+        const gap = ctx.measureText(title + " ").width;
+        ctx.fillStyle = blueColor;
+        ctx.fillText(titleAccent, W - PAD - gap, ty);
+      }
+      ctx.direction = "ltr";
+    } else {
+      ctx.textAlign = "left";
+      ctx.fillStyle = textColor;
+      ctx.fillText(title, PAD, ty);
+      if (titleAccent) {
+        const gap = ctx.measureText(title + " ").width;
+        ctx.fillStyle = blueColor;
+        ctx.fillText(titleAccent, PAD + gap, ty);
+      }
+    }
+  }
   // captured content
   ctx.drawImage(contentCanvas, PAD, brandBlockH, cw, ch);
   return canvas;
@@ -3498,23 +3627,28 @@ const loadHtml2Canvas = () => {
   });
   return _html2canvasPromise;
 };
-// Captures `el` at high resolution against a plain white background (so the
-// table itself always reads as a clean white card, whatever the app's theme
-// happens to be, and rounded corners/edges never turn transparent-black),
-// then copies the PNG to the clipboard exactly like the single-task share
+// Captures `el` at high resolution against the app's own card color (white
+// on light theme, dark navy on dark theme) so rounded corners/edges never
+// turn transparent-black, then copies the PNG to the clipboard exactly like
+// the single-task share
 // button, falling back to a direct download (with the same toasts) if the
 // clipboard API is unavailable or the write is rejected. Every failure path
 // -- a slow or missing CDN, html2canvas throwing on some CSS it doesn't
 // understand, a rejected clipboard write -- always ends in a toast, never
 // silence.
-const shareElementAsImage = async (el, filename) => {
+const shareElementAsImage = async (el, filename, frameOptions) => {
   if (!el) return;
   const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("share-image-timeout")), ms))]);
   try {
     const html2canvas = await withTimeout(loadHtml2Canvas(), 10000);
     const captureScale = Math.max(2, Math.min(3, (window.devicePixelRatio || 1) * 2));
+    // Base fill for any part of the capture that isn't explicitly painted --
+    // the app's own card color, so the table reads as white on light theme
+    // and as its native dark card color on dark theme, instead of always
+    // forcing white regardless of mode.
+    const cardBg = resolveCssColor("var(--card)");
     const rawCanvas = await withTimeout(html2canvas(el, {
-      backgroundColor: "#FFFFFF",
+      backgroundColor: cardBg,
       scale: captureScale,
       useCORS: true,
       // The share button that triggered this capture (and anything else marked
@@ -3541,7 +3675,7 @@ const shareElementAsImage = async (el, filename) => {
     }), 15000);
     // Frame the raw capture with padding, a light/dark background and the
     // TaskIt branding strip before it ever reaches the clipboard or disk.
-    const canvas = composeShareFrame(rawCanvas, captureScale);
+    const canvas = composeShareFrame(rawCanvas, captureScale, frameOptions);
     try {
       if (!(navigator.clipboard && window.ClipboardItem)) throw new Error("no-clipboard-api");
       const blobPromise = new Promise(resolve => canvas.toBlob(resolve, "image/png"));
@@ -3600,6 +3734,52 @@ const ShareImageButton = ({
   size: 14,
   color: "#94A3B8"
 }));
+// Full-screen cover shown for the whole span of a share-image capture --
+// the wide layout switch, hidden today-highlight/now-line, and any capture-
+// only sizing all change the underlying screen for a couple of frames
+// before html2canvas actually snapshots it, which otherwise reads as a
+// visible, unexplained layout jump. This just hides that transition behind
+// a simple spinner until the capture (and the resulting toast) is done.
+// Portalled to <body> for the same reason as dragPill above: the view
+// switcher's slide-in card carries a (fill-mode: both) transform, which
+// makes it the containing block for any plain position:fixed descendant --
+// leaving the app's own header/nav chrome outside that card uncovered.
+// Portalling escapes that ancestor so this genuinely covers the viewport.
+const ShareCaptureOverlay = ({
+  active
+}) => !active ? null : /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
+  "data-share-ignore": "true",
+  style: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 10000,
+    background: C.bg,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12
+  }
+}, /*#__PURE__*/React.createElement("svg", {
+  width: "26",
+  height: "26",
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: C.blue,
+  strokeWidth: "2.5",
+  style: {
+    animation: "spin 0.8s linear infinite"
+  }
+}, /*#__PURE__*/React.createElement("path", {
+  d: "M12 2a10 10 0 0 1 10 10",
+  strokeLinecap: "round"
+})), /*#__PURE__*/React.createElement("span", {
+  style: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: C.text3
+  }
+}, t("sharePreparing"))), document.body);
 
 //  MODAL 
 const Modal = ({
@@ -3680,6 +3860,20 @@ const Modal = ({
     ...f,
     [k]: v
   }));
+  // Keeps the plain Schedule type and the Repeated type in lock-step with
+  // the Repeat field, no matter how a mismatch was reached -- typing into
+  // Repeat, picking "Repeated" from the type suggestions before filling
+  // Repeat in, or loading an existing (possibly inconsistent) task into the
+  // form. Schedule can never carry a repeat interval; Repeated can never be
+  // left without one. Whichever field actually holds content decides which
+  // type wins, so the two always resolve back to a valid combination.
+  useEffect(() => {
+    if (form.recur.trim() && form.type === "regular") {
+      set("type", "repeated");
+    } else if (!form.recur.trim() && form.type === "repeated") {
+      set("type", "regular");
+    }
+  }, [form.recur, form.type]);
   const handleNameChange = val => {
     set("name", val);
     if (val.trim().length < 1) {
@@ -3742,23 +3936,23 @@ const Modal = ({
         return;
       }
     }
-    // A time needs a date to anchor it (unless the task is recurring, which
-    // doesn't need one). Rather than blocking save with an error, quietly
-    // anchor it to today — this is what lets a timeless task pick up a time.
-    let finalDate = form.date;
-    if (form.time && finalDate === "" && !isRecurring({
-      type: form.type,
-      recur: form.recur
-    })) {
-      finalDate = todayStr();
-    }
     // A duration needs a time to attach to. Rather than blocking save,
     // default it to the next hour, same as tapping the time field does.
+    // This has to happen BEFORE the date check below, so a length set
+    // without an explicit time still ends up anchored to a date too.
     let finalTime = form.time;
     if (form.length && !finalTime) {
       const _n = new Date();
       _n.setHours(_n.getHours() + 1, 0, 0, 0);
       finalTime = String(_n.getHours()).padStart(2, "0") + ":00";
+    }
+    // A time needs a date to anchor it -- no exceptions, not even for a
+    // recurring task. Rather than blocking save with an error, quietly
+    // anchor it to today -- this is what lets a timeless task pick up a
+    // time (or a duration, via the default above) without a separate step.
+    let finalDate = form.date;
+    if (finalTime && !finalDate) {
+      finalDate = todayStr();
     }
     setError("");
     const finalType = form.type === "repeated" && !form.recur ? "regular"
@@ -3767,8 +3961,11 @@ const Modal = ({
       // hand (new task, or editing something that wasn't already one) can't
       // actually create one, so it falls back to Schedule instead.
       : form.type === "google" && editTask?.source !== "google" ? "regular"
+      // Belt-and-suspenders alongside the reactive effect above: Schedule
+      // can never save with a repeat interval still attached.
+      : form.type === "regular" && form.recur ? "repeated"
       : form.type;
-    const finalRecur = form.recur ? parseRecur(form.recur) || null : null;
+    const finalRecur = finalType === "regular" ? null : form.recur ? parseRecur(form.recur) || null : null;
     const finalLength = form.length === "" || form.length == null ? null : Number(form.length);
     const finalNote = form.note && form.note.trim() ? form.note.trim() : null;
     onSave({
@@ -4176,7 +4373,7 @@ const Modal = ({
       alignItems: "center",
       gap: 8
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, editTask && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: handleShare,
     disabled: sharing,
@@ -4216,7 +4413,14 @@ const Modal = ({
     color: "#94A3B8"
   })))), /*#__PURE__*/React.createElement("div", {
     style: {
-      marginBottom: 16,
+      display: "flex",
+      gap: 12,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "2 1 0%",
+      minWidth: 0,
       position: "relative"
     }
   }, /*#__PURE__*/React.createElement("label", {
@@ -4300,51 +4504,36 @@ const Modal = ({
     }
   }, fmtDur(t.duration)))))), /*#__PURE__*/React.createElement("div", {
     style: {
-      marginBottom: 16
+      flex: "1 1 0%",
+      minWidth: 0,
+      position: "relative"
     }
   }, /*#__PURE__*/React.createElement("label", {
     style: lbl
-  }, t("type")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "grid",
-      gridTemplateColumns: "repeat(3,1fr)",
-      gap: 6,
-      marginBottom: 8
-    }
-  }, ["regular", "repeated"].map(key => {
-    const m = getTypeMeta(key);
-    const active = form.type === key || key === "repeated" && isLegacyType(form.type);
-    return /*#__PURE__*/React.createElement("button", {
-      key: key,
-      onClick: () => {
-        set("type", key);
-        if (key === "regular") set("recur", "");
-      },
-      style: {
-        padding: "8px 4px",
-        borderRadius: 9,
-        fontSize: 12,
-        fontWeight: 500,
-        cursor: "pointer",
-        border: `1.5px solid ${active ? m.color : C.border}`,
-        background: active ? m.bg : C.card2,
-        color: active ? m.color : C.text3,
-        transition: "all 0.15s"
-      }
-    }, m.label);
-  }), (() => {
-    // "google" is a reserved type — it only ever means a real synced Calendar
-    // event (see the save-time guard above), so it's excluded from the normal
-    // typed-suggestion list here and can't be produced by typing the word out
-    // by hand. It's offered instead as a one-tap suggestion, and only while
-    // editing a task that actually came from Google, so someone who cleared
-    // the field can put it back without retyping it.
-    const existingCustomTypes = [...new Set((allTasks || []).filter(tp => isPending(tp) && isCustomType(tp.type) && tp.type !== "google").map(t => t.type))].slice(0, 8);
+  }, t("type")), (() => {
+    // Single unified type field: shows the active type's label (Schedule
+    // for "regular", Repeated, or a custom type's own name) and clears on
+    // focus so the user can type any of those -- matched live against
+    // suggestions -- instead of picking from separate buttons. Replaces the
+    // old three-way regular/repeated/custom-input row with one field,
+    // freeing up a row so name+type can share a line instead.
     const isGoogleType = form.type === "google";
-    const inputVal = isGoogleType ? getTypeMeta("google").label : isCustomType(form.type) ? form.type : "";
-    const filteredSuggs = existingCustomTypes.filter(tp => tp.toLowerCase().includes(inputVal.toLowerCase()) && tp !== inputVal);
-    const offerGoogleSugg = editTask?.source === "google" && !isGoogleType;
+    const isRepeatedLike = form.type === "repeated" || isLegacyType(form.type);
+    const regularLabel = getTypeMeta("regular").label;
+    const repeatedLabel = getTypeMeta("repeated").label;
     const googleMeta = getTypeMeta("google");
+    const inputVal = isGoogleType ? googleMeta.label : isCustomType(form.type) ? form.type : form.type === "regular" ? regularLabel : isRepeatedLike ? repeatedLabel : "";
+    const existingCustomTypes = [...new Set((allTasks || []).filter(tp => isPending(tp) && isCustomType(tp.type) && tp.type !== "google").map(t => t.type))].slice(0, 8);
+    const query = inputVal.toLowerCase();
+    const builtinSuggs = [{
+      key: "regular",
+      label: regularLabel
+    }, {
+      key: "repeated",
+      label: repeatedLabel
+    }].filter(o => o.label.toLowerCase().includes(query) && form.type !== o.key && !(o.key === "repeated" && isRepeatedLike));
+    const customSuggs = existingCustomTypes.filter(tp => tp.toLowerCase().includes(query) && tp !== inputVal);
+    const offerGoogleSugg = editTask?.source === "google" && !isGoogleType;
     return /*#__PURE__*/React.createElement("div", {
       style: {
         position: "relative"
@@ -4376,18 +4565,16 @@ const Modal = ({
         transition: "all 0.15s"
       },
       onFocus: e => {
-        // Pressing into the field while it's still showing the synced Google
-        // type clears it immediately, so the user can start typing a
-        // replacement right away instead of deleting "Google" first.
         if (isGoogleType || !isCustomType(form.type)) set("type", "general");
         setShowTypeSugg(true);
       },
       onBlur: e => {
         setTimeout(() => setShowTypeSugg(false), 150);
         const trimmed = form.type.trim();
-        if (form.type === "general" || !isCustomType(form.type) && !e.target.value.trim()) set("type", "regular");else if (trimmed !== form.type) set("type", trimmed);
+        const lowerTrimmed = trimmed.toLowerCase();
+        if (form.type === "general" || !isCustomType(form.type) && !e.target.value.trim()) set("type", "regular");else if (lowerTrimmed === regularLabel.toLowerCase()) set("type", "regular");else if (lowerTrimmed === repeatedLabel.toLowerCase()) set("type", "repeated");else if (trimmed !== form.type) set("type", trimmed);
       }
-    }), showTypeSugg && (filteredSuggs.length > 0 || offerGoogleSugg) && /*#__PURE__*/React.createElement("div", {
+    }), showTypeSugg && (builtinSuggs.length > 0 || customSuggs.length > 0 || offerGoogleSugg) && /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
         top: "100%",
@@ -4414,7 +4601,7 @@ const Modal = ({
         fontWeight: 600,
         color: googleMeta.color,
         background: "transparent",
-        borderBottom: filteredSuggs.length > 0 ? `1px solid ${C.border}` : "none",
+        borderBottom: builtinSuggs.length > 0 || customSuggs.length > 0 ? `1px solid ${C.border}` : "none",
         display: "flex",
         alignItems: "center",
         gap: 6,
@@ -4430,7 +4617,37 @@ const Modal = ({
         background: googleMeta.dot,
         flexShrink: 0
       }
-    }), googleMeta.label), filteredSuggs.map((tp, i) => {
+    }), googleMeta.label), builtinSuggs.map((o, i) => /*#__PURE__*/React.createElement("div", {
+      key: o.key,
+      onMouseDown: () => {
+        set("type", o.key);
+        if (o.key === "regular") set("recur", "");
+        setShowTypeSugg(false);
+      },
+      style: {
+        padding: "8px 12px",
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 600,
+        color: getTypeMeta(o.key).color,
+        background: "transparent",
+        borderBottom: i < builtinSuggs.length - 1 || customSuggs.length > 0 ? `1px solid ${C.border}` : "none",
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        transition: "background 0.1s"
+      },
+      onMouseEnter: e => e.currentTarget.style.background = getTypeMeta(o.key).bg,
+      onMouseLeave: e => e.currentTarget.style.background = "transparent"
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 7,
+        height: 7,
+        borderRadius: "50%",
+        background: getTypeMeta(o.key).dot,
+        flexShrink: 0
+      }
+    }), o.label)), customSuggs.map((tp, i) => {
       const m = getTypeMeta(tp);
       return /*#__PURE__*/React.createElement("div", {
         key: tp,
@@ -4445,7 +4662,7 @@ const Modal = ({
           fontWeight: 600,
           color: m.color,
           background: "transparent",
-          borderBottom: i < filteredSuggs.length - 1 ? `1px solid ${C.border}` : "none",
+          borderBottom: i < customSuggs.length - 1 ? `1px solid ${C.border}` : "none",
           display: "flex",
           alignItems: "center",
           gap: 6,
@@ -4503,15 +4720,15 @@ const Modal = ({
     type: "button",
     onClick: e => {
       e.stopPropagation();
-      // Clearing the date makes this a timeless task again — a time (and
-      // any duration) with no date doesn't mean anything, unless the task
-      // is recurring, so drop those too instead of leaving orphaned state.
-      const stillAnchored = isRecurring({ type: form.type, recur: form.recur });
+      // Clearing the date makes this a timeless task again -- a time (and
+      // any duration) with no date doesn't mean anything, so both are always
+      // dropped too rather than leaving orphaned state. No exceptions, even
+      // for a recurring task.
       setForm(f => ({
         ...f,
         date: "",
-        time: stillAnchored ? f.time : "",
-        length: stillAnchored ? f.length : ""
+        time: "",
+        length: ""
       }));
       setError("");
     },
@@ -4604,15 +4821,14 @@ const Modal = ({
     color: "#fff",
     strokeWidth: 3
   }))))), (() => {
-    const showRecur = form.type !== "regular" && form.type !== "general" && form.type !== "";
     return /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: showRecur ? "1fr 1fr" : "1fr",
+        gridTemplateColumns: "1fr 1fr",
         gap: 12,
         marginBottom: 20
       }
-    }, showRecur && /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         minWidth: 0
       }
@@ -4629,8 +4845,14 @@ const Modal = ({
       }),
       value: form.recur,
       onChange: e => {
-        set("recur", e.target.value);
+        const v = e.target.value;
+        set("recur", v);
         setError("");
+        // Typing here while the type is the plain Schedule type switches it
+        // to Repeated automatically; clearing it while the type is Repeated
+        // switches back to Schedule -- so there's no separate step to flip
+        // the type by hand, this field always being visible.
+        if (v.trim() && form.type === "regular") set("type", "repeated");else if (!v.trim() && form.type === "repeated") set("type", "regular");
       },
       placeholder: getLang() === "he" ? "מספר ימים / חודש / שנה" : "days / month / year",
       onFocus: e => e.target.style.borderColor = "#93C5FD",
@@ -4933,11 +5155,13 @@ const DayChip = ({
   ds,
   onTaskClick,
   dragHandlers = null,
-  isDragging = false
+  isDragging = false,
+  markOverdue = true,
+  markCompleted = true
 }) => {
-  const donOnDay = isDone(t),
-    cancelOnDay = isCancelled(t),
-    over = isOverdue(t),
+  const donOnDay = markCompleted && isDone(t),
+    cancelOnDay = markCompleted && isCancelled(t),
+    over = markOverdue && !donOnDay && !cancelOnDay && isOverdue(t),
     m = getTypeMeta(t.type);
   const stateColor = donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : null;
   const stateBg = donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : null;
@@ -5100,18 +5324,25 @@ const MonthView = ({
   const narrow = captureWide ? false : rawNarrow;
   const monthWideCaptureRef = useRef(null);
   const [sharingMonth, setSharingMonth] = useState(false);
-  const shareMonthImage = async () => {
+  const [shareOptions, setShareOptions] = useState(null);
+  const shareMonthImage = async options => {
     if (sharingMonth) return;
+    setShareOptions(options || null);
     setSharingMonth(true);
     try {
-      if (rawNarrow) {
-        appToast(t("sharePreparing"));
-        await new Promise(resolve => {
-          setCaptureWide(true);
-          requestAnimationFrame(() => requestAnimationFrame(resolve));
-        });
-      }
-      await shareElementAsImage(monthWideCaptureRef.current, `${getLang() === "he" ? "חודש" : "month"}.png`);
+      appToast(t("sharePreparing"));
+      // Always flip captureWide before snapshotting -- not just on a narrow
+      // phone screen. This is what forces the landscape capture width, hides
+      // off-month task chips, and switches off the "today" highlight, and
+      // all three matter on a wide screen just as much as a narrow one.
+      await new Promise(resolve => {
+        setCaptureWide(true);
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+      await shareElementAsImage(monthWideCaptureRef.current, `${getLang() === "he" ? "חודש" : "month"}.png`, {
+        title: getMonths()[month],
+        titleAccent: String(year)
+      });
     } finally {
       setCaptureWide(false);
       setSharingMonth(false);
@@ -5124,7 +5355,7 @@ const MonthView = ({
   shareMonthRef.current = shareMonthImage;
   useEffect(() => {
     if (!onShareReady) return;
-    onShareReady(() => shareMonthRef.current());
+    onShareReady(options => shareMonthRef.current(options));
     return () => onShareReady(null);
   }, [onShareReady]);
   // Compute fresh "today" each render so the view stays correct if the app runs past midnight
@@ -6010,7 +6241,14 @@ const MonthView = ({
     other: true,
     date: new Date(year, month + 1, d)
   });
-  return /*#__PURE__*/React.createElement("div", {
+  // The share image should come out landscape at the same ratio as the week
+  // share, however many rows this month happens to span (4, 5 or 6). As with
+  // the week grid, size the forced capture width off the grid's own
+  // estimated height so the result keeps that same wide aspect ratio.
+  const monthGridRows = totalCells / 7;
+  const estMonthContentH = 32 /* weekday header row */ + monthGridRows * 100 /* cell minHeight */;
+  const monthCaptureWidth = Math.min(2600, Math.max(1100, Math.round(estMonthContentH * 1.85)));
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.25s ease"
     }
@@ -6026,12 +6264,15 @@ const MonthView = ({
       touchAction: "pan-y",
       transform: swipeDx ? `translateX(${Math.sign(swipeDx) * Math.min(Math.abs(swipeDx) * 0.35, 40)}px)` : "none",
       transition: swipeDx ? "none" : "transform 0.18s ease",
-      willChange: "transform"
+      willChange: "transform",
+      width: captureWide ? monthCaptureWidth : undefined
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       border: `1px solid ${C.border}`,
-      borderRadius: 14,
+      // Rounded in the app, but a shared image reads cleaner as a plain
+      // rectangle, so this is squared off while capturing.
+      borderRadius: captureWide ? 0 : 14,
       // "clip" rounds the corners like "hidden" but does not turn this box into a
       // scroll container, which is what lets the weekday row below stay sticky.
       overflow: typeof CSS !== "undefined" && CSS.supports && CSS.supports("overflow", "clip") ? "clip" : "hidden",
@@ -6063,7 +6304,13 @@ const MonthView = ({
       display: "grid",
       gridTemplateColumns: "repeat(7,1fr)"
     }
-  }, cells.map((cell, i) => {
+  }, (() => {
+    // Share dialog options only take effect while actually capturing --
+    // normal on-screen browsing always shows everything, fully marked.
+    const mMarkOverdue = !sharingMonth || !shareOptions || shareOptions.markOverdue !== false;
+    const mMarkCompleted = !sharingMonth || !shareOptions || shareOptions.markCompleted !== false;
+    const mSelectedTypes = sharingMonth && shareOptions ? shareOptions.selectedTypes : null;
+    return cells.map((cell, i) => {
     const ds = localDs(cell.date);
     const isT = !cell.other && cell.date.toDateString() === realToday.toDateString();
     // Kept separate from `isT` (used above for task inclusion, e.g. pulling an
@@ -6071,7 +6318,10 @@ const MonthView = ({
     // only turns off the *visual* "today" emphasis, not the actual content.
     const showToday = isT && !captureWide;
     const isCellPast = !cell.other && isCurrentMonth && cell.date < realToday;
-    const dayTasks = sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))));
+    // A shared month image is meant to represent this month only -- tasks
+    // peeking in from the tail end of the previous/next month just add
+    // noise, so they're left off the grid entirely while capturing.
+    const dayTasks = cell.other && captureWide ? [] : sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))).filter(task => !mSelectedTypes || mSelectedTypes.has(task.type || "regular")).filter(task => mMarkCompleted || !(isDone(task) || isCancelled(task))));
     const isDropDayW = dragDs === ds;
     const isRipple = rippleDs === ds;
     return /*#__PURE__*/React.createElement("div", {
@@ -6135,7 +6385,9 @@ const MonthView = ({
       ds: ds,
       onTaskClick: onTaskClick,
       dragHandlers: monthDragHandlers(tk),
-      isDragging: !!drag && drag.id === tk.id
+      isDragging: !!drag && drag.id === tk.id,
+      markOverdue: mMarkOverdue,
+      markCompleted: mMarkCompleted
     })), dayTasks.length > 3 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
@@ -6143,7 +6395,10 @@ const MonthView = ({
         paddingLeft: 5
       }
     }, t("more", dayTasks.length - 3))));
-  })))));
+  });
+  })())))), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
+    active: sharingMonth
+  }));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6645,21 +6900,36 @@ const WeekView = ({
   const isHe = getLang() === "he";
   const weekCaptureRef = useRef(null);
   const [sharingWeek, setSharingWeek] = useState(false);
-  const shareWeekImage = async () => {
+  const [shareOptions, setShareOptions] = useState(null);
+  const shareWeekImage = async options => {
     if (sharingWeek) return;
+    setShareOptions(options || null);
     setSharingWeek(true);
     try {
-      if (rawNarrow) {
-        appToast(t("sharePreparing"));
-        // Flip to the wide layout off-screen-equivalent (it's the same visible
-        // grid, just re-sized) and wait a couple of frames for the browser to
-        // actually paint it before snapshotting.
-        await new Promise(resolve => {
-          setCaptureWide(true);
-          requestAnimationFrame(() => requestAnimationFrame(resolve));
-        });
-      }
-      await shareElementAsImage(weekCaptureRef.current, `${getLang() === "he" ? "שבוע" : "week"}.png`);
+      appToast(t("sharePreparing"));
+      // Always flip captureWide before snapshotting -- not just on a narrow
+      // phone screen. Besides forcing the wide (desktop) layout when needed,
+      // this is also what switches off the "today" blue header highlight and
+      // the red current-time line (see showToday/nowLine above), and that
+      // suppression matters just as much on a wide screen as on a narrow
+      // one. Wait a couple of frames for the browser to actually paint it.
+      await new Promise(resolve => {
+        setCaptureWide(true);
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+      // Same date-range text the in-app header shows above the grid (see
+      // navBar below), reused here as the share image's title row.
+      const weekTitle = days[0].toLocaleDateString(t("dateLocale"), {
+        month: "short",
+        day: "numeric"
+      }) + " - " + days[6].toLocaleDateString(t("dateLocale"), {
+        month: "short",
+        day: "numeric",
+        year: "numeric"
+      });
+      await shareElementAsImage(weekCaptureRef.current, `${getLang() === "he" ? "שבוע" : "week"}.png`, {
+        title: weekTitle
+      });
     } finally {
       setCaptureWide(false);
       setSharingWeek(false);
@@ -6672,7 +6942,7 @@ const WeekView = ({
   shareWeekRef.current = shareWeekImage;
   useEffect(() => {
     if (!onShareReady) return;
-    onShareReady(() => shareWeekRef.current());
+    onShareReady(options => shareWeekRef.current(options));
     return () => onShareReady(null);
   }, [onShareReady]);
 
@@ -6882,10 +7152,15 @@ const WeekView = ({
     const gutterCol = narrow ? "22px" : "50px";
     const gridTemplate = `${gutterCol} repeat(7,minmax(0,1fr))`;
 
+    // Share dialog options only take effect while actually capturing --
+    // normal on-screen browsing always shows everything, fully marked.
+    const wMarkOverdue = !sharingWeek || !shareOptions || shareOptions.markOverdue !== false;
+    const wMarkCompleted = !sharingWeek || !shareOptions || shareOptions.markCompleted !== false;
+    const wSelectedTypes = sharingWeek && shareOptions ? shareOptions.selectedTypes : null;
     const dayData = days.map(day => {
       const ds = localDs(day);
       const isT = day.toDateString() === TODAY.toDateString();
-      const all = tasks.filter(tk => tk.date === ds || isT && !tk.date && (isDone(tk) || isCancelled(tk)));
+      const all = tasks.filter(tk => tk.date === ds || isT && !tk.date && (isDone(tk) || isCancelled(tk))).filter(tk => !wSelectedTypes || wSelectedTypes.has(tk.type || "regular")).filter(tk => wMarkCompleted || !(isDone(tk) || isCancelled(tk)));
       const untimed = sortForByType(all.filter(tk => !tk.time));
       const timed = layoutDayTasks(all.filter(tk => !!tk.time));
       return {
@@ -7005,9 +7280,9 @@ const WeekView = ({
 
     // --- no-time tray ---
     const untimedChip = tk => {
-      const donOnDay = isDone(tk),
-        cancelOnDay = isCancelled(tk),
-        over = isOverdue(tk),
+      const donOnDay = wMarkCompleted && isDone(tk),
+        cancelOnDay = wMarkCompleted && isCancelled(tk),
+        over = wMarkOverdue && !donOnDay && !cancelOnDay && isOverdue(tk),
         m = getTypeMeta(tk.type);
       const locked = isDragLocked(tk);
       const beingDragged = drag && drag.id === tk.id;
@@ -7052,6 +7327,10 @@ const WeekView = ({
       untimed,
       isT
     }, i) => {
+      // Same suppression as the header's "today" highlight and the now-line
+      // below: a shared image has no "right now", so this faint today tint
+      // shouldn't single out one column in the exported PNG either.
+      const showToday = isT && !captureWide;
       const isAllDayTarget = !!drag && !drag.outside && drag.payload && drag.payload.allDay && drag.payload.ds === ds;
       return /*#__PURE__*/React.createElement("div", {
         key: i,
@@ -7069,7 +7348,7 @@ const WeekView = ({
           minWidth: 0,
           overflow: "hidden",
           borderInlineStart: `1px solid var(--grid-line)`,
-          backgroundColor: isAllDayTarget ? "rgba(59,130,246,0.10)" : isT ? "rgba(59,130,246,0.035)" : "transparent",
+          backgroundColor: isAllDayTarget ? "rgba(59,130,246,0.10)" : showToday ? "rgba(59,130,246,0.035)" : "transparent",
           transition: "background-color 0.12s"
         }
       }, untimed.map(untimedChip), isAllDayTarget ? /*#__PURE__*/React.createElement("div", {
@@ -7153,9 +7432,9 @@ const WeekView = ({
       lane,
       laneCount
     }, idx = 0) => {
-      const donOnDay = isDone(tk),
-        cancelOnDay = isCancelled(tk),
-        over = isOverdue(tk),
+      const donOnDay = wMarkCompleted && isDone(tk),
+        cancelOnDay = wMarkCompleted && isCancelled(tk),
+        over = wMarkOverdue && !donOnDay && !cancelOnDay && isOverdue(tk),
         m = getTypeMeta(tk.type);
       const top = (start - DAY_START * 60) * pxPerMin;
       const rawHeight = (end - start) * pxPerMin;
@@ -7239,10 +7518,14 @@ const WeekView = ({
       isT,
       timed
     }, i) => {
+      // Same suppression as the header and the untimed row above: a shared
+      // image has no "right now", so neither the now-line nor the faint
+      // today column tint should single one day out in the exported PNG.
+      const showToday = isT && !captureWide;
       // Suppressed during a share-image capture -- "right now" is a
       // moment-in-time indicator that stops being meaningful the instant the
       // image is saved, so it's left off the shared PNG entirely.
-      const nowLine = isT && !captureWide && nowMinutes >= DAY_START * 60 && nowMinutes <= DAY_END * 60 ? /*#__PURE__*/React.createElement("div", {
+      const nowLine = showToday && nowMinutes >= DAY_START * 60 && nowMinutes <= DAY_END * 60 ? /*#__PURE__*/React.createElement("div", {
         style: {
           position: "absolute",
           top: (nowMinutes - DAY_START * 60) * pxPerMin,
@@ -7310,7 +7593,7 @@ const WeekView = ({
           height: gridHeight,
           cursor: "pointer",
           borderInlineStart: `1px solid var(--grid-line)`,
-          backgroundColor: isDropTarget ? "rgba(59,130,246,0.10)" : isT ? "rgba(59,130,246,0.035)" : "transparent",
+          backgroundColor: isDropTarget ? "rgba(59,130,246,0.10)" : showToday ? "rgba(59,130,246,0.035)" : "transparent",
           transition: "background-color 0.12s",
           backgroundImage: `repeating-linear-gradient(to bottom, var(--grid-line) 0, var(--grid-line) 1px, transparent 1px, transparent ${HOUR_PX}px)`
         }
@@ -7353,7 +7636,9 @@ const WeekView = ({
         width: weekCaptureWidth,
         maxWidth: "none"
       } : undefined
-    }, headerRow, swipeWrap), dragPill);
+    }, headerRow, swipeWrap), dragPill, /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
+      active: sharingWeek
+    }));
   })());
 };
 
@@ -7925,7 +8210,9 @@ const ListByType = ({
   onQuickAdd,
   onCollapseAllRef,
   newlyAddedIds,
-  onDropType
+  onDropType,
+  onShareReady,
+  onAnyOpenChange
 }) => {
   // Drag a card onto another type group to change its type. Both the header and
   // the card area register as zones, so a collapsed group is still a target.
@@ -7945,6 +8232,38 @@ const ListByType = ({
     pillLabel: p => p ? getTypeMeta(p.type).label : ""
   });
   const dragType = drag && !drag.outside && drag.payload ? drag.payload.type : null;
+  const typeCaptureRef = useRef(null);
+  const [sharingType, setSharingType] = useState(false);
+  const [shareOptions, setShareOptions] = useState(null);
+  const shareByTypeImage = async options => {
+    if (sharingType) return;
+    setShareOptions(options || null);
+    setSharingType(true);
+    try {
+      appToast(t("sharePreparing"));
+      // Wait a couple of frames for the capture-only expansion (every
+      // section forced open) and padding/background below -- plus the
+      // loading overlay covering the screen -- to actually paint before
+      // snapshotting.
+      await new Promise(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+      await shareElementAsImage(typeCaptureRef.current, `${getLang() === "he" ? "לפי-סוג" : "by-type"}.png`);
+    } finally {
+      setSharingType(false);
+    }
+  };
+  // Registered only while this screen is on the "by type" tab (see
+  // AllTasksView, which only mounts ListByType then) -- the same
+  // mount/unmount registration pattern Home, Week and Month use for the
+  // global top-bar share button.
+  const shareTypeRef = useRef(shareByTypeImage);
+  shareTypeRef.current = shareByTypeImage;
+  useEffect(() => {
+    if (!onShareReady) return;
+    onShareReady(options => shareTypeRef.current(options));
+    return () => onShareReady(null);
+  }, [onShareReady]);
   const [quickInputs, setQuickInputs] = useState({});
   const inputRefs = useRef({});
   const [editingType, setEditingType] = useState(null);
@@ -8040,6 +8359,14 @@ const ListByType = ({
   };
   const getEntries = type => tasks.filter(t => t.type === type && isPending(t));
   const hasAny = allTypes.some(type => getEntries(type).length > 0);
+  // Lets the parent (the byDate/byType switch bar) know whether a
+  // "collapse all" button should be enabled -- only meaningful while at
+  // least one visible section (one that actually has tasks) is open.
+  useEffect(() => {
+    if (!onAnyOpenChange) return;
+    const anyOpen = allTypes.some(type => getEntries(type).length > 0 && !isCollapsed(type));
+    onAnyOpenChange(anyOpen);
+  });
   const commitTypeRename = () => {
     const newName = editingTypeVal.trim();
     if (newName && newName !== editingType && onRenameType) {
@@ -8098,71 +8425,16 @@ const ListByType = ({
     }
   };
   if (!hasAny) return /*#__PURE__*/React.createElement(EmptyState, null);
-  const stickyMeta = stickyType ? getTypeMeta(stickyType) : null;
-  const stickyEntries = stickyType ? sortForByType(getEntries(stickyType)) : [];
-  const stickyLabel = stickyType ? isCustomType(stickyType) || stickyType === "calendar" ? stickyMeta.label : getLang() === "he" ? `${t("tasks")} ${stickyMeta.label}` : `${stickyMeta.label} ${t("tasks")}` : null;
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      animation: "fadeIn 0.25s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    ref: stickyBarRef,
-    style: {
-      position: "sticky",
-      top: "var(--app-header-h, 48px)",
-      zIndex: 90,
-      marginLeft: -12,
-      marginRight: -12,
-      overflow: "hidden",
-      maxHeight: stickyType ? 44 : 0,
-      opacity: stickyType ? 1 : 0,
-      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease",
-      background: "var(--card)",
-      backdropFilter: "blur(12px)",
-      WebkitBackdropFilter: "blur(12px)",
-      borderBottom: stickyType ? `1px solid ${C.border}` : "none",
-      transform: "translateZ(0)",
-      WebkitTransform: "translateZ(0)"
-    }
-  }, /*#__PURE__*/React.createElement(StickySwap, {
-    swapKey: stickyType,
-    height: 44
-  }, stickyMeta && /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: 44,
-      paddingLeft: 12,
-      paddingRight: 12,
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      background: stickyMeta.bg
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 8,
-      height: 8,
-      borderRadius: "50%",
-      background: stickyMeta.dot,
-      flexShrink: 0
-    }
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 14,
-      fontWeight: 700,
-      color: stickyMeta.color,
-      flex: 1
-    }
-  }, stickyLabel), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: stickyMeta.color,
-      opacity: 0.7
-    }
-  }, stickyEntries.length)))), allTypes.map(type => {
+  const renderTypeSection = type => {
     const m = getTypeMeta(type);
     const entries = sortForByType(getEntries(type));
     if (!entries.length) return null;
     const collapsed_ = isCollapsed(type);
+    // A collapsed section is left off the shared photo entirely -- only the
+    // types the user currently has open show up in the image, matching
+    // exactly what "open" means on screen rather than force-expanding
+    // everything for the photo.
+    if (sharingType && collapsed_) return null;
     const isHe = getLang() === "he";
     return /*#__PURE__*/React.createElement("div", {
       key: type,
@@ -8314,6 +8586,7 @@ const ListByType = ({
       hideTypeBadge: true,
       isNew: !!(newlyAddedIds && newlyAddedIds.has(task.id))
     })), /*#__PURE__*/React.createElement("div", {
+      "data-share-ignore": "true",
       style: {
         display: "flex",
         alignItems: "center",
@@ -8372,7 +8645,258 @@ const ListByType = ({
         borderRadius: 6
       }
     }, "↵ Enter"))))));
-  }), dragPill);
+  };
+  // -- Dynamic multi-column layout for the share-image capture --------
+  // A single long vertical list of every open type would make for an
+  // extremely tall photo once there are more than a handful of tasks, so
+  // the capture instead spreads sections across up to 8 columns depending
+  // on how many tasks are actually being shown -- more tasks, more (and
+  // slightly narrower) columns, capped at 8. (shareColumnCount is shared
+  // globally so Up Next's share layout uses the exact same formula.)
+  const visibleTypesForShare = sharingType ? allTypes.filter(type => getEntries(type).length > 0 && !isCollapsed(type)) : [];
+  const shareTaskTotal = visibleTypesForShare.reduce((sum, type) => sum + getEntries(type).length, 0);
+  const shareColumns = shareColumnCount(shareTaskTotal);
+  const SHARE_COL_WIDTH = 280;
+  const SHARE_COL_GAP = 16;
+  const SHARE_FRAME_PAD = 16;
+  const isHe = getLang() === "he";
+  let typeSectionsContent;
+  let shareContentWidth = SHARE_COL_WIDTH;
+  if (sharingType && visibleTypesForShare.length > 0 && shareColumns > 1) {
+    // Rather than flattening every task into one pile and cutting it into
+    // equal slices (which happily slices a single type into pieces AND
+    // glues unrelated types together at the seams), each type keeps its own
+    // column(s) whenever there's room for that:
+    //  - A type too big for one column gets a run of consecutive columns of
+    //    its own, split as evenly as possible, with ONE header spanning the
+    //    whole run instead of repeating per column.
+    //  - Types that fit in a single column are bin-packed together only
+    //    when they have to share -- each keeps its own header, but a type
+    //    is never split across columns just to balance things out.
+    const target = Math.max(1, Math.ceil(shareTaskTotal / shareColumns));
+    const bigTypes = [];
+    const smallTypes = [];
+    visibleTypesForShare.forEach(type => {
+      (getEntries(type).length > target ? bigTypes : smallTypes).push(type);
+    });
+    const segments = [];
+    bigTypes.forEach(type => {
+      const m = getTypeMeta(type);
+      const entries = sortForByType(getEntries(type));
+      const count = entries.length;
+      const dedicatedCols = Math.max(1, Math.ceil(count / target));
+      const base = Math.floor(count / dedicatedCols);
+      const rem = count % dedicatedCols;
+      const subCols = [];
+      let cursor = 0;
+      for (let i = 0; i < dedicatedCols; i++) {
+        const size = base + (i < rem ? 1 : 0);
+        subCols.push(entries.slice(cursor, cursor + size));
+        cursor += size;
+      }
+      segments.push({
+        kind: "big",
+        type,
+        m,
+        subCols
+      });
+    });
+    // Bin-pack the small types: first-fit, largest-first, into as few
+    // shared columns as needed -- a type only ends up sharing a column with
+    // another type when it genuinely doesn't fit on its own.
+    const bins = [];
+    [...smallTypes].sort((a, b) => getEntries(b).length - getEntries(a).length).forEach(type => {
+      const count = getEntries(type).length;
+      let bin = bins.find(b => b.total + count <= target);
+      if (!bin) {
+        bin = {
+          total: 0,
+          types: []
+        };
+        bins.push(bin);
+      }
+      bin.types.push(type);
+      bin.total += count;
+    });
+    bins.forEach(bin => {
+      bin.types.sort((a, z) => visibleTypesForShare.indexOf(a) - visibleTypesForShare.indexOf(z));
+      segments.push({
+        kind: "small",
+        types: bin.types
+      });
+    });
+    // Keep segments in roughly their original type order for a natural read.
+    segments.sort((a, b) => {
+      const at = a.kind === "big" ? a.type : a.types[0];
+      const bt = b.kind === "big" ? b.type : b.types[0];
+      return visibleTypesForShare.indexOf(at) - visibleTypesForShare.indexOf(bt);
+    });
+    const finalColumnCount = segments.reduce((sum, seg) => sum + (seg.kind === "big" ? seg.subCols.length : 1), 0);
+    shareContentWidth = finalColumnCount * SHARE_COL_WIDTH + (finalColumnCount - 1) * SHARE_COL_GAP;
+    // renderShareTaskRow (fixed-height task box) is shared globally so Up
+    // Next's share layout looks identical.
+    // A compact, static version of the section header -- no collapse toggle
+    // or drag target, just the type's name as a label. When a type spans
+    // several consecutive columns of its own, this is rendered once above
+    // the whole run rather than repeated per column.
+    const renderShareTypeLabel = (type, m, key, width) => /*#__PURE__*/React.createElement("div", {
+      key,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 12px",
+        borderRadius: 9,
+        background: m.bg,
+        border: `1px solid ${m.border}`,
+        marginBottom: 8,
+        width
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: m.dot,
+        flexShrink: 0
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: m.color
+      }
+    }, isCustomType(type) || type === "calendar" ? m.label : getLang() === "he" ? `${t("tasks")} ${m.label}` : `${m.label} ${t("tasks")}`));
+    typeSectionsContent = /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: SHARE_COL_GAP
+      }
+    }, segments.map((seg, si) => {
+      if (seg.kind === "big") {
+        const segWidth = seg.subCols.length * SHARE_COL_WIDTH + (seg.subCols.length - 1) * SHARE_COL_GAP;
+        return /*#__PURE__*/React.createElement("div", {
+          key: si,
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            flex: `0 0 ${segWidth}px`,
+            minWidth: 0
+          }
+        }, renderShareTypeLabel(seg.type, seg.m, `h-${si}`, segWidth), /*#__PURE__*/React.createElement("div", {
+          style: {
+            display: "flex",
+            flexDirection: "row",
+            gap: SHARE_COL_GAP
+          }
+        }, seg.subCols.map((tasks, ci) => /*#__PURE__*/React.createElement("div", {
+          key: ci,
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            flex: `0 0 ${SHARE_COL_WIDTH}px`,
+            minWidth: 0
+          }
+        }, tasks.map(task => renderShareTaskRow(task, shareOptions))))));
+      }
+      return /*#__PURE__*/React.createElement("div", {
+        key: si,
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          flex: `0 0 ${SHARE_COL_WIDTH}px`,
+          minWidth: 0
+        }
+      }, seg.types.map((type, gi) => /*#__PURE__*/React.createElement(React.Fragment, {
+        key: gi
+      }, renderShareTypeLabel(type, getTypeMeta(type), `h-${si}-${gi}`), sortForByType(getEntries(type)).map(task => renderShareTaskRow(task, shareOptions)))));
+    }));
+  } else {
+    typeSectionsContent = allTypes.map(type => renderTypeSection(type));
+  }
+  const stickyMeta = stickyType ? getTypeMeta(stickyType) : null;
+  const stickyEntries = stickyType ? sortForByType(getEntries(stickyType)) : [];
+  const stickyLabel = stickyType ? isCustomType(stickyType) || stickyType === "calendar" ? stickyMeta.label : getLang() === "he" ? `${t("tasks")} ${stickyMeta.label}` : `${stickyMeta.label} ${t("tasks")}` : null;
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      animation: "fadeIn 0.25s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    ref: stickyBarRef,
+    style: {
+      position: "sticky",
+      top: "var(--app-header-h, 48px)",
+      zIndex: 90,
+      marginLeft: -12,
+      marginRight: -12,
+      overflow: "hidden",
+      maxHeight: stickyType ? 44 : 0,
+      opacity: stickyType ? 1 : 0,
+      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease",
+      background: "var(--card)",
+      backdropFilter: "blur(12px)",
+      WebkitBackdropFilter: "blur(12px)",
+      borderBottom: stickyType ? `1px solid ${C.border}` : "none",
+      transform: "translateZ(0)",
+      WebkitTransform: "translateZ(0)"
+    }
+  }, /*#__PURE__*/React.createElement(StickySwap, {
+    swapKey: stickyType,
+    height: 44
+  }, stickyMeta && /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: 44,
+      paddingLeft: 12,
+      paddingRight: 12,
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      background: stickyMeta.bg
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 8,
+      height: 8,
+      borderRadius: "50%",
+      background: stickyMeta.dot,
+      flexShrink: 0
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700,
+      color: stickyMeta.color,
+      flex: 1
+    }
+  }, stickyLabel), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: stickyMeta.color,
+      opacity: 0.7
+    }
+  }, stickyEntries.length)))), /*#__PURE__*/React.createElement("div", {
+    ref: typeCaptureRef,
+    style: {
+      // Only while a share-image capture is in flight: gives the list a
+      // real card background with breathing room around the task rows,
+      // matching the Up Next share image.
+      padding: sharingType ? `18px ${SHARE_FRAME_PAD}px` : 0,
+      background: sharingType ? "var(--card)" : "transparent",
+      borderRadius: sharingType ? 14 : 0,
+      // Wide enough to fit every column side by side when the task count
+      // pushes the layout past one column; otherwise left at its natural
+      // (single-column) width. Box-sizing is border-box app-wide, so the
+      // wrapper's own left/right padding above has to be added on top of
+      // the column content width, or the last column gets clipped off the
+      // right edge of the capture -- plus a few px of slack for safety.
+      width: sharingType && shareContentWidth > SHARE_COL_WIDTH ? shareContentWidth + SHARE_FRAME_PAD * 2 + 4 : undefined,
+      maxWidth: sharingType && shareContentWidth > SHARE_COL_WIDTH ? "none" : undefined
+    }
+  }, typeSectionsContent), dragPill), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
+    active: sharingType
+  }));
 };
 const EmptyState = () => /*#__PURE__*/React.createElement("div", {
   style: {
@@ -10925,38 +11449,40 @@ const FilteredPieCard = ({
     const defaultTitle = chartType === "bar-date" ? (isHe ? "גרף עמודות" : "Count Plot") + dateLabel + typeLabel + keyLabel : chartType === "line" ? (isHe ? "גרף קווי" : "Line Chart") + dateLabel + typeLabel + keyLabel : chartType === "treemap" ? (isHe ? "מפת עץ" : "Treemap") + dateLabel + keyLabel : chartType === "gauge" ? (isHe ? "מד" : "Gauge") + dateLabel + typeLabel + keyLabel : filter ? filter + dateLabel + typeLabel : activeTypeFilter ? getTypeMeta(activeTypeFilter).label + dateLabel + keyLabel : timeRange === "today" ? t("todaySnapshot") + typeLabel : t("allTasks") + dateLabel + typeLabel;
     const displayTitle = titleVal.trim() || defaultTitle;
     return /*#__PURE__*/React.createElement("div", {
-      onPointerDown: locked && onTitlePointerDown ? onTitlePointerDown : undefined,
       style: {
         fontSize: 15,
         fontWeight: 700,
         color: C.text,
-        // With a drag handler the whole strip is the grab target: padded out to a
-        // comfortable touch size, with matching negative margins so the layout
-        // around it doesn't move.
-        ...(locked && onTitlePointerDown ? {
-          padding: "13px 8px",
-          margin: "-13px -8px 1px",
-          minHeight: 46,
-          boxSizing: "border-box",
-          borderRadius: 10
-        } : {
-          marginBottom: 14
-        }),
+        marginBottom: 14,
         unicodeBidi: "plaintext",
         display: "flex",
         flexDirection: getLang() === "he" ? "row-reverse" : "row",
         alignItems: "center",
         gap: 6,
-        cursor: locked && onTitlePointerDown ? isDraggingChart ? "grabbing" : "grab" : undefined,
-        touchAction: locked && onTitlePointerDown ? "none" : undefined,
-        WebkitTouchCallout: locked && onTitlePointerDown ? "none" : undefined,
         userSelect: isDraggingChart ? "none" : undefined
       }
-    }, locked && onTitlePointerDown && /*#__PURE__*/React.createElement(Icon, {
+    }, locked && onTitlePointerDown && /*#__PURE__*/React.createElement("span", {
+      onPointerDown: onTitlePointerDown,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        // The grip icon alone is the grab target -- padded out to a
+        // comfortable touch size, with a matching negative margin so the
+        // layout around it doesn't move.
+        padding: 8,
+        margin: -8,
+        borderRadius: 8,
+        cursor: isDraggingChart ? "grabbing" : "grab",
+        touchAction: "none",
+        WebkitTouchCallout: "none",
+        flexShrink: 0
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
       name: "gripDots",
       size: 16,
       color: C.text3
-    }), /*#__PURE__*/React.createElement("span", null, locked ? displayTitle : getLang() === "he" ? "ערוך גרף מסונן" : "Edit Filter Chart"));
+    })), /*#__PURE__*/React.createElement("span", null, locked ? displayTitle : getLang() === "he" ? "ערוך גרף מסונן" : "Edit Filter Chart"));
   })())), !locked && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 12
@@ -11552,10 +12078,19 @@ const Dashboard = ({
   const stickyBarRef = useRef(null);
   const upNextCaptureRef = useRef(null);
   const [sharingUpNext, setSharingUpNext] = useState(false);
-  const shareUpNextImage = async () => {
+  const [shareOptions, setShareOptions] = useState(null);
+  const shareUpNextImage = async options => {
     if (sharingUpNext) return;
+    setShareOptions(options || null);
     setSharingUpNext(true);
     try {
+      appToast(t("sharePreparing"));
+      // Wait a couple of frames for the capture-only padding/background
+      // above (and the loading overlay covering the screen) to actually
+      // paint before snapshotting.
+      await new Promise(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
       await shareElementAsImage(upNextCaptureRef.current, `${getLang() === "he" ? "המשימות-הקרובות" : "up-next"}.png`);
     } finally {
       setSharingUpNext(false);
@@ -11568,7 +12103,7 @@ const Dashboard = ({
   shareUpNextRef.current = shareUpNextImage;
   useEffect(() => {
     if (!onShareReady) return;
-    onShareReady(() => shareUpNextRef.current());
+    onShareReady(options => shareUpNextRef.current(options));
     return () => onShareReady(null);
   }, [onShareReady]);
   const sentinelUpNext = useRef(null);
@@ -11577,6 +12112,12 @@ const Dashboard = ({
   const sentinelTomorrow = useRef(null);
   const sentinelOverview = useRef(null);
   useEffect(() => {
+    // Which section is actually applied right now (or already scheduled to
+    // be applied), so repeated compute() calls during one continuous scroll
+    // know whether a transition is genuinely new or just re-confirming what's
+    // already pending.
+    let appliedSection = null;
+    let sectionTimer = null;
     const compute = () => {
       const barBottom = stickyBarRef.current ? stickyBarRef.current.getBoundingClientRect().bottom : 48;
       const top = el => el?.getBoundingClientRect().top ?? Infinity;
@@ -11585,15 +12126,46 @@ const Dashboard = ({
       const todayPassed = top(sentinelToday.current) < barBottom;
       const tomorrowPassed = top(sentinelTomorrow.current) < barBottom;
       const overviewPassed = top(sentinelOverview.current) < barBottom;
+      let nextSection, nextDay;
       if (overviewPassed) {
-        setStickySection('overview');
-        setStickyDay(null);
+        nextSection = 'overview';
+        nextDay = null;
       } else if (upNextPassed) {
-        setStickySection('upnext');
-        if (tomorrowPassed) setStickyDay('tomorrow');else if (todayPassed) setStickyDay('today');else if (overduePassed) setStickyDay('overdue');else setStickyDay(null);
+        nextSection = 'upnext';
+        nextDay = tomorrowPassed ? 'tomorrow' : todayPassed ? 'today' : overduePassed ? 'overdue' : null;
       } else {
-        setStickySection(null);
-        setStickyDay(null);
+        nextSection = null;
+        nextDay = null;
+      }
+      const apply = () => {
+        appliedSection = nextSection;
+        setStickySection(nextSection);
+        setStickyDay(nextDay);
+        sectionTimer = null;
+      };
+      if (nextSection === appliedSection) {
+        // Back to matching what's currently on screen -- cancel any pending
+        // transition away from it (a bounce that reverted) and keep the
+        // sub-day pill in sync immediately.
+        if (sectionTimer) {
+          clearTimeout(sectionTimer);
+          sectionTimer = null;
+        }
+        setStickyDay(nextDay);
+        return;
+      }
+      // Up Next carries an extra sub-header row that Overview doesn't, so
+      // that particular swap is the one that reads as a glitch when a fast
+      // or momentum scroll bounces back and forth across the boundary a few
+      // times in a row. Debounce just this transition slightly -- everything
+      // else (appearing/disappearing, switching between today/tomorrow/
+      // overdue) still applies immediately.
+      const involvesOverview = nextSection === 'overview' || appliedSection === 'overview';
+      if (sectionTimer) clearTimeout(sectionTimer);
+      if (involvesOverview) {
+        sectionTimer = setTimeout(apply, 140);
+      } else {
+        apply();
       }
     };
     let rafId = null;
@@ -11613,6 +12185,7 @@ const Dashboard = ({
       document.removeEventListener("scroll", compute);
       document.removeEventListener("touchmove", onTouch);
       if (rafId) cancelAnimationFrame(rafId);
+      if (sectionTimer) clearTimeout(sectionTimer);
     };
   }, [tasks.length]);
   const isHe = getLang() === "he";
@@ -11635,6 +12208,194 @@ const Dashboard = ({
   const anyUpNext = overdueTasks.length > 0 || days.some(({
     ds
   }) => tasks.filter(tk => tk.date === ds && isPending(tk)).length > 0);
+
+  // -- Dynamic multi-column layout for the share-image capture --------
+  // Same algorithm as the By Type share image: Overdue / Today / Tomorrow
+  // each keep their own dedicated column(s) whenever there's room, with one
+  // header spanning a group's whole run of columns; only genuinely small
+  // groups get bin-packed together, and never by splitting a group up.
+  const SHARE_COL_WIDTH = 280;
+  const SHARE_COL_GAP = 16;
+  const SHARE_FRAME_PAD = 16;
+  const shareGroups = sharingUpNext ? [...(overdueTasks.length > 0 ? [{
+    key: "overdue",
+    label: t("overdue"),
+    color: C.red,
+    bg: C.redBg,
+    border: C.redBorder,
+    dot: C.red,
+    tasks: [...overdueTasks].sort((a, b) => {
+      const da = a.date || "",
+        db = b.date || "";
+      if (da !== db) return da < db ? -1 : 1;
+      const aHasTime = !!a.time,
+        bHasTime = !!b.time;
+      if (!aHasTime && !bHasTime) return 0;
+      if (!aHasTime) return -1;
+      if (!bHasTime) return 1;
+      return a.time < b.time ? -1 : a.time > b.time ? 1 : 0;
+    })
+  }] : []), ...days.map(day => ({
+    day,
+    tasks: [...tasks.filter(tk => tk.date === day.ds && isPending(tk) && !(day.isToday && tk.date < todayDsNow))].sort((a, b) => {
+      const overA = isOverdue(a),
+        overB = isOverdue(b);
+      if (overA && !overB) return -1;
+      if (!overA && overB) return 1;
+      const aHasTime = !!a.time,
+        bHasTime = !!b.time;
+      if (!aHasTime && !bHasTime) return (a.name || "").localeCompare(b.name || "");
+      if (!aHasTime) return -1;
+      if (!bHasTime) return 1;
+      if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+      return (a.name || "").localeCompare(b.name || "");
+    })
+  })).filter(g => g.tasks.length > 0).map(g => ({
+    key: g.day.sentinelKey,
+    label: g.day.label,
+    color: g.day.isToday ? C.blue : C.text2,
+    bg: g.day.isToday ? C.blueBg : C.card2,
+    border: g.day.isToday ? C.blueBorder : C.border,
+    dot: g.day.isToday ? C.blue : C.text3,
+    tasks: g.tasks
+  }))]
+  // Apply the share dialog's type filter (if any types were deselected) --
+  // a group that ends up with no tasks left is dropped entirely.
+  .map(g => shareOptions && shareOptions.selectedTypes ? {
+    ...g,
+    tasks: g.tasks.filter(tk => shareOptions.selectedTypes.has(tk.type || "regular"))
+  } : g).filter(g => g.tasks.length > 0) : [];
+  const shareTaskTotalUpNext = shareGroups.reduce((sum, g) => sum + g.tasks.length, 0);
+  const shareColumnsUpNext = shareColumnCount(shareTaskTotalUpNext);
+  let upNextSectionsContent = null;
+  let upNextShareWidth = SHARE_COL_WIDTH;
+  if (sharingUpNext && shareGroups.length > 0 && shareColumnsUpNext > 1) {
+    const target = Math.max(1, Math.ceil(shareTaskTotalUpNext / shareColumnsUpNext));
+    const bigGroups = [];
+    const smallGroups = [];
+    shareGroups.forEach(g => (g.tasks.length > target ? bigGroups : smallGroups).push(g));
+    const segments = [];
+    bigGroups.forEach(g => {
+      const count = g.tasks.length;
+      const dedicatedCols = Math.max(1, Math.ceil(count / target));
+      const base = Math.floor(count / dedicatedCols);
+      const rem = count % dedicatedCols;
+      const subCols = [];
+      let cursor = 0;
+      for (let i = 0; i < dedicatedCols; i++) {
+        const size = base + (i < rem ? 1 : 0);
+        subCols.push(g.tasks.slice(cursor, cursor + size));
+        cursor += size;
+      }
+      segments.push({
+        kind: "big",
+        group: g,
+        subCols
+      });
+    });
+    const bins = [];
+    [...smallGroups].sort((a, b) => b.tasks.length - a.tasks.length).forEach(g => {
+      const count = g.tasks.length;
+      let bin = bins.find(b => b.total + count <= target);
+      if (!bin) {
+        bin = {
+          total: 0,
+          groups: []
+        };
+        bins.push(bin);
+      }
+      bin.groups.push(g);
+      bin.total += count;
+    });
+    bins.forEach(bin => {
+      bin.groups.sort((a, z) => shareGroups.indexOf(a) - shareGroups.indexOf(z));
+      segments.push({
+        kind: "small",
+        groups: bin.groups
+      });
+    });
+    segments.sort((a, b) => {
+      const ag = a.kind === "big" ? a.group : a.groups[0];
+      const bg = b.kind === "big" ? b.group : b.groups[0];
+      return shareGroups.indexOf(ag) - shareGroups.indexOf(bg);
+    });
+    const finalColumnCount = segments.reduce((sum, seg) => sum + (seg.kind === "big" ? seg.subCols.length : 1), 0);
+    upNextShareWidth = finalColumnCount * SHARE_COL_WIDTH + (finalColumnCount - 1) * SHARE_COL_GAP;
+    const renderShareGroupLabel = (g, key, width) => /*#__PURE__*/React.createElement("div", {
+      key,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 12px",
+        borderRadius: 9,
+        background: g.bg,
+        border: `1px solid ${g.border}`,
+        marginBottom: 8,
+        width
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: g.dot,
+        flexShrink: 0
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: g.color
+      }
+    }, g.label));
+    upNextSectionsContent = /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexDirection: "row",
+        alignItems: "flex-start",
+        gap: SHARE_COL_GAP
+      }
+    }, segments.map((seg, si) => {
+      if (seg.kind === "big") {
+        const segWidth = seg.subCols.length * SHARE_COL_WIDTH + (seg.subCols.length - 1) * SHARE_COL_GAP;
+        return /*#__PURE__*/React.createElement("div", {
+          key: si,
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            flex: `0 0 ${segWidth}px`,
+            minWidth: 0
+          }
+        }, renderShareGroupLabel(seg.group, `h-${si}`, segWidth), /*#__PURE__*/React.createElement("div", {
+          style: {
+            display: "flex",
+            flexDirection: "row",
+            gap: SHARE_COL_GAP
+          }
+        }, seg.subCols.map((subTasks, ci) => /*#__PURE__*/React.createElement("div", {
+          key: ci,
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            flex: `0 0 ${SHARE_COL_WIDTH}px`,
+            minWidth: 0
+          }
+        }, subTasks.map(task => renderShareTaskRow(task, shareOptions))))));
+      }
+      return /*#__PURE__*/React.createElement("div", {
+        key: si,
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          flex: `0 0 ${SHARE_COL_WIDTH}px`,
+          minWidth: 0
+        }
+      }, seg.groups.map((g, gi) => /*#__PURE__*/React.createElement(React.Fragment, {
+        key: gi
+      }, renderShareGroupLabel(g, `h-${si}-${gi}`, undefined), g.tasks.map(task => renderShareTaskRow(task, shareOptions)))));
+    }));
+  }
 
   // Sticky day label text
   const stickyDayLabel = stickyDay === 'overdue' ? t("overdue") : stickyDay === 'today' ? t("today") : stickyDay === 'tomorrow' ? t("tomorrow") : null;
@@ -11698,7 +12459,7 @@ const Dashboard = ({
     document.addEventListener("pointercancel", onUp);
     document.body.style.userSelect = "none";
   };
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.3s ease"
     }
@@ -11934,7 +12695,21 @@ const Dashboard = ({
     return /*#__PURE__*/React.createElement("div", {
       ref: upNextCaptureRef,
       style: {
-        marginBottom: 28
+        marginBottom: 28,
+        // Only while a share-image capture is in flight: gives the list a
+        // real card background with breathing room around the task rows,
+        // instead of their own chip colors sitting flush against the
+        // frame's edge the way a plain in-app list normally does.
+        padding: sharingUpNext ? `18px ${SHARE_FRAME_PAD}px` : 0,
+        background: sharingUpNext ? "var(--card)" : "transparent",
+        borderRadius: sharingUpNext ? 14 : 0,
+        // Wide enough to fit every column side by side once the task count
+        // pushes the layout past one column. Box-sizing is border-box
+        // app-wide, so the wrapper's own left/right padding has to be added
+        // on top of the column content width, or the last column gets
+        // clipped off the edge of the capture -- plus a few px of slack.
+        width: sharingUpNext && upNextShareWidth > SHARE_COL_WIDTH ? upNextShareWidth + SHARE_FRAME_PAD * 2 + 4 : undefined,
+        maxWidth: sharingUpNext && upNextShareWidth > SHARE_COL_WIDTH ? "none" : undefined
       }
     }, /*#__PURE__*/React.createElement("div", {
       ref: sentinelUpNext,
@@ -11965,7 +12740,7 @@ const Dashboard = ({
         fontWeight: 700,
         color: C.text
       }
-    }, t("upNext")))), overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
+    }, t("upNext")))), upNextSectionsContent || /*#__PURE__*/React.createElement(React.Fragment, null, overdueTasks.length > 0 && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 16
       }
@@ -12131,6 +12906,7 @@ const Dashboard = ({
         }
       }, label), /*#__PURE__*/React.createElement("button", {
         onClick: () => onAddTask(ds),
+        "data-share-ignore": "true",
         style: {
           [isHe ? "marginRight" : "marginLeft"]: "auto",
           width: 24,
@@ -12163,7 +12939,7 @@ const Dashboard = ({
         delay: i * 0.04,
         hideDateTag: true
       })));
-    }));
+    })));
   })(), upDragPill, /*#__PURE__*/React.createElement("div", {
     ref: sentinelOverview,
     style: {
@@ -12313,7 +13089,9 @@ const Dashboard = ({
     size: 13,
     color: "#3B82F6",
     strokeWidth: 2.5
-  }), " ", t("addFilterChart"))));
+  }), " ", t("addFilterChart")))), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
+    active: sharingUpNext
+  }));
 };
 
 // ─── iCalendar (.ics) import ────────────────────────────────────────────────
@@ -12530,6 +13308,325 @@ const icsToTasks = (text, type, existingIds) => {
 // ────────────────────────────────────────────────────────────────────────────
 
 //  DATA MODAL (import / export JSON) 
+// ── Share options dialog ────────────────────────────────────────────────────
+// Shown when the top-bar share button is pressed on Week, Month, Up Next or
+// By Type, letting the person tune what actually goes into the photo before
+// it's generated. Every checkbox defaults to on (and every type defaults to
+// selected) so the common case -- just get a photo of everything -- is a
+// single tap on "Copy Photo".
+const SHARE_TOGGLE_ROW_STYLE = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 12,
+  padding: "12px 2px"
+};
+const ShareOptionsToggle = ({
+  on,
+  onToggle
+}) => /*#__PURE__*/React.createElement("button", {
+  onClick: onToggle,
+  style: {
+    width: 44,
+    height: 26,
+    borderRadius: 13,
+    border: "none",
+    cursor: "pointer",
+    flexShrink: 0,
+    background: on ? "#3B82F6" : "var(--border2)",
+    position: "relative",
+    transition: "background 0.2s",
+    padding: 0
+  }
+}, /*#__PURE__*/React.createElement("div", {
+  style: {
+    position: "absolute",
+    top: 3,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    background: "#fff",
+    left: on ? "21px" : "3px",
+    transition: "left 0.2s cubic-bezier(0.34,1.56,0.64,1)",
+    boxShadow: "0 1px 4px rgba(0,0,0,0.2)"
+  }
+}));
+const ShareOptionsDialog = ({
+  open,
+  onClose,
+  onConfirm,
+  surface,
+  availableTypes,
+  busy
+}) => {
+  const isHe = getLang() === "he";
+  const [visible, setVisible] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [markOverdue, setMarkOverdue] = useState(true);
+  const [markCompleted, setMarkCompleted] = useState(true);
+  const [showDetails, setShowDetails] = useState(true);
+  const [selectedTypes, setSelectedTypes] = useState(() => new Set());
+  const showDetailsOption = surface === "upnext" || surface === "bytype";
+  const showTypeFilter = (surface === "week" || surface === "month" || surface === "upnext") && availableTypes && availableTypes.length > 0;
+  useEffect(() => {
+    if (open) {
+      setVisible(true);
+      setClosing(false);
+      // Reset to "everything on" every time the dialog opens, rather than
+      // remembering the last choice, so the fast path (open, Copy Photo) is
+      // always a complete, unfiltered photo.
+      setMarkOverdue(true);
+      setMarkCompleted(true);
+      setShowDetails(true);
+      setSelectedTypes(new Set((availableTypes || []).map(tp => tp.type)));
+    } else if (visible) {
+      setClosing(true);
+      setTimeout(() => {
+        setVisible(false);
+        setClosing(false);
+      }, 220);
+    }
+  }, [open]);
+  if (!visible) return null;
+  const toggleType = type => {
+    setSelectedTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);else next.add(type);
+      return next;
+    });
+  };
+  const allTypesSelected = availableTypes && selectedTypes.size === availableTypes.length;
+  const handleConfirm = () => {
+    onConfirm({
+      markOverdue,
+      markCompleted,
+      showDetails: showDetailsOption ? showDetails : true,
+      selectedTypes: showTypeFilter ? selectedTypes : null
+    });
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 2100,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20,
+      opacity: closing ? 0 : 1,
+      transition: "opacity 0.2s ease"
+    },
+    onClick: e => e.target === e.currentTarget && !busy && onClose()
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: () => !busy && onClose(),
+    style: {
+      position: "absolute",
+      inset: 0,
+      background: "rgba(0,0,0,0.4)",
+      backdropFilter: "blur(6px)",
+      WebkitBackdropFilter: "blur(6px)"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      background: "var(--card)",
+      borderRadius: 20,
+      padding: 24,
+      width: "100%",
+      maxWidth: 400,
+      maxHeight: "85vh",
+      overflowY: "auto",
+      boxShadow: "0 24px 64px rgba(0,0,0,0.25)",
+      border: `1px solid ${C.border}`,
+      transform: closing ? "scale(0.96)" : "scale(1)",
+      transition: "transform 0.2s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 700,
+      color: C.text,
+      marginBottom: 4
+    }
+  }, isHe ? "אפשרויות שיתוף" : "Share options"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text4,
+      marginBottom: 8
+    }
+  }, isHe ? "בחר מה יופיע בתמונה" : "Choose what shows up in the photo"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `1px solid ${C.border}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: SHARE_TOGGLE_ROW_STYLE
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 500,
+      color: C.text
+    }
+  }, isHe ? "סמן משימות באיחור" : "Mark overdue tasks"), /*#__PURE__*/React.createElement(ShareOptionsToggle, {
+    on: markOverdue,
+    onToggle: () => setMarkOverdue(v => !v)
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...SHARE_TOGGLE_ROW_STYLE,
+      borderTop: `1px solid ${C.border}`
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 500,
+      color: C.text
+    }
+  }, isHe ? "סמן הושלמו/בוטלו" : "Mark completed/cancelled"), /*#__PURE__*/React.createElement(ShareOptionsToggle, {
+    on: markCompleted,
+    onToggle: () => setMarkCompleted(v => !v)
+  })), showDetailsOption && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...SHARE_TOGGLE_ROW_STYLE,
+      borderTop: `1px solid ${C.border}`
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 500,
+      color: C.text
+    }
+  }, isHe ? "הצג פרטים (שעה/תאריך/משך)" : "Show details (time/date/length)"), /*#__PURE__*/React.createElement(ShareOptionsToggle, {
+    on: showDetails,
+    onToggle: () => setShowDetails(v => !v)
+  }))), showTypeFilter && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.text3
+    }
+  }, isHe ? "הצג משימות מסוגים:" : "Show tasks from types:"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setSelectedTypes(allTypesSelected ? new Set() : new Set(availableTypes.map(tp => tp.type))),
+    style: {
+      border: "none",
+      background: "none",
+      color: C.blue,
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      padding: 0
+    }
+  }, allTypesSelected ? isHe ? "נקה הכל" : "Select none" : isHe ? "בחר הכל" : "Select all")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      maxHeight: 220,
+      overflowY: "auto",
+      border: `1px solid ${C.border}`,
+      borderRadius: 10,
+      padding: 6
+    }
+  }, availableTypes.map(tp => {
+    const checked = selectedTypes.has(tp.type);
+    return /*#__PURE__*/React.createElement("div", {
+      key: tp.type,
+      onClick: () => toggleType(tp.type),
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "7px 8px",
+        borderRadius: 8,
+        cursor: "pointer",
+        background: checked ? tp.bg : "transparent"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 16,
+        height: 16,
+        borderRadius: 5,
+        border: `1.5px solid ${checked ? tp.color : C.border2}`,
+        background: checked ? tp.color : "transparent",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0
+      }
+    }, checked && /*#__PURE__*/React.createElement(Icon, {
+      name: "check",
+      size: 11,
+      color: "#fff",
+      strokeWidth: 3
+    })), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        fontWeight: 500,
+        color: C.text
+      }
+    }, tp.label));
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      marginTop: 22
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    disabled: busy,
+    style: {
+      flex: 1,
+      padding: "12px 0",
+      borderRadius: 12,
+      border: `1px solid ${C.border2}`,
+      background: "transparent",
+      color: C.text3,
+      fontSize: 14,
+      fontWeight: 600,
+      cursor: busy ? "default" : "pointer"
+    }
+  }, isHe ? "ביטול" : "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: handleConfirm,
+    disabled: busy || showTypeFilter && selectedTypes.size === 0,
+    style: {
+      flex: 2,
+      padding: "12px 0",
+      borderRadius: 12,
+      border: "none",
+      background: busy || showTypeFilter && selectedTypes.size === 0 ? C.border2 : "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: "#fff",
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: busy || showTypeFilter && selectedTypes.size === 0 ? "default" : "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8
+    }
+  }, busy && /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "#fff",
+    strokeWidth: "2.5",
+    style: {
+      animation: "spin 0.8s linear infinite"
+    }
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M12 2a10 10 0 0 1 10 10",
+    strokeLinecap: "round"
+  })), isHe ? "העתק תמונה" : "Copy Photo"))));
+};
 const SettingsModal = ({
   open,
   onClose,
@@ -12671,6 +13768,38 @@ const SettingsModal = ({
   const [closing, setClosing] = useState(false);
   const sheetRef = useRef(null);
   const handleRef = useRef(null);
+  // ── Pull-down-to-close: press the handle bar at the top, drag down, and
+  // either release past the threshold (closes, handing off to the normal
+  // slide-down animation) or release short of it (springs back to rest). ──
+  const [handleDragY, setHandleDragY] = useState(0);
+  const [handleDragging, setHandleDragging] = useState(false);
+  const handleDragStartY = useRef(0);
+  const onSheetHandlePointerDown = e => {
+    if (e.button !== undefined && e.button !== 0) return;
+    handleDragStartY.current = e.clientY;
+    setHandleDragging(true);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+  const onSheetHandlePointerMove = e => {
+    if (!handleDragging) return;
+    const dy = e.clientY - handleDragStartY.current;
+    const clamped = dy > 0 ? dy : 0;
+    setHandleDragY(clamped);
+    if (clamped > 110) {
+      // Threshold crossed mid-drag -- hand off to the real close animation
+      // right away rather than waiting for release.
+      setHandleDragging(false);
+      setHandleDragY(0);
+      onClose();
+    }
+  };
+  const onSheetHandlePointerUp = () => {
+    if (!handleDragging) return;
+    setHandleDragging(false);
+    setHandleDragY(0);
+  };
   // ── Copy JSON: let the person pick which types to include first ──
   const [copyPickerOpen, setCopyPickerOpen] = useState(false);
   const [copyTypes, setCopyTypes] = useState(null); // Set of selected types, or null before opened
@@ -12941,10 +14070,21 @@ const SettingsModal = ({
       borderBottom: "none",
       display: "flex",
       flexDirection: "column",
-      overflow: "hidden"
+      overflow: "hidden",
+      // While the handle is being dragged (or springing back after a
+      // release that didn't cross the close threshold), this inline
+      // transform drives the sheet directly, overriding the open/close
+      // keyframe animation for that moment.
+      transform: handleDragY ? `translateY(${handleDragY}px)` : undefined,
+      transition: handleDragging ? "none" : "transform 0.25s cubic-bezier(0.32,0.72,0,1)",
+      animation: handleDragY || handleDragging ? "none" : undefined
     }
   }, /*#__PURE__*/React.createElement("div", {
     ref: handleRef,
+    onPointerDown: onSheetHandlePointerDown,
+    onPointerMove: onSheetHandlePointerMove,
+    onPointerUp: onSheetHandlePointerUp,
+    onPointerCancel: onSheetHandlePointerUp,
     style: {
       flexShrink: 0,
       padding: "16px 0 10px",
@@ -12952,7 +14092,9 @@ const SettingsModal = ({
       alignItems: "center",
       justifyContent: "center",
       background: "var(--card)",
-      zIndex: 1
+      zIndex: 1,
+      touchAction: "none",
+      cursor: handleDragging ? "grabbing" : "grab"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -13793,10 +14935,19 @@ const AllTasksView = ({
   collapseAllRef,
   onRenameType,
   onDropDate,
-  onDropType
+  onDropType,
+  onShareReady
 }) => {
   const isHe = getLang() === "he";
   const byDate = activeTab === "date";
+  const [anyTypeOpen, setAnyTypeOpen] = useState(false);
+  const [collapseBounce, setCollapseBounce] = useState(false);
+  const handleCollapseAllClick = () => {
+    if (byDate || !anyTypeOpen) return;
+    collapseAllRef.current && collapseAllRef.current();
+    setCollapseBounce(true);
+    setTimeout(() => setCollapseBounce(false), 420);
+  };
   return /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.25s ease"
@@ -13808,11 +14959,23 @@ const AllTasksView = ({
       gap: 8,
       marginBottom: 16
     }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: handleCollapseAllClick,
+    title: byDate ? undefined : isHe ? "כווץ הכל" : "Collapse all",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: !byDate && anyTypeOpen ? "pointer" : "default",
+      opacity: !byDate && !anyTypeOpen ? 0.4 : 1,
+      transition: "opacity 0.15s",
+      animation: collapseBounce ? "checkBounce 0.42s cubic-bezier(0.34,1.56,0.64,1)" : "none"
+    }
   }, /*#__PURE__*/React.createElement(Icon, {
     name: byDate ? "list" : "tag",
     size: 16,
     color: "#3B82F6"
-  }), /*#__PURE__*/React.createElement("h2", {
+  })), /*#__PURE__*/React.createElement("h2", {
     style: {
       fontSize: 18,
       fontWeight: 700,
@@ -13872,7 +15035,9 @@ const AllTasksView = ({
     onRenameType: onRenameType,
     onQuickAdd: onQuickAddType,
     onCollapseAllRef: collapseAllRef,
-    onDropType: onDropType
+    onAnyOpenChange: setAnyTypeOpen,
+    onDropType: onDropType,
+    onShareReady: onShareReady
   }));
 };
 
@@ -13971,11 +15136,38 @@ const SEARCH_PAGE_SIZE = 7; // date-groups per page
 
 const SearchView = ({
   tasks,
-  onEdit
+  onEdit,
+  onShareReady
 }) => {
   const isHe = getLang() === "he";
   const viewWidth = useWindowWidth();
-  const wideCharts = viewWidth >= 640;
+  const searchCaptureRef = useRef(null);
+  const [sharingSearch, setSharingSearch] = useState(false);
+  // The share image is meant to read as a single vertical card -- the
+  // side-by-side wide layout (both charts at once) doesn't fit that, so
+  // capturing always uses the single "chosen chart" layout with its
+  // pie/line toggle, exactly as a narrow screen would show it.
+  const wideCharts = sharingSearch ? false : viewWidth >= 640;
+  const shareSearchImage = async () => {
+    if (sharingSearch) return;
+    setSharingSearch(true);
+    try {
+      appToast(t("sharePreparing"));
+      await new Promise(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+      await shareElementAsImage(searchCaptureRef.current, `${getLang() === "he" ? "חיפוש" : "search"}.png`);
+    } finally {
+      setSharingSearch(false);
+    }
+  };
+  const shareSearchRef = useRef(shareSearchImage);
+  shareSearchRef.current = shareSearchImage;
+  useEffect(() => {
+    if (!onShareReady) return;
+    onShareReady(() => shareSearchRef.current());
+    return () => onShareReady(null);
+  }, [onShareReady]);
   const saved = loadSearchState();
   const [query, setQuery] = useState(saved.query || "");
   const [typeFilter, setTypeFilter] = useState(saved.typeFilter || "");
@@ -14272,7 +15464,7 @@ const SearchView = ({
     value: cancelledC,
     color: "#FB7185"
   }];
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.25s ease"
     }
@@ -14348,6 +15540,21 @@ const SearchView = ({
       }
     }, t("today").toUpperCase()));
   })())), /*#__PURE__*/React.createElement("div", {
+    ref: searchCaptureRef,
+    style: {
+      // Only while a share-image capture is in flight: gives the card a
+      // real background with breathing room, and a narrow fixed width so
+      // the exported PNG reads as a vertical card regardless of the
+      // device's actual (possibly wide) viewport -- matching the Up Next
+      // share image's look.
+      padding: sharingSearch ? "18px 16px" : 0,
+      background: sharingSearch ? "var(--card)" : "transparent",
+      borderRadius: sharingSearch ? 14 : 0,
+      width: sharingSearch ? 420 : undefined,
+      maxWidth: sharingSearch ? "none" : undefined
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    "data-share-ignore": "true",
     style: {
       display: "flex",
       alignItems: "center",
@@ -14370,6 +15577,7 @@ const SearchView = ({
       setFiltersOpen(o => !o);
     },
     title: isHe ? "סינון" : "Filters",
+    "data-share-ignore": "true",
     style: {
       width: 32,
       height: 32,
@@ -14390,6 +15598,7 @@ const SearchView = ({
   })), /*#__PURE__*/React.createElement("button", {
     onClick: handleNewSearch,
     title: isHe ? "חיפוש חדש" : "New search",
+    "data-share-ignore": "true",
     style: {
       width: 32,
       height: 32,
@@ -14408,6 +15617,7 @@ const SearchView = ({
     color: C.blue,
     strokeWidth: 2.2
   }))), /*#__PURE__*/React.createElement("div", {
+    "data-share-ignore": "true",
     style: {
       overflow: "hidden",
       maxHeight: filtersOpen ? "400px" : "0px",
@@ -14584,6 +15794,7 @@ const SearchView = ({
       /*#__PURE__*/React.createElement("button", {
         onClick: () => setChartMode(m => m === "pie" ? "line" : "pie"),
         title: chartMode === "pie" ? isHe ? "עבור לגרף קווי" : "Switch to line chart" : isHe ? "עבור לעוגה" : "Switch to pie chart",
+        "data-share-ignore": "true",
         style: {
           width: 28, height: 28, borderRadius: 8, border: `1px solid ${C.border}`,
           background: chartMode === "pie" ? C.blueBg : C.card, cursor: "pointer",
@@ -14872,6 +16083,7 @@ const SearchView = ({
     });
   })(), visibleCount < sortedKeys.length && /*#__PURE__*/React.createElement("div", {
     ref: sentinelRef,
+    "data-share-ignore": "true",
     style: {
       display: "flex",
       justifyContent: "center",
@@ -14906,7 +16118,9 @@ const SearchView = ({
       opacity: 0.4,
       animation: "htmlDotBounce 1.1s ease 0.36s infinite"
     }
-  }))));
+  }))))), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
+    active: sharingSearch
+  }));
 };
 
 // ════════════════════════════════════════════════════════════════════════
@@ -15880,18 +17094,33 @@ function App() {
   const shareActionRef = useRef(null);
   const [shareReady, setShareReady] = useState(false);
   const [shareBusy, setShareBusy] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const registerShareAction = React.useCallback(fn => {
     shareActionRef.current = fn;
     setShareReady(!!fn);
   }, []);
-  const handleTopShare = async () => {
-    if (!shareActionRef.current || shareBusy) return;
+  const runShareAction = async options => {
+    if (!shareActionRef.current) return;
     setShareBusy(true);
     try {
-      await shareActionRef.current();
+      await shareActionRef.current(options);
     } finally {
       setShareBusy(false);
     }
+  };
+  const handleTopShare = () => {
+    if (!shareActionRef.current || shareBusy) return;
+    // Search keeps the old one-tap behavior; the other four surfaces let
+    // the person tune what goes into the photo first.
+    if (view === "search") {
+      runShareAction();
+    } else {
+      setShareDialogOpen(true);
+    }
+  };
+  const handleShareDialogConfirm = options => {
+    setShareDialogOpen(false);
+    runShareAction(options);
   };
   const [slideDir, setSlideDir] = useState("");
   const slideKey = React.useRef(0);
@@ -16009,6 +17238,24 @@ function App() {
       localStorage.setItem("taskflow_alltasks_tab", v);
     } catch {}
   };
+  // Which of the four share-dialog-enabled surfaces (if any) is on screen
+  // right now, and the set of types the dialog's type-filter can offer --
+  // every distinct type among pending tasks, excluding synced/holiday
+  // entries the person doesn't manage directly.
+  const shareDialogSurface = view === "home" ? "upnext" : view === "month" ? "month" : view === "week" ? "week" : view === "all-tasks" && allTasksTab === "type" ? "bytype" : null;
+  const shareAvailableTypes = React.useMemo(() => {
+    const seen = new Map();
+    tasks.filter(tk => isPending(tk) && tk.type !== "calendar" && tk.type !== "google").forEach(tk => {
+      const ty = tk.type || "regular";
+      if (!seen.has(ty)) seen.set(ty, getTypeMeta(ty));
+    });
+    return [...seen.entries()].map(([type, m]) => ({
+      type,
+      label: m.label,
+      color: m.color,
+      bg: m.bg
+    }));
+  }, [tasks]);
   const resetMonthViewRef = useRef(null); // set by MonthView; called when tapping active month tab
   const [pullDist, setPullDist] = useState(0);
   const [filteredCharts, setFilteredCharts] = useState(() => DEFAULT_CHARTS.map(c => ({...c})));
@@ -17806,7 +19053,7 @@ function App() {
   })), /*#__PURE__*/React.createElement("button", {
     onClick: handleTopShare,
     disabled: !shareReady || shareBusy,
-    title: shareReady ? (getLang() === "he" ? "שתף כתמונה" : "Share as image") : (getLang() === "he" ? "שיתוף זמין רק במסך הבית, השבוע או החודש" : "Sharing is only available on Home, Week or Month"),
+    title: shareReady ? (getLang() === "he" ? "שתף כתמונה" : "Share as image") : (getLang() === "he" ? "שיתוף זמין רק במסך הבית, השבוע, החודש, לפי סוג או חיפוש" : "Sharing is only available on Home, Week, Month, Tasks by Type, or Search"),
     "aria-label": getLang() === "he" ? "שתף כתמונה" : "Share as image",
     style: {
       width: 34,
@@ -18066,7 +19313,7 @@ function App() {
   })), /*#__PURE__*/React.createElement("button", {
     onClick: handleTopShare,
     disabled: !shareReady || shareBusy,
-    title: shareReady ? (getLang() === "he" ? "שתף כתמונה" : "Share as image") : (getLang() === "he" ? "שיתוף זמין רק במסך הבית, השבוע או החודש" : "Sharing is only available on Home, Week or Month"),
+    title: shareReady ? (getLang() === "he" ? "שתף כתמונה" : "Share as image") : (getLang() === "he" ? "שיתוף זמין רק במסך הבית, השבוע, החודש, לפי סוג או חיפוש" : "Sharing is only available on Home, Week, Month, Tasks by Type, or Search"),
     "aria-label": getLang() === "he" ? "שתף כתמונה" : "Share as image",
     style: {
       width: 32,
@@ -18768,6 +20015,7 @@ function App() {
     onDropType: handleDropType,
     activeTab: allTasksTab,
     onTabChange: setAllTasksTabAndSave,
+    onShareReady: registerShareAction,
     onQuickAddDate: ({
       name,
       date
@@ -18832,7 +20080,8 @@ function App() {
     collapseAllRef: collapseAllTypesRef
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
     tasks: [...tasks, ...archiveTasks],
-    onEdit: openEdit
+    onEdit: openEdit,
+    onShareReady: registerShareAction
   })))), /*#__PURE__*/React.createElement(Modal, {
     open: modalOpen,
     onClose: () => {
@@ -18847,6 +20096,13 @@ function App() {
     allTasks: tasks,
     onComplete: handleCompleteFromModal,
     onDelete: handleDelete
+  }), /*#__PURE__*/React.createElement(ShareOptionsDialog, {
+    open: shareDialogOpen,
+    onClose: () => setShareDialogOpen(false),
+    onConfirm: handleShareDialogConfirm,
+    surface: shareDialogSurface,
+    availableTypes: shareAvailableTypes,
+    busy: shareBusy
   }), /*#__PURE__*/React.createElement(SettingsModal, {
     open: dataModalOpen,
     onClose: () => setDataModalOpen(false),
