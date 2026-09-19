@@ -13,7 +13,6 @@
 
 
 
-
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
@@ -234,7 +233,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "3.4";
+const APP_VERSION = "4.0";
 
 const {
   useState,
@@ -244,7 +243,7 @@ const {
 
 //  TRANSLATIONS 
 const LANG_KEY = "taskflow_lang";
-const PALETTE_KEY = "taskflow_palette"; // "default" | "vivid"
+const PALETTE_KEY = "taskflow_palette"; // "vivid" (Bold, the default) | "boldest"
 const T = {
   en: {
     // Nav & views
@@ -677,10 +676,11 @@ const TYPE_META = {
 };
 
 // Custom type colors -- distinct from built-ins (blue, indigo, teal, sky, amber)
-const CUSTOM_COLORS_DEFAULT = ["#EC4899", "#EF4444", "#F97316", "#84CC16", "#10B981", "#8B5CF6", "#06B6D4", "#A78BFA"];
-// "Bold" palette equivalents -- same hues, deeper/richer, matching the Bold theme
+// Custom type colors -- Bold palette (the default): deeper/richer versions of the built-in hues.
 const CUSTOM_COLORS_VIVID = ["#DB2777", "#DC2626", "#C2410C", "#4D7C0F", "#047857", "#6D28D9", "#0E7490", "#7C3AED"];
-const getCustomColors = () => (typeof window !== "undefined" && window.__palette === "vivid") ? CUSTOM_COLORS_VIVID : CUSTOM_COLORS_DEFAULT;
+// "Boldest" palette: same hues, pushed to full saturation.
+const CUSTOM_COLORS_BOLDEST = ["#E11D74", "#E11D1D", "#EA580C", "#65A30D", "#059669", "#7C3AED", "#0891B2", "#9333EA"];
+const getCustomColors = () => (typeof window !== "undefined" && window.__palette === "boldest") ? CUSTOM_COLORS_BOLDEST : CUSTOM_COLORS_VIVID;
 // Sequential assignment so <=8 customs never share a color; hash fallback for >8
 const _customColorIndex = {};
 let _customColorCounter = 0;
@@ -910,6 +910,16 @@ const DEFAULT_CHARTS = [
   title: "",
   chartType: "treemap",
   locked: true
+},
+// 4. This month's completion — gauge of done vs. total for the month
+{
+  id: "default-month-gauge",
+  filter: "",
+  timeRange: "month",
+  typeFilter: "",
+  title: "",
+  chartType: "gauge",
+  locked: true
 }];
 const migrateChartType = ct => {
   if (ct === "bar-week" || ct === "bar-month" || ct === "bar-week-status" || ct === "bar-month-status") return "bar-date";
@@ -964,7 +974,7 @@ const setHebcalSyncedDate = ds => {
 const PREF_IL = "taskflow_pref_il"; // "yes" | "no" | null (unset = first time)
 const PREF_INTL = "taskflow_pref_intl"; // "yes" | "no" | null
 const PREF_LOOKAHEAD = "taskflow_pref_lookahead"; // "yes" | "no" — default "yes"
-const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null — default "no" (off)
+const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null — default ON (only an explicit "no" turns it off)
 const getPref = key => localStorage.getItem(key); // null | "yes" | "no"
 const setPref = (key, val) => {
   try {
@@ -1434,8 +1444,10 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --cal-other:0.4; --gradient:linear-gradient(160deg,#EFF6FF 0%,#F0F7FF 40%,#FAFCFF 100%);
   --gauge-track:#D4E2F4;
 }
-/* ── "Vivid" color palette — richer, more saturated, less pastel-washed ── */
-:root[data-palette="vivid"]{
+/* ── "Bold" palette (the default look) — richer, more saturated, less pastel-washed ──
+   Applies to everything except the "boldest" palette, so there is no flash of another
+   palette before the app sets data-palette. */
+:root:not([data-palette="boldest"]){
   --bg:#E3EEFF; --bg2:#FFFFFF; --bg3:#EAF2FF; --bg4:#DCEAFF; --bg5:#E3F1FF;
   --border:#B9D4FF; --border2:#8FB8FF; --border3:#CFE2FF;
   --text:#0F1B2D; --text2:#33465E; --text3:#5A7189; --text4:#8CA0B3; --text5:#C3D2DF;
@@ -1454,7 +1466,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --gauge-track:#B9D4FF;
 }
 @media(prefers-color-scheme:dark){
-  :root[data-palette="vivid"]{
+  :root:not([data-palette="boldest"]){
     --bg:#0B1220; --bg2:#141F33; --bg3:#16233A; --bg4:#17263F; --bg5:#101B2C;
     --border:#25406B; --border2:#2F5486; --border3:#1D3355;
     --text:#EAF2FF; --text2:#C3D6F0; --text3:#8FADD1; --text4:#5E7FA3; --text5:#3A5473;
@@ -1473,7 +1485,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
     --modal-glass:rgba(11,18,32,0.85); --gauge-track:#233A5C;
   }
 }
-[data-theme="dark"][data-palette="vivid"]{
+[data-theme="dark"]:not([data-palette="boldest"]){
   --bg:#0B1220; --bg2:#141F33; --bg3:#16233A; --bg4:#17263F; --bg5:#101B2C;
   --border:#25406B; --border2:#2F5486; --border3:#1D3355;
   --text:#EAF2FF; --text2:#C3D6F0; --text3:#8FADD1; --text4:#5E7FA3; --text5:#3A5473;
@@ -1491,7 +1503,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --cal-other:0.28; --gradient:linear-gradient(160deg,#0B1220 0%,#0B1220 100%);
   --modal-glass:rgba(11,18,32,0.85); --gauge-track:#233A5C;
 }
-:root[style*="color-scheme: light"][data-palette="vivid"]{
+:root[style*="color-scheme: light"]:not([data-palette="boldest"]){
   --bg:#E3EEFF; --bg2:#FFFFFF; --bg3:#EAF2FF; --bg4:#DCEAFF; --bg5:#E3F1FF;
   --border:#B9D4FF; --border2:#8FB8FF; --border3:#CFE2FF;
   --text:#0F1B2D; --text2:#33465E; --text3:#5A7189; --text4:#8CA0B3; --text5:#C3D2DF;
@@ -1509,6 +1521,83 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --cal-other:0.45; --gradient:linear-gradient(160deg,#DCEAFF 0%,#E5F0FF 40%,#F2F8FF 100%);
   --gauge-track:#B9D4FF;
 }
+/* ── "Boldest" palette — the strongest option: deeper fills, brighter accents, firmer borders ── */
+:root[data-palette="boldest"]{
+  --bg:#D2E3FF; --bg2:#FFFFFF; --bg3:#DCEAFF; --bg4:#C9DEFF; --bg5:#D2E8FF;
+  --border:#8FB8FF; --border2:#5F9BFF; --border3:#B4D0FF;
+  --text:#0A1424; --text2:#22354D; --text3:#485F7A; --text4:#7A92AB; --text5:#B2C4D6;
+  --card:#FFFFFF; --card2:#E4EEFF; --card3:#D2E3FF;
+  --header:rgba(255,255,255,0.92); --tabbar:rgba(255,255,255,0.97);
+  --blue:#1D4ED8; --blue-bg:#C7DBFF; --blue-border:#6FA3FF;
+  --green:#15803D; --green-bg:#BDF0D0; --green-border:#4ADE80;
+  --red:#D11A1A; --red-bg:#FFCFCF; --red-border:#F87171;
+  --rose:#BE123C; --rose-bg:#FFC9D6; --rose-border:#FB7192;
+  --amber:#D46A00; --amber-bg:#FFDDA0; --amber-border:#FBB024;
+  --teal:#0B8A80; --teal-bg:#B4F2E6; --teal-border:#2DD4BF;
+  --indigo:#4338CA; --indigo-bg:#CFCBFF; --indigo-border:#8B85F7;
+  --sky:#0369A1; --sky-bg:#BDE6FF; --sky-border:#38BDF8;
+  --shadow:0 1px 4px rgba(0,0,0,0.12); --shadow2:0 4px 16px rgba(29,78,216,0.2);
+  --cal-other:0.5; --gradient:linear-gradient(160deg,#C9DEFF 0%,#D6E6FF 40%,#E8F1FF 100%);
+  --gauge-track:#8FB8FF;
+}
+@media(prefers-color-scheme:dark){
+  :root[data-palette="boldest"]{
+  --bg:#060C18; --bg2:#0F1A30; --bg3:#122040; --bg4:#14264A; --bg5:#0B1526;
+  --border:#2F5FA8; --border2:#3D74C8; --border3:#234A86;
+  --text:#F2F7FF; --text2:#CFE0F8; --text3:#9DBAE0; --text4:#6D8FBA; --text5:#456185;
+  --card:#0F1A30; --card2:#16274A; --card3:#122040;
+  --header:rgba(6,12,24,0.92); --tabbar:rgba(6,12,24,0.97);
+  --blue:#4C8DFF; --blue-bg:#12326B; --blue-border:#3A70D0;
+  --green:#2EE87F; --green-bg:#0B4029; --green-border:#1FA362;
+  --red:#FF4D4D; --red-bg:#4A1212; --red-border:#B52B2B;
+  --rose:#FF6B95; --rose-bg:#4A1428; --rose-border:#C42F5E;
+  --amber:#FFB81C; --amber-bg:#452A03; --amber-border:#C77A08;
+  --teal:#22F0D4; --teal-bg:#06403A; --teal-border:#14A594;
+  --indigo:#9B8CFF; --indigo-bg:#30257A; --indigo-border:#5F4FD0;
+  --sky:#3ED0FF; --sky-bg:#0A3C5E; --sky-border:#1592D0;
+  --shadow:0 1px 4px rgba(0,0,0,0.55); --shadow2:0 4px 16px rgba(0,0,0,0.45);
+  --cal-other:0.25; --gradient:linear-gradient(160deg,#060C18 0%,#060C18 100%);
+  --modal-glass:rgba(6,12,24,0.85); --gauge-track:#1E3A66;
+  }
+}
+[data-theme="dark"][data-palette="boldest"]{
+  --bg:#060C18; --bg2:#0F1A30; --bg3:#122040; --bg4:#14264A; --bg5:#0B1526;
+  --border:#2F5FA8; --border2:#3D74C8; --border3:#234A86;
+  --text:#F2F7FF; --text2:#CFE0F8; --text3:#9DBAE0; --text4:#6D8FBA; --text5:#456185;
+  --card:#0F1A30; --card2:#16274A; --card3:#122040;
+  --header:rgba(6,12,24,0.92); --tabbar:rgba(6,12,24,0.97);
+  --blue:#4C8DFF; --blue-bg:#12326B; --blue-border:#3A70D0;
+  --green:#2EE87F; --green-bg:#0B4029; --green-border:#1FA362;
+  --red:#FF4D4D; --red-bg:#4A1212; --red-border:#B52B2B;
+  --rose:#FF6B95; --rose-bg:#4A1428; --rose-border:#C42F5E;
+  --amber:#FFB81C; --amber-bg:#452A03; --amber-border:#C77A08;
+  --teal:#22F0D4; --teal-bg:#06403A; --teal-border:#14A594;
+  --indigo:#9B8CFF; --indigo-bg:#30257A; --indigo-border:#5F4FD0;
+  --sky:#3ED0FF; --sky-bg:#0A3C5E; --sky-border:#1592D0;
+  --shadow:0 1px 4px rgba(0,0,0,0.55); --shadow2:0 4px 16px rgba(0,0,0,0.45);
+  --cal-other:0.25; --gradient:linear-gradient(160deg,#060C18 0%,#060C18 100%);
+  --modal-glass:rgba(6,12,24,0.85); --gauge-track:#1E3A66;
+}
+:root[style*="color-scheme: light"][data-palette="boldest"]{
+  --bg:#D2E3FF; --bg2:#FFFFFF; --bg3:#DCEAFF; --bg4:#C9DEFF; --bg5:#D2E8FF;
+  --border:#8FB8FF; --border2:#5F9BFF; --border3:#B4D0FF;
+  --text:#0A1424; --text2:#22354D; --text3:#485F7A; --text4:#7A92AB; --text5:#B2C4D6;
+  --card:#FFFFFF; --card2:#E4EEFF; --card3:#D2E3FF;
+  --header:rgba(255,255,255,0.92); --tabbar:rgba(255,255,255,0.97);
+  --blue:#1D4ED8; --blue-bg:#C7DBFF; --blue-border:#6FA3FF;
+  --green:#15803D; --green-bg:#BDF0D0; --green-border:#4ADE80;
+  --red:#D11A1A; --red-bg:#FFCFCF; --red-border:#F87171;
+  --rose:#BE123C; --rose-bg:#FFC9D6; --rose-border:#FB7192;
+  --amber:#D46A00; --amber-bg:#FFDDA0; --amber-border:#FBB024;
+  --teal:#0B8A80; --teal-bg:#B4F2E6; --teal-border:#2DD4BF;
+  --indigo:#4338CA; --indigo-bg:#CFCBFF; --indigo-border:#8B85F7;
+  --sky:#0369A1; --sky-bg:#BDE6FF; --sky-border:#38BDF8;
+  --shadow:0 1px 4px rgba(0,0,0,0.12); --shadow2:0 4px 16px rgba(29,78,216,0.2);
+  --cal-other:0.5; --gradient:linear-gradient(160deg,#C9DEFF 0%,#D6E6FF 40%,#E8F1FF 100%);
+  --gauge-track:#8FB8FF;
+}
+:root{--grid-line:var(--border)}
+@supports (color:color-mix(in srgb,red,blue)){:root{--grid-line:color-mix(in srgb,var(--border) 50%,transparent)}:root[style*="color-scheme: light"]{--grid-line:color-mix(in srgb,var(--border) 28%,transparent)}}
 html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:4px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -1517,6 +1606,11 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes slideInLeft{from{opacity:0;transform:translateX(52px)}to{opacity:1;transform:translateX(0)}}
 @keyframes slideInRight{from{opacity:0;transform:translateX(-52px)}to{opacity:1;transform:translateX(0)}}
 /* Date-group accordion entrance (by-date / search result groups) */
+/* Sticky header hand-over: the incoming header pushes the outgoing one out (Up = scrolling down, Down = scrolling up) */
+@keyframes stickyOutUp{from{transform:translateY(0);opacity:1}to{transform:translateY(-100%);opacity:0}}
+@keyframes stickyInUp{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes stickyOutDown{from{transform:translateY(0);opacity:1}to{transform:translateY(100%);opacity:0}}
+@keyframes stickyInDown{from{transform:translateY(-100%);opacity:0}to{transform:translateY(0);opacity:1}}
 @keyframes dateGroupReveal{from{opacity:0;transform:translateY(18px) scale(0.97)}to{opacity:1;transform:translateY(0) scale(1)}}
 /* Saved-to-Google shimmer sweep across the pill */
 @keyframes shimmerSweep{0%{transform:translateX(-130%) skewX(-15deg)}100%{transform:translateX(230%) skewX(-15deg)}}
@@ -4460,6 +4554,9 @@ const MonthView = ({
         transition: "max-height 0.18s ease, opacity 0.18s ease",
         borderTop: stickyDayCell ? `1px solid ${C.border}` : "none"
       }
+    }, /*#__PURE__*/React.createElement(StickySwap, {
+      swapKey: stickyDay,
+      height: 40
     }, stickyDayCell && (() => {
       const stickyIsSelected = stickyDay === String(selectedDay);
       const stickyIsClickedOffMonth = typeof stickyDay === 'string' && (stickyDay === 'o' + offMonthStart || stickyDay === 'o' + offMonthEnd);
@@ -4525,7 +4622,7 @@ const MonthView = ({
         size: 11,
         color: "#3B82F6"
       })));
-    })())), /*#__PURE__*/React.createElement("div", {
+    })()))), /*#__PURE__*/React.createElement("div", {
       ref: calGridRef,
       onTouchStart: onTouchStart,
       onTouchMove: onTouchMove,
@@ -5019,26 +5116,40 @@ const MonthView = ({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      display: "grid",
-      gridTemplateColumns: "repeat(7,1fr)",
       border: `1px solid ${C.border}`,
       borderRadius: 14,
-      overflow: "hidden",
+      // "clip" rounds the corners like "hidden" but does not turn this box into a
+      // scroll container, which is what lets the weekday row below stay sticky.
+      overflow: typeof CSS !== "undefined" && CSS.supports && CSS.supports("overflow", "clip") ? "clip" : "hidden",
       boxShadow: "0 1px 8px rgba(59,130,246,0.06)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    // Sticky weekday row: stays pinned under the app header while the month scrolls.
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(7,1fr)",
+      position: "sticky",
+      top: "var(--app-header-h, 48px)",
+      zIndex: 20,
+      background: C.bg,
+      borderBottom: `1px solid ${C.border}`
     }
   }, getDaysShort().map(d => /*#__PURE__*/React.createElement("div", {
     key: d,
     style: {
       padding: "10px 0",
       textAlign: "center",
-      background: C.bg,
-      borderBottom: `1px solid ${C.border}`,
       fontSize: 11,
       fontWeight: 600,
       color: C.text4,
       letterSpacing: "0.05em"
     }
-  }, d)), cells.map((cell, i) => {
+  }, d))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(7,1fr)"
+    }
+  }, cells.map((cell, i) => {
     const ds = localDs(cell.date);
     const isT = !cell.other && cell.date.toDateString() === realToday.toDateString();
     const isCellPast = !cell.other && isCurrentMonth && cell.date < realToday;
@@ -5114,7 +5225,7 @@ const MonthView = ({
         paddingLeft: 5
       }
     }, t("more", dayTasks.length - 3))));
-  }))));
+  })))));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5888,7 +5999,7 @@ const WeekView = ({
         background: "var(--card)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
-        borderBottom: `1px solid ${C.border}`,
+        borderBottom: `1px solid var(--grid-line)`,
         transform: "translateZ(0)",
         WebkitTransform: "translateZ(0)"
       }
@@ -5946,7 +6057,7 @@ const WeekView = ({
         padding: "6px 4px 0",
         minWidth: 0,
         overflow: "hidden",
-        borderInlineStart: `1px solid ${C.border}`,
+        borderInlineStart: `1px solid var(--grid-line)`,
         backgroundColor: isT ? "rgba(59,130,246,0.035)" : "transparent"
       }
     }, untimed.map(untimedChip)));
@@ -5998,7 +6109,7 @@ const WeekView = ({
       style: {
         position: "relative",
         height: gridHeight,
-        backgroundImage: `repeating-linear-gradient(to bottom, ${C.border} 0, ${C.border} 1px, transparent 1px, transparent ${HOUR_PX}px)`
+        backgroundImage: `repeating-linear-gradient(to bottom, var(--grid-line) 0, var(--grid-line) 1px, transparent 1px, transparent ${HOUR_PX}px)`
       }
     }, hourLabels);
 
@@ -6161,10 +6272,10 @@ const WeekView = ({
           position: "relative",
           height: gridHeight,
           cursor: "pointer",
-          borderInlineStart: `1px solid ${C.border}`,
+          borderInlineStart: `1px solid var(--grid-line)`,
           backgroundColor: isDropTarget ? "rgba(59,130,246,0.10)" : isT ? "rgba(59,130,246,0.035)" : "transparent",
           transition: "background-color 0.12s",
-          backgroundImage: `repeating-linear-gradient(to bottom, ${C.border} 0, ${C.border} 1px, transparent 1px, transparent ${HOUR_PX}px)`
+          backgroundImage: `repeating-linear-gradient(to bottom, var(--grid-line) 0, var(--grid-line) 1px, transparent 1px, transparent ${HOUR_PX}px)`
         }
       }, nowLine, blocks, dropPreview);
     });
@@ -6177,7 +6288,7 @@ const WeekView = ({
     const scrollWrap = /*#__PURE__*/React.createElement("div", {
       ref: scrollRef,
       style: {
-        borderBottom: `1px solid ${C.border}`,
+        borderBottom: `1px solid var(--grid-line)`,
         paddingTop: 0
       }
     }, gridBody);
@@ -6237,6 +6348,62 @@ const sortForByType = tasks => [...tasks].sort((a, b) => {
   // Both no date -- alphabetical
   return (a.name || "").localeCompare(b.name || "");
 });
+// ── StickySwap ──────────────────────────────────────────────────────────────
+// Wraps the content of a sticky header bar. When `swapKey` changes from one real
+// value to another (e.g. the date/section that has reached the top changes while
+// scrolling) the new content slides in from below and shoves the old content up and
+// out — or the reverse when scrolling up — instead of the text just changing in place.
+// Going to or from "nothing" (null) is left to the bar's own expand/collapse.
+const StickySwap = ({
+  swapKey,
+  height,
+  children
+}) => {
+  const [leaving, setLeaving] = React.useState(null);
+  const last = useRef({ key: swapKey, node: children });
+  const dirRef = useRef(1);
+  const yRef = useRef(typeof window !== "undefined" ? window.pageYOffset : 0);
+  const timerRef = useRef(null);
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.pageYOffset;
+      if (y !== yRef.current) {
+        dirRef.current = y > yRef.current ? 1 : -1;
+        yRef.current = y;
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => { window.removeEventListener("scroll", onScroll); clearTimeout(timerRef.current); };
+  }, []);
+  React.useLayoutEffect(() => {
+    const prev = last.current;
+    if (prev.key !== swapKey && prev.key != null && swapKey != null && prev.node) {
+      clearTimeout(timerRef.current);
+      setLeaving({ node: prev.node, dir: dirRef.current, forKey: swapKey });
+      timerRef.current = setTimeout(() => setLeaving(null), 280);
+    }
+    last.current = { key: swapKey, node: children };
+  });
+  const swapping = !!leaving && leaving.forKey === swapKey;
+  const dirName = swapping && leaving.dir < 0 ? "Down" : "Up";
+  const ease = "cubic-bezier(0.4,0,0.2,1)";
+  return /*#__PURE__*/React.createElement("div", {
+    style: { position: "relative", height, overflow: "hidden" }
+  }, swapping && /*#__PURE__*/React.createElement("div", {
+    key: "out-" + swapKey,
+    style: {
+      position: "absolute", top: 0, left: 0, right: 0,
+      pointerEvents: "none",
+      animation: `stickyOut${dirName} 0.26s ${ease} forwards`
+    }
+  }, leaving.node), /*#__PURE__*/React.createElement("div", {
+    key: "in-" + swapKey,
+    style: swapping ? {
+      position: "absolute", top: 0, left: 0, right: 0,
+      animation: `stickyIn${dirName} 0.26s ${ease} both`
+    } : { position: "relative" }
+  }, children));
+};
 const ListByDate = ({
   tasks,
   onToggle,
@@ -6423,6 +6590,9 @@ const ListByDate = ({
       transform: "translateZ(0)",
       WebkitTransform: "translateZ(0)"
     }
+  }, /*#__PURE__*/React.createElement(StickySwap, {
+    swapKey: stickyDate,
+    height: 40
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       height: 40,
@@ -6460,7 +6630,7 @@ const ListByDate = ({
     }
   }, stickyDate && new Date(stickyDate + "T00:00:00").toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
     weekday: "long"
-  })))), (() => {
+  }))))), (() => {
     // Pre-compute total task count per month-year across ALL keys (not just visible slice)
     let lastMonthYear = null;
     return visibleKeys.map((k, idx) => {
@@ -6506,11 +6676,32 @@ const ListByDate = ({
           background: `linear-gradient(to left, var(--border2), transparent)`
         }
       })), /*#__PURE__*/React.createElement("div", {
+        ref: registerZone("d:" + k, k),
         style: {
+          // The highlight is an overlay drawn BEHIND the group (see the first child),
+          // so targeting a date never changes the group's size or position.
+          position: "relative",
+          isolation: "isolate",
           marginBottom: 24,
           animation: "dateGroupReveal 0.32s cubic-bezier(0.34,1.56,0.64,1) both"
         }
       }, /*#__PURE__*/React.createElement("div", {
+        "aria-hidden": true,
+        style: {
+          position: "absolute",
+          top: -10,
+          bottom: -10,
+          left: -10,
+          right: -10,
+          zIndex: -1,
+          borderRadius: 14,
+          pointerEvents: "none",
+          background: "var(--blue-bg)",
+          boxShadow: `inset 0 0 0 2px ${C.blue}`,
+          opacity: !!drag && !drag.outside && !!drag.payload && drag.payload.ds === k ? 1 : 0,
+          transition: "opacity 0.12s"
+        }
+      }), /*#__PURE__*/React.createElement("div", {
         ref: el => dateSentinelRefs.current[k] = el,
         "data-date": k,
         style: {
@@ -6553,15 +6744,7 @@ const ListByDate = ({
         }
       }, new Date(k + "T00:00:00").toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
         weekday: "long"
-      }))), /*#__PURE__*/React.createElement("div", {
-        ref: registerZone("d:" + k, k),
-        style: {
-          borderRadius: 12,
-          transition: "background-color 0.12s, box-shadow 0.12s",
-          background: drag && !drag.outside && drag.payload && drag.payload.ds === k ? "var(--blue-bg)" : "transparent",
-          boxShadow: drag && !drag.outside && drag.payload && drag.payload.ds === k ? `inset 0 0 0 2px ${C.blue}` : "none"
-        }
-      }, sortGroup(groups[k]).map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
+      }))), /*#__PURE__*/React.createElement("div", null, sortGroup(groups[k]).map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
         key: task.id,
         task: task,
         justSynced: !!(window.__newTaskIds && window.__newTaskIds.has(task.id)),
@@ -6892,6 +7075,9 @@ const ListByType = ({
       transform: "translateZ(0)",
       WebkitTransform: "translateZ(0)"
     }
+  }, /*#__PURE__*/React.createElement(StickySwap, {
+    swapKey: stickyType,
+    height: 44
   }, stickyMeta && /*#__PURE__*/React.createElement("div", {
     style: {
       height: 44,
@@ -6923,7 +7109,7 @@ const ListByType = ({
       color: stickyMeta.color,
       opacity: 0.7
     }
-  }, stickyEntries.length))), allTypes.map(type => {
+  }, stickyEntries.length)))), allTypes.map(type => {
     const m = getTypeMeta(type);
     const entries = sortForByType(getEntries(type));
     if (!entries.length) return null;
@@ -6943,9 +7129,29 @@ const ListByType = ({
         // Without this, a fully-collapsed section shrinks to ~0 px of zone
         // and the nearest-zone fallback always finds the google/calendar section
         // that the drag started in, making drops on regular types impossible.
-        minHeight: 54
+        minHeight: 54,
+        // The highlight is an overlay drawn BEHIND the section (first child), so
+        // targeting a type never changes the section's size or position.
+        position: "relative",
+        isolation: "isolate"
       }
     }, /*#__PURE__*/React.createElement("div", {
+      "aria-hidden": true,
+      style: {
+        position: "absolute",
+        top: -10,
+        bottom: -10,
+        left: -10,
+        right: -10,
+        zIndex: -1,
+        borderRadius: 16,
+        pointerEvents: "none",
+        background: m.bg,
+        boxShadow: `inset 0 0 0 2px ${m.color}`,
+        opacity: dragType === type ? 1 : 0,
+        transition: "opacity 0.12s"
+      }
+    }), /*#__PURE__*/React.createElement("div", {
       onClick: () => editingType !== type && toggleCollapsed(type),
       style: {
         display: "flex",
@@ -6954,12 +7160,12 @@ const ListByType = ({
         marginBottom: collapsed_ ? 0 : 12,
         padding: "10px 14px",
         borderRadius: 10,
-        background: dragType === type ? m.border : m.bg,
-        border: `1px solid ${dragType === type ? m.color : editingType === type ? m.color : m.border}`,
+        background: m.bg,
+        border: `1px solid ${editingType === type ? m.color : m.border}`,
         cursor: editingType === type ? "default" : "pointer",
         userSelect: "none",
         transition: "margin 0.3s ease, border-color 0.15s, background-color 0.12s",
-        boxShadow: dragType === type ? `0 0 0 2px ${m.color}` : editingType === type ? `0 0 0 2px ${m.color}33` : "none"
+        boxShadow: editingType === type ? `0 0 0 2px ${m.color}33` : "none"
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -7042,9 +7248,7 @@ const ListByType = ({
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         paddingTop: 4,
-        borderRadius: 12,
-        transition: "background-color 0.12s",
-        background: dragType === type ? m.bg : "transparent"
+        borderRadius: 12
       }
     }, entries.map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
       key: task.id,
@@ -9569,79 +9773,7 @@ const FilteredPieCard = ({
       display: "flex",
       flexDirection: "column"
     }
-  }, !locked && onMoveUp && /*#__PURE__*/React.createElement("button", {
-    onClick: onMoveUp,
-    style: {
-      position: "absolute",
-      zIndex: 10,
-      cursor: "pointer",
-      background: C.blue,
-      color: "#fff",
-      border: "none",
-      borderRadius: 8,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      width: 28,
-      height: 28,
-      boxShadow: "0 2px 8px rgba(59,130,246,0.35)",
-      transition: "all 0.15s",
-      ...(cols === 1 ? {
-        top: -14,
-        left: "50%",
-        transform: "translateX(-50%)"
-      } : getLang() === "he" ? {
-        top: "50%",
-        right: -14,
-        transform: "translateY(-50%)"
-      } : {
-        top: "50%",
-        left: -14,
-        transform: "translateY(-50%)"
-      })
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: cols === 1 ? "chevUp" : getLang() === "he" ? "chevRight" : "chevLeft",
-    size: 13,
-    color: "#fff",
-    strokeWidth: 2.5
-  })), !locked && onMoveDown && /*#__PURE__*/React.createElement("button", {
-    onClick: onMoveDown,
-    style: {
-      position: "absolute",
-      zIndex: 10,
-      cursor: "pointer",
-      background: C.blue,
-      color: "#fff",
-      border: "none",
-      borderRadius: 8,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      width: 28,
-      height: 28,
-      boxShadow: "0 2px 8px rgba(59,130,246,0.35)",
-      transition: "all 0.15s",
-      ...(cols === 1 ? {
-        bottom: -14,
-        left: "50%",
-        transform: "translateX(-50%)"
-      } : getLang() === "he" ? {
-        top: "50%",
-        left: -14,
-        transform: "translateY(-50%)"
-      } : {
-        top: "50%",
-        right: -14,
-        transform: "translateY(-50%)"
-      })
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: cols === 1 ? "chevDown" : getLang() === "he" ? "chevLeft" : "chevRight",
-    size: 13,
-    color: "#fff",
-    strokeWidth: 2.5
-  })), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.card,
       borderRadius: 16,
@@ -9720,7 +9852,18 @@ const FilteredPieCard = ({
         fontSize: 15,
         fontWeight: 700,
         color: C.text,
-        marginBottom: 14,
+        // With a drag handler the whole strip is the grab target: padded out to a
+        // comfortable touch size, with matching negative margins so the layout
+        // around it doesn't move.
+        ...(locked && onTitlePointerDown ? {
+          padding: "13px 8px",
+          margin: "-13px -8px 1px",
+          minHeight: 46,
+          boxSizing: "border-box",
+          borderRadius: 10
+        } : {
+          marginBottom: 14
+        }),
         unicodeBidi: "plaintext",
         display: "flex",
         flexDirection: getLang() === "he" ? "row-reverse" : "row",
@@ -9733,7 +9876,7 @@ const FilteredPieCard = ({
       }
     }, locked && onTitlePointerDown && /*#__PURE__*/React.createElement(Icon, {
       name: "gripDots",
-      size: 14,
+      size: 16,
       color: C.text3
     }), /*#__PURE__*/React.createElement("span", null, locked ? displayTitle : getLang() === "he" ? "ערוך גרף מסונן" : "Edit Filter Chart"));
   })())), !locked && /*#__PURE__*/React.createElement("div", {
@@ -9864,7 +10007,10 @@ const FilteredPieCard = ({
     onKeyDown: e => e.key === "Enter" && handleSet(),
     placeholder: t("keywordPlaceholder"),
     style: {
-      flex: 1,
+      flex: "1 1 0",
+      width: 0,
+      minWidth: 0,
+      textOverflow: "ellipsis",
       padding: "8px 12px",
       borderRadius: 8,
       fontSize: 12,
@@ -9879,6 +10025,7 @@ const FilteredPieCard = ({
   }), /*#__PURE__*/React.createElement("button", {
     onClick: handleSet,
     style: {
+      flexShrink: 0,
       padding: "8px 16px",
       borderRadius: 8,
       border: "none",
@@ -10476,6 +10623,9 @@ const Dashboard = ({
       transform: "translateZ(0)",
       WebkitTransform: "translateZ(0)"
     }
+  }, /*#__PURE__*/React.createElement(StickySwap, {
+    swapKey: stickySection,
+    height: 48
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       height: 48,
@@ -10496,13 +10646,19 @@ const Dashboard = ({
       color: C.text,
       flex: 1
     }
-  }, stickyRow1Label)), /*#__PURE__*/React.createElement("div", {
+  }, stickyRow1Label))), /*#__PURE__*/React.createElement("div", {
     style: {
       overflow: "hidden",
       maxHeight: stickyDayLabel ? 40 : 0,
       opacity: stickyDayLabel ? 1 : 0,
+      // The divider lives on this fixed wrapper (not on the swapping row) so it
+      // stays put while the row content slides.
+      borderTop: stickyDayLabel ? `1px solid ${C.border}` : "none",
       transition: "max-height 0.15s ease, opacity 0.15s ease"
     }
+  }, /*#__PURE__*/React.createElement(StickySwap, {
+    swapKey: stickyDay,
+    height: 36
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       height: 36,
@@ -10510,8 +10666,7 @@ const Dashboard = ({
       paddingRight: 12,
       display: "flex",
       alignItems: "center",
-      gap: 8,
-      borderTop: `1px solid ${C.border}`
+      gap: 8
     }
   }, stickyDay === 'overdue' ? /*#__PURE__*/React.createElement("div", {
     style: {
@@ -10571,7 +10726,7 @@ const Dashboard = ({
     name: "plus",
     size: 11,
     color: "#3B82F6"
-  }))))), tasks.length === 0 && /*#__PURE__*/React.createElement("div", {
+  })))))), tasks.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 28,
       borderRadius: 16,
@@ -10803,16 +10958,34 @@ const Dashboard = ({
         ref: upRegisterZone("up:" + ds, ds),
         "data-dropday": ds,
         style: {
+          // The blue highlight is an overlay drawn BEHIND the section (first child),
+          // so targeting a day never changes the section's size or position.
+          position: "relative",
+          isolation: "isolate",
           marginBottom: 16,
           borderRadius: 12,
-          padding: isUpDrop ? 6 : 0,
-          margin: isUpDrop ? "-6px -6px 10px" : undefined,
           minHeight: emptyDuringDrag ? 64 : undefined,
-          background: isUpDrop ? "var(--blue-bg)" : emptyDuringDrag ? "var(--card2)" : "transparent",
-          boxShadow: isUpDrop ? `inset 0 0 0 2px ${C.blue}` : emptyDuringDrag ? `inset 0 0 0 1.5px ${C.border2}` : "none",
+          background: emptyDuringDrag && !isUpDrop ? "var(--card2)" : "transparent",
+          boxShadow: emptyDuringDrag && !isUpDrop ? `inset 0 0 0 1.5px ${C.border2}` : "none",
           transition: "background-color 0.12s, box-shadow 0.12s"
         }
       }, /*#__PURE__*/React.createElement("div", {
+        "aria-hidden": true,
+        style: {
+          position: "absolute",
+          top: -8,
+          bottom: -8,
+          left: -8,
+          right: -8,
+          zIndex: -1,
+          borderRadius: 14,
+          pointerEvents: "none",
+          background: "var(--blue-bg)",
+          boxShadow: `inset 0 0 0 2px ${C.blue}`,
+          opacity: isUpDrop ? 1 : 0,
+          transition: "opacity 0.12s"
+        }
+      }), /*#__PURE__*/React.createElement("div", {
         ref: sentinelKey === "today" ? sentinelToday : sentinelTomorrow,
         style: {
           height: 0
@@ -10986,16 +11159,6 @@ const Dashboard = ({
       }
     },
     onRemove: () => setFilteredCharts(cs => cs.filter(c => c.id !== chart.id)),
-    onMoveUp: idx > 0 ? () => setFilteredCharts(cs => {
-      const a = [...cs];
-      [a[idx - 1], a[idx]] = [a[idx], a[idx - 1]];
-      return a;
-    }) : null,
-    onMoveDown: idx < filteredCharts.length - 1 ? () => setFilteredCharts(cs => {
-      const a = [...cs];
-      [a[idx], a[idx + 1]] = [a[idx + 1], a[idx]];
-      return a;
-    }) : null,
     prefLookahead: prefLookahead
   })))), tasks.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -11752,9 +11915,9 @@ const SettingsModal = ({
   })), /*#__PURE__*/React.createElement(Row, {
     icon: "🎨",
     label: isHe ? "פלטת צבעים" : "Color Palette",
-    sub: palette === "vivid"
-      ? (isHe ? "נועז — צבעים עזים יותר" : "Bold — richer, punchier colors")
-      : (isHe ? "קלאסי — הצבעים המקוריים" : "Classic — the original colors")
+    sub: palette === "boldest"
+      ? (isHe ? "נועז במיוחד — הכי עז וססגוני" : "Boldest — the strongest, most colorful")
+      : (isHe ? "נועז — צבעים עזים יותר" : "Bold — richer, punchier colors")
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -11765,11 +11928,11 @@ const SettingsModal = ({
       background: C.card2
     }
   }, [{
-    id: "default",
-    label: isHe ? "קלאסי" : "Classic"
-  }, {
     id: "vivid",
     label: isHe ? "נועז" : "Bold"
+  }, {
+    id: "boldest",
+    label: isHe ? "נועז במיוחד" : "Boldest"
   }].map(opt => /*#__PURE__*/React.createElement("button", {
     key: opt.id,
     onClick: () => onSetPalette(opt.id),
@@ -11777,8 +11940,8 @@ const SettingsModal = ({
       padding: "5px 12px",
       borderRadius: 18,
       border: "none",
-      background: (palette || "default") === opt.id ? "linear-gradient(135deg,#3B82F6,#2563EB)" : "transparent",
-      color: (palette || "default") === opt.id ? "#fff" : C.text3,
+      background: (palette || "vivid") === opt.id ? "linear-gradient(135deg,#3B82F6,#2563EB)" : "transparent",
+      color: (palette || "vivid") === opt.id ? "#fff" : C.text3,
       fontSize: 12,
       fontWeight: 700,
       cursor: "pointer",
@@ -13061,6 +13224,9 @@ const SearchView = ({
       opacity: stickyDate ? 1 : 0,
       transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease"
     }
+  }, /*#__PURE__*/React.createElement(StickySwap, {
+    swapKey: stickyDate,
+    height: 42
   }, stickyDate && (() => {
     const date = new Date(stickyDate + "T00:00:00");
     const todayDs = todayStr();
@@ -13110,7 +13276,7 @@ const SearchView = ({
         color: C.blue
       }
     }, t("today").toUpperCase()));
-  })()), /*#__PURE__*/React.createElement("div", {
+  })())), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -14671,7 +14837,7 @@ function App() {
   const [prefIL, setPrefIL] = useState(() => getPref(PREF_IL));
   const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL));
   const [prefLookahead, setPrefLookahead] = useState(() => getPref(PREF_LOOKAHEAD) !== "no"); // default ON
-  const [prefGcalForeign, setPrefGcalForeign] = useState(() => getPref(PREF_GCAL_FOREIGN) === "yes"); // default OFF
+  const [prefGcalForeign, setPrefGcalForeign] = useState(() => getPref(PREF_GCAL_FOREIGN) !== "no"); // default ON
   const [online, setOnline] = useState(() => navigator.onLine);
 
   // ── Google Calendar sync state ──────────────────────────────────────────
@@ -15998,10 +16164,14 @@ function App() {
     setDataModalOpen(true);
   };
 
-  // Color palette (default / vivid)
-  const [palette, setPalette] = useState(() => localStorage.getItem(PALETTE_KEY) || "default");
+  // Color palette: "vivid" (Bold, the default) or "boldest". The old "Classic"
+  // palette is gone, so anything else that was saved (including "default") maps to Bold.
+  const [palette, setPalette] = useState(() => {
+    const saved = localStorage.getItem(PALETTE_KEY);
+    return saved === "boldest" ? "boldest" : "vivid";
+  });
   const setPaletteAndSave = p => {
-    if (p !== "default" && p !== "vivid") return;
+    if (p !== "vivid" && p !== "boldest") return;
     localStorage.setItem(PALETTE_KEY, p);
     setPalette(p);
   };
