@@ -1865,6 +1865,11 @@ const Icon = ({
     }), /*#__PURE__*/React.createElement("polyline", {
       points: "6 15 12 11 18 15"
     })),
+    bell: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("path", {
+      d: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: "M13.73 21a2 2 0 0 1-3.46 0"
+    })),
     calendar: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("rect", {
       x: "3",
       y: "4",
@@ -3887,7 +3892,8 @@ const Modal = ({
     time: "",
     recur: "",
     length: "",
-    note: ""
+    note: "",
+    reminderMinutes: ""
   });
   const _modalWidth = useWindowWidth();
   const _modalHeight = useWindowHeight();
@@ -3915,7 +3921,8 @@ const Modal = ({
           time: editTask.time || "",
           recur: editTask.recur != null ? String(editTask.recur) : "",
           length: editTask.length != null && editTask.length !== "" ? String(editTask.length) : "",
-          note: editTask.note || ""
+          note: editTask.note || "",
+          reminderMinutes: editTask.reminderMinutes != null && editTask.reminderMinutes !== "" ? String(editTask.reminderMinutes) : ""
         });
         setShowNote(!!(editTask.note && String(editTask.note).trim()));
       } else {
@@ -3926,7 +3933,8 @@ const Modal = ({
           time: prefillTime || "",
           recur: "",
           length: "",
-          note: ""
+          note: "",
+          reminderMinutes: ""
         });
         setShowNote(false);
       }
@@ -4056,6 +4064,12 @@ const Modal = ({
     const finalRecur = finalType === "regular" ? null : form.recur ? parseRecur(form.recur) || null : null;
     const finalLength = form.length === "" || form.length == null ? null : Number(form.length);
     const finalNote = form.note && form.note.trim() ? form.note.trim() : null;
+    // Only meaningful with a real date to anchor to -- "" (Automatic) and
+    // "none" (explicit opt-out) both collapse to null here; the difference
+    // between "never configured" and "explicitly none" doesn't matter for a
+    // dateless task since resolveReminderMinutes treats both the same way
+    // (no reminder) once there's no date at all.
+    const finalReminderMinutes = !finalDate ? null : form.reminderMinutes === "" ? null : form.reminderMinutes === "none" ? "none" : Number(form.reminderMinutes);
     onSave({
       ...form,
       type: finalType,
@@ -4063,7 +4077,8 @@ const Modal = ({
       time: finalTime || "",
       recur: finalRecur,
       length: finalLength,
-      note: finalNote
+      note: finalNote,
+      reminderMinutes: finalReminderMinutes
     });
   };
   const handleTimeFocus = e => {
@@ -5041,6 +5056,60 @@ const Modal = ({
       onFocus: e => e.target.style.borderColor = "#93C5FD",
       onBlur: e => e.target.style.borderColor = "var(--border)"
     })));
+  })(), form.date && (() => {
+    const isHe = getLang() === "he";
+    // Minutes before the event Google should notify at -- sent straight
+    // through as that event's own reminders, so Google's own apps (mobile
+    // push, email, desktop) do the actual alerting. Only takes effect once
+    // this task is pushed to a connected Google Calendar; offline, it's
+    // just saved for whenever a connection happens later. Left on
+    // "Automatic" (the default), every task still gets a sensible reminder
+    // on its own -- 30 minutes before for a timed task, 9:00 AM the day of
+    // for a date-only one -- so this only needs touching to override that.
+    const REMINDER_OPTIONS = [{
+      value: "",
+      label: isHe ? "אוטומטי (30 דק׳ / 9:00)" : "Automatic (30 min / 9:00 AM)"
+    }, {
+      value: "0",
+      label: isHe ? "בזמן האירוע" : "At time of event"
+    }, {
+      value: "5",
+      label: isHe ? "5 דקות לפני" : "5 minutes before"
+    }, {
+      value: "15",
+      label: isHe ? "15 דקות לפני" : "15 minutes before"
+    }, {
+      value: "30",
+      label: isHe ? "30 דקות לפני" : "30 minutes before"
+    }, {
+      value: "60",
+      label: isHe ? "שעה לפני" : "1 hour before"
+    }, {
+      value: "1440",
+      label: isHe ? "יום לפני" : "1 day before"
+    }, {
+      value: "none",
+      label: isHe ? "ללא תזכורת" : "No reminder"
+    }];
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: lbl
+    }, isHe ? "תזכורת (Google Calendar)" : "Reminder (Google Calendar)"), /*#__PURE__*/React.createElement("select", {
+      value: form.reminderMinutes,
+      onChange: e => set("reminderMinutes", e.target.value),
+      style: inp({
+        cursor: "pointer",
+        color: form.reminderMinutes === "none" ? C.text5 : C.text
+      }),
+      onFocus: e => e.target.style.borderColor = "#93C5FD",
+      onBlur: e => e.target.style.borderColor = "var(--border)"
+    }, REMINDER_OPTIONS.map(o => /*#__PURE__*/React.createElement("option", {
+      key: o.value,
+      value: o.value
+    }, o.label))));
   })(), (showNote || modalNarrow) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
@@ -9216,6 +9285,29 @@ const PieChart = ({
     cy = size / 2,
     r = size / 2 - 8,
     ri = size / 2 - 36;
+  // Unique per instance so multiple charts on one page (e.g. Search's and
+  // Dashboard's) never collide over the same <defs> ids.
+  const chartId = useRef("pie" + Math.random().toString(36).slice(2, 9)).current;
+  // Gauge-style outer bezel: a thin ring just outside the donut, with small
+  // tick marks around it, purely decorative -- framing the chart the way a
+  // dial/gauge widget's housing does, rather than the donut floating bare.
+  const bezelR = r + 7;
+  const tickCount = 24;
+  const ticks = Array.from({
+    length: tickCount
+  }, (_, i) => {
+    const a = i / tickCount * 2 * Math.PI - Math.PI / 2;
+    const major = i % 6 === 0;
+    const inner = bezelR - (major ? 5 : 2.5);
+    const outer = bezelR + (major ? 2 : 0);
+    return {
+      x1: cx + inner * Math.cos(a),
+      y1: cy + inner * Math.sin(a),
+      x2: cx + outer * Math.cos(a),
+      y2: cy + outer * Math.sin(a),
+      major
+    };
+  });
 
   // ── rAF animation: interpolate segment angles ─────────────────────────────
   // Store current animated fractions (one per segment slot, keyed by color)
@@ -9445,12 +9537,70 @@ const PieChart = ({
   useEffect(() => {
     applyPaths(curFracs.current, hovered);
   }, [hovered]);
+  // Shared "gauge" styling: a soft drop shadow under the ring, a subtle
+  // glossy highlight over it, and an outer bezel with tick marks framing the
+  // whole thing -- the same three pieces every render branch below uses.
+  const renderChromeDefs = () => /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("filter", {
+    id: `${chartId}-shadow`,
+    x: "-40%",
+    y: "-40%",
+    width: "180%",
+    height: "180%"
+  }, /*#__PURE__*/React.createElement("feDropShadow", {
+    dx: "0",
+    dy: "2",
+    stdDeviation: "3.5",
+    floodColor: "#000",
+    floodOpacity: "0.18"
+  })), /*#__PURE__*/React.createElement("radialGradient", {
+    id: `${chartId}-gloss`,
+    cx: "32%",
+    cy: "26%",
+    r: "80%"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0%",
+    stopColor: "#fff",
+    stopOpacity: "0.35"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "55%",
+    stopColor: "#fff",
+    stopOpacity: "0.08"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "100%",
+    stopColor: "#fff",
+    stopOpacity: "0"
+  })));
+  const renderBezel = () => /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("circle", {
+    cx: cx,
+    cy: cy,
+    r: bezelR,
+    fill: "none",
+    stroke: C.border,
+    strokeWidth: 1,
+    style: {
+      pointerEvents: "none"
+    }
+  }), ticks.map((tk, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: tk.x1,
+    y1: tk.y1,
+    x2: tk.x2,
+    y2: tk.y2,
+    stroke: C.text5,
+    strokeWidth: tk.major ? 1.4 : 1,
+    opacity: tk.major ? 0.55 : 0.3,
+    style: {
+      pointerEvents: "none"
+    }
+  })));
   if (!total) return /*#__PURE__*/React.createElement("div", {
     style: {
       width: size,
       height: size,
       borderRadius: "50%",
       background: C.bg3,
+      outline: `1px solid ${C.border}`,
+      outlineOffset: 6,
       display: "flex",
       alignItems: "center",
       justifyContent: "center"
@@ -9484,7 +9634,12 @@ const PieChart = ({
       width: size,
       height: size,
       style: {
-        display: "block"
+        display: "block",
+        overflow: "visible"
+      }
+    }, renderChromeDefs(), renderBezel(), /*#__PURE__*/React.createElement("g", {
+      style: {
+        filter: `url(#${chartId}-shadow)`
       }
     }, /*#__PURE__*/React.createElement("circle", {
       cx: cx,
@@ -9507,6 +9662,16 @@ const PieChart = ({
         transformOrigin: `${cx}px ${cy}px`,
         transform: hovered === 0 ? "scale(1.04)" : "scale(1)",
         cursor: "pointer"
+      }
+    })), /*#__PURE__*/React.createElement("circle", {
+      cx: cx,
+      cy: cy,
+      r: ringR,
+      fill: "none",
+      stroke: `url(#${chartId}-gloss)`,
+      strokeWidth: ringW,
+      style: {
+        pointerEvents: "none"
       }
     })), /*#__PURE__*/React.createElement("div", {
       style: {
@@ -9568,10 +9733,11 @@ const PieChart = ({
     width: size,
     height: size,
     style: {
-      display: "block"
+      display: "block",
+      overflow: "visible"
     },
     onMouseLeave: () => setHovered(null)
-  },
+  }, renderChromeDefs(), renderBezel(),
   // Gray placeholder ring. The arcs below are filled in imperatively and the
   // animation that draws them can be deferred (until the chart scrolls into
   // view), so a freshly created chart used to be a blank hole until then. This
@@ -9590,7 +9756,11 @@ const PieChart = ({
     style: {
       pointerEvents: "none"
     }
-  }), segments.map((seg, i) => /*#__PURE__*/React.createElement("path", {
+  }), /*#__PURE__*/React.createElement("g", {
+    style: {
+      filter: `url(#${chartId}-shadow)`
+    }
+  }, segments.map((seg, i) => /*#__PURE__*/React.createElement("path", {
     key: i,
     ref: el => pathRefs.current[i] = el,
     d: initDs[i] || "",
@@ -9607,7 +9777,17 @@ const PieChart = ({
     },
     onMouseEnter: () => setHovered(i),
     onMouseLeave: () => setHovered(null)
-  }))), /*#__PURE__*/React.createElement("div", {
+  }))), /*#__PURE__*/React.createElement("circle", {
+    cx: cx,
+    cy: cy,
+    r: (r + ri) / 2,
+    fill: "none",
+    stroke: `url(#${chartId}-gloss)`,
+    strokeWidth: r - ri,
+    style: {
+      pointerEvents: "none"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       inset: 0,
@@ -11019,6 +11199,29 @@ const GaugeChart = ({
       i2 = ih(p2);
     return [`M ${f(o1.x)},${f(o1.y)}`, `A ${Ro},${Ro} 0 0,1 ${f(o2.x)},${f(o2.y)}`, `L ${f(i2.x)},${f(i2.y)}`, `A ${Rio},${Rio} 0 0,0 ${f(i1.x)},${f(i1.y)}`, `Z`].join(" ");
   };
+  // Same "gauge chrome" as PieChart: a unique id (so multiple charts on one
+  // page never collide over the same <defs>), an outer bezel arc, and tick
+  // marks -- following this dial's own 180° sweep rather than a full circle.
+  const chartId = useRef("gauge" + Math.random().toString(36).slice(2, 9)).current;
+  const bezelR = R + 10;
+  const bezelPath = arcPath(0, 100, bezelR, bezelR - 1.4);
+  const tickCount = 12;
+  const ticks = Array.from({
+    length: tickCount + 1
+  }, (_, i) => {
+    const pct = i / tickCount * 100;
+    const major = i % 3 === 0;
+    const a = θ(pct);
+    const inner = bezelR - (major ? 8 : 4.5);
+    const outer = bezelR - 1.4;
+    return {
+      x1: cx + inner * Math.cos(a),
+      y1: cy - inner * Math.sin(a),
+      x2: cx + outer * Math.cos(a),
+      y2: cy - outer * Math.sin(a),
+      major
+    };
+  });
   const needlePoints = pct => {
     const nAngle = θ(pct);
     const nLen = ri - 4,
@@ -11328,6 +11531,57 @@ const GaugeChart = ({
       overflow: "visible"
     },
     onMouseLeave: () => setHovered(null)
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("filter", {
+    id: `${chartId}-shadow`,
+    x: "-40%",
+    y: "-40%",
+    width: "180%",
+    height: "180%"
+  }, /*#__PURE__*/React.createElement("feDropShadow", {
+    dx: "0",
+    dy: "2",
+    stdDeviation: "3.5",
+    floodColor: "#000",
+    floodOpacity: "0.18"
+  })), /*#__PURE__*/React.createElement("radialGradient", {
+    id: `${chartId}-gloss`,
+    cx: "35%",
+    cy: "10%",
+    r: "90%"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0%",
+    stopColor: "#fff",
+    stopOpacity: "0.4"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "55%",
+    stopColor: "#fff",
+    stopOpacity: "0.08"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "100%",
+    stopColor: "#fff",
+    stopOpacity: "0"
+  }))), bezelPath && /*#__PURE__*/React.createElement("path", {
+    d: bezelPath,
+    fill: C.border,
+    style: {
+      pointerEvents: "none"
+    }
+  }), ticks.map((tk, i) => /*#__PURE__*/React.createElement("line", {
+    key: i,
+    x1: tk.x1,
+    y1: tk.y1,
+    x2: tk.x2,
+    y2: tk.y2,
+    stroke: C.text5,
+    strokeWidth: tk.major ? 1.4 : 1,
+    opacity: tk.major ? 0.55 : 0.3,
+    style: {
+      pointerEvents: "none"
+    }
+  })), /*#__PURE__*/React.createElement("g", {
+    style: {
+      filter: `url(#${chartId}-shadow)`
+    }
   }, greyD && /*#__PURE__*/React.createElement("path", {
     d: greyD,
     fill: "var(--gauge-track)",
@@ -11358,6 +11612,12 @@ const GaugeChart = ({
     },
     onMouseEnter: () => setHovered('red'),
     onMouseLeave: () => setHovered(null)
+  })), /*#__PURE__*/React.createElement("path", {
+    d: arcPath(0, 100, R, ri),
+    fill: `url(#${chartId}-gloss)`,
+    style: {
+      pointerEvents: "none"
+    }
   }), /*#__PURE__*/React.createElement("polygon", {
     ref: needleRef,
     points: initNeedle,
@@ -17465,12 +17725,38 @@ const GCal = (() => {
 
   // The signature travels with the event, so any device can tell whether what is in
   // Google already matches the local task without keeping its own records.
+  // What reminder a task should actually carry on its Google event: an
+  // explicit choice always wins, but a task with no explicit choice isn't
+  // left without a reminder either -- it gets a sensible default instead,
+  // computed fresh from whatever the task's current date/time happen to be.
+  // Because this lives in taskSignature too (not just taskToEventBody),
+  // re-evaluating it always keeps signature and push in lockstep: a task
+  // moving between timed and date-only (by any means -- the edit form, drag-
+  // and-drop, whatever) changes the resolved reminder, which changes the
+  // signature, which is exactly what tells the push effect there's
+  // something new to send. The same mechanism means every already-synced
+  // task picks up this default the next time a push runs, with no separate
+  // migration needed.
+  function resolveReminderMinutes(t) {
+    if (t.reminderMinutes === "none") return null; // explicit opt-out
+    if (t.reminderMinutes != null && t.reminderMinutes !== "") {
+      const n = Number(t.reminderMinutes);
+      if (Number.isFinite(n)) return n; // explicit override, in minutes-before
+    }
+    if (isDateless(t)) return null; // no real date to anchor a reminder to
+    if (normTime(t.time)) return 30; // timed task: 30 minutes before
+    // Date-only ("all-day" on Google's side): Google counts an all-day
+    // event's reminder minutes back from the END of its day rather than its
+    // start, so 1440 - 9*60 = 900 lands the popup at 9:00 AM that same day.
+    return 1440 - 9 * 60;
+  }
   function taskSignature(t) {
     return JSON.stringify([
       String(t.name || ""), String(t.note || ""), String(t.type || ""),
       String(t.date || ""), normTime(t.time) || "",
       t.length == null ? "" : String(t.length),
       t.recur == null ? "" : String(t.recur),
+      resolveReminderMinutes(t),
       t.done ? 1 : 0, t.cancelled ? 1 : 0
     ]);
   }
@@ -17501,9 +17787,26 @@ const GCal = (() => {
           hebcal: task.hebcal ? "1" : "0",
           intl: task.intl ? "1" : "0",
           nameEn: task.nameEn ? String(task.nameEn).slice(0, 300) : "",
+          reminderMinutes: task.reminderMinutes == null || task.reminderMinutes === "" ? "" : String(task.reminderMinutes),
           sig: taskSignature(task).slice(0, 1000)
         }
       }
+    };
+    // Explicit either way, same reasoning as transparency below: a task with
+    // no reminder set has to actively clear Google's reminders (an empty
+    // overrides array, not useDefault) or a task that previously had one
+    // would keep ringing after the person removed it in TaskIt, since a
+    // PATCH that omits the field leaves Google's existing value alone.
+    const remMin = resolveReminderMinutes(task);
+    body.reminders = remMin != null ? {
+      useDefault: false,
+      overrides: [{
+        method: "popup",
+        minutes: remMin
+      }]
+    } : {
+      useDefault: false,
+      overrides: []
     };
     // Explicit either way, never left unset: transparency is exactly as prone to
     // staleness as start/end above. A holiday or dateless task syncs as
@@ -18412,12 +18715,27 @@ function App() {
       // because its source event is still sitting on the calendar — same principle
       // gcalPullNow already applies to TaskIt's own archived tasks.
       const archivedIds = new Set(archiveTasks.map(t => t.id));
+      // A subscribed Google holiday calendar (many people already have one)
+      // covers the same ground the app's own Hebcal/international holiday
+      // generation does. Without this check, both would exist as separate
+      // local tasks for the same real-world holiday -- genuinely two
+      // different Google Calendar events, in two different calendars, which
+      // is why they never looked duplicated there, but very much did in
+      // TaskIt's own lists.
+      const normHolidayName = s => String(s || "").trim().toLowerCase().replace(/^(erev|eve of)\s+/i, "").replace(/[^\p{L}\p{N}]+/gu, "");
       setTasks(ts => {
+        const isForeignHolidayDupe = patch => {
+          if (!patch.date) return false;
+          const names = [normHolidayName(patch.name), normHolidayName(patch.nameEn)].filter(Boolean);
+          if (!names.length) return false;
+          return ts.some(t => t.date === patch.date && (t.hebcal || t.intl || t.type === "calendar") && (names.includes(normHolidayName(t.name)) || names.includes(normHolidayName(t.nameEn))));
+        };
         let next = ts;
         for (const [id, patch] of Object.entries(byId)) {
           if (archivedIds.has(id)) continue;
           const existing = next.find(t => t.id === id);
           if (!existing) {
+            if (isForeignHolidayDupe(patch)) continue;
             next = next === ts ? [...ts] : next;
             // Never resurrect done/cancelled state from Google — that's local-only
             // for foreign events (see the note on patchForeignEvent). New imports
@@ -18649,12 +18967,9 @@ function App() {
   // Push effect. Gated on gcalReady so a page reload can never fire a push storm
   // before we have heard what Google already has — that burst was what made the app
   // look permanently busy.
-  useEffect(() => {
+  const gcalPushPendingNow = () => {
+    if (!gcalConnected || !gcalReady) return;
     const combinedIds = new Set([...tasks, ...archiveTasks].map(t => t.id));
-    if (!gcalConnected || !gcalReady) {
-      gcalSeenIds.current = combinedIds;
-      return;
-    }
     for (const id of gcalSeenIds.current) {
       if (!combinedIds.has(id) && (id in gcalRemote.current)) {
         const loc = gcalLoc.current[id];
@@ -18684,8 +18999,17 @@ function App() {
         .finally(() => setGcalPushCount(c => Math.max(0, c - 1)));
     }
     gcalRecomputeStats(tasks, gcalRemote.current);
+  };
+  useEffect(() => {
+    if (!gcalConnected || !gcalReady) {
+      gcalSeenIds.current = new Set([...tasks, ...archiveTasks].map(t => t.id));
+      return;
+    }
+    gcalPushPendingNow();
   }, [tasks, archiveTasks, gcalConnected, gcalReady]);
 
+  const gcalPushPendingRef = useRef(gcalPushPendingNow);
+  gcalPushPendingRef.current = gcalPushPendingNow;
   useEffect(() => {
     if (!gcalConnected) return;
     gcalPullNow();
@@ -18694,12 +19018,19 @@ function App() {
       if (document.visibilityState !== "visible") return;
       gcalPullNow();
       if (prefGcalForeign) gcalPullForeignNow();
+      // Retries any push that previously failed (network hiccup, rate
+      // limit, temporary auth issue) -- without this, a one-time failure on
+      // a task nobody happens to edit again could sit unsynced indefinitely,
+      // since the push effect otherwise only runs when the tasks array
+      // itself changes.
+      gcalPushPendingRef.current();
     };
     document.addEventListener("visibilitychange", onVis);
     const interval = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       gcalPullNow();
       if (prefGcalForeign) gcalPullForeignNow();
+      gcalPushPendingRef.current();
     }, 120000);
     return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(interval); };
   }, [gcalConnected, prefGcalForeign]);
