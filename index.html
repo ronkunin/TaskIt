@@ -1414,6 +1414,11 @@ const countPendingOccurrences = (task, winStart, winEnd) => {
   ws.setHours(0, 0, 0, 0);
   const we = new Date(winEnd);
   we.setHours(23, 59, 59, 999);
+  // End Repeat: nothing past it counts, however far out the window itself goes.
+  if (task.recurUntil) {
+    const untilD = new Date(task.recurUntil + "T23:59:59");
+    if (untilD < we) we.setTime(untilD.getTime());
+  }
   let interval; // interval in ms
   if (task.recur === "month") interval = null; // handled specially
   else if (task.recur === "year") interval = null;else interval = (parseInt(task.recur) || 1) * 864e5;
@@ -1462,6 +1467,11 @@ const occurrenceDatesInRange = (task, winStart, winEnd) => {
   ws.setHours(0, 0, 0, 0);
   const we = new Date(winEnd);
   we.setHours(23, 59, 59, 999);
+  // End Repeat: nothing past it counts, however far out the window itself goes.
+  if (task.recurUntil) {
+    const untilD = new Date(task.recurUntil + "T23:59:59");
+    if (untilD < we) we.setTime(untilD.getTime());
+  }
   const dates = [];
   const MAX = 500;
   let i = 0;
@@ -3893,7 +3903,8 @@ const Modal = ({
     recur: "",
     length: "",
     note: "",
-    reminderMinutes: ""
+    reminderMinutes: "",
+    recurUntil: ""
   });
   const _modalWidth = useWindowWidth();
   const _modalHeight = useWindowHeight();
@@ -3906,6 +3917,8 @@ const Modal = ({
   const [showTypeSugg, setShowTypeSugg] = useState(false);
   const [error, setError] = useState("");
   const [sharing, setSharing] = useState(false);
+  const [showMoreOptions, setShowMoreOptions] = useState(false);
+  const prevRecurRef = useRef("");
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
   const nameRef = useRef();
@@ -3922,7 +3935,8 @@ const Modal = ({
           recur: editTask.recur != null ? String(editTask.recur) : "",
           length: editTask.length != null && editTask.length !== "" ? String(editTask.length) : "",
           note: editTask.note || "",
-          reminderMinutes: editTask.reminderMinutes != null && editTask.reminderMinutes !== "" ? String(editTask.reminderMinutes) : ""
+          reminderMinutes: editTask.reminderMinutes != null && editTask.reminderMinutes !== "" ? String(editTask.reminderMinutes) : "",
+          recurUntil: editTask.recurUntil || ""
         });
         setShowNote(!!(editTask.note && String(editTask.note).trim()));
       } else {
@@ -3934,14 +3948,17 @@ const Modal = ({
           recur: "",
           length: "",
           note: "",
-          reminderMinutes: ""
+          reminderMinutes: "",
+          recurUntil: ""
         });
         setShowNote(false);
       }
       setSuggestions([]);
       setShowSugg(false);
       setShowTypeSugg(false);
+      setShowMoreOptions(false);
       setError("");
+      prevRecurRef.current = editTask && editTask.recur != null ? String(editTask.recur) : "";
       setTimeout(() => nameRef.current?.focus(), 100);
     } else if (visible) {
       setClosing(true);
@@ -3969,6 +3986,29 @@ const Modal = ({
       set("type", "regular");
     }
   }, [form.recur, form.type]);
+  // End Repeat only makes sense once there's an actual repeat to end -- if
+  // Repeat gets cleared (by hand, or via the reactive Schedule/Repeated
+  // effect above), any End Repeat date left over from before is stale and
+  // is dropped right along with it, the same "no orphaned state" principle
+  // as the date/time/length chain elsewhere in this form.
+  useEffect(() => {
+    if (!form.recur.trim() && form.recurUntil) {
+      set("recurUntil", "");
+    }
+  }, [form.recur]);
+  // A manual reminder override was chosen for the task's repeat setting as
+  // it stood at the time -- "1 day before" makes sense for a once-a-year
+  // task, much less so once that becomes a daily one. Rather than carry a
+  // now-questionable override forward, any genuine change to Repeat (not
+  // just the form loading with whatever it already was) drops back to
+  // Automatic, which reliably picks the right default for whatever Repeat
+  // says now.
+  useEffect(() => {
+    if (form.recur !== prevRecurRef.current) {
+      prevRecurRef.current = form.recur;
+      if (form.reminderMinutes !== "") set("reminderMinutes", "");
+    }
+  }, [form.recur]);
   const handleNameChange = val => {
     set("name", val);
     setError("");
@@ -4070,6 +4110,10 @@ const Modal = ({
     // dateless task since resolveReminderMinutes treats both the same way
     // (no reminder) once there's no date at all.
     const finalReminderMinutes = !finalDate ? null : form.reminderMinutes === "" ? null : form.reminderMinutes === "none" ? "none" : Number(form.reminderMinutes);
+    // Same belt-and-suspenders as the reactive clear above: only ever saved
+    // alongside an actual repeat, regardless of how a leftover value might
+    // otherwise have hung around.
+    const finalRecurUntil = finalRecur && form.recurUntil ? form.recurUntil : null;
     onSave({
       ...form,
       type: finalType,
@@ -4078,7 +4122,8 @@ const Modal = ({
       recur: finalRecur,
       length: finalLength,
       note: finalNote,
-      reminderMinutes: finalReminderMinutes
+      reminderMinutes: finalReminderMinutes,
+      recurUntil: finalRecurUntil
     });
   };
   const handleTimeFocus = e => {
@@ -4476,7 +4521,26 @@ const Modal = ({
       alignItems: "center",
       gap: 8
     }
-  }, editTask && /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setShowMoreOptions(v => !v),
+    title: getLang() === "he" ? "עוד הגדרות" : "More settings",
+    style: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      border: `1px solid ${showMoreOptions ? "#93C5FD" : C.border2}`,
+      background: showMoreOptions ? C.blueBg : C.card2,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "sliders",
+    size: 14,
+    color: showMoreOptions ? C.blue : "#94A3B8"
+  })), editTask && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: handleShare,
     disabled: sharing,
@@ -5056,19 +5120,19 @@ const Modal = ({
       onFocus: e => e.target.style.borderColor = "#93C5FD",
       onBlur: e => e.target.style.borderColor = "var(--border)"
     })));
-  })(), form.date && (() => {
+  })(), showMoreOptions && (() => {
     const isHe = getLang() === "he";
-    // Minutes before the event Google should notify at -- sent straight
-    // through as that event's own reminders, so Google's own apps (mobile
-    // push, email, desktop) do the actual alerting. Only takes effect once
-    // this task is pushed to a connected Google Calendar; offline, it's
-    // just saved for whenever a connection happens later. Left on
-    // "Automatic" (the default), every task still gets a sensible reminder
-    // on its own -- 30 minutes before for a timed task, 9:00 AM the day of
-    // for a date-only one -- so this only needs touching to override that.
-    const REMINDER_OPTIONS = [{
+    const hasRecur = !!form.recur.trim();
+    const hasDate = !!form.date;
+    const hasTime = !!form.time.trim();
+    // Different option sets depending on whether there's a clock time to
+    // count back from: "minutes before" reads naturally for a timed task,
+    // but for a date-only one the only thing that actually makes sense is
+    // picking which day's 9:00 AM -- so these are two genuinely different
+    // menus, not the same list relabeled.
+    const REMINDER_OPTIONS = (hasTime ? [{
       value: "",
-      label: isHe ? "אוטומטי (30 דק׳ / 9:00)" : "Automatic (30 min / 9:00 AM)"
+      label: isHe ? "אוטומטי (מומלץ)" : "Automatic (recommended)"
     }, {
       value: "0",
       label: isHe ? "בזמן האירוע" : "At time of event"
@@ -5087,13 +5151,42 @@ const Modal = ({
     }, {
       value: "1440",
       label: isHe ? "יום לפני" : "1 day before"
+    }] : [{
+      value: "",
+      label: isHe ? "אוטומטי (מומלץ)" : "Automatic (recommended)"
     }, {
+      value: "900",
+      label: isHe ? "9:00 באותו היום" : "9:00 AM the same day"
+    }, {
+      value: "2340",
+      label: isHe ? "9:00, יום לפני" : "9:00 AM, 1 day before"
+    }, {
+      value: "3780",
+      label: isHe ? "9:00, יומיים לפני" : "9:00 AM, 2 days before"
+    }]).concat([{
       value: "none",
       label: isHe ? "ללא תזכורת" : "No reminder"
-    }];
+    }]);
     return /*#__PURE__*/React.createElement("div", {
       style: {
-        marginBottom: 20
+        marginBottom: 20,
+        padding: "14px 14px 12px",
+        borderRadius: 12,
+        background: C.card2,
+        border: `1px solid ${C.border}`
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        color: C.text3,
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+        marginBottom: 10
+      }
+    }, isHe ? "עוד הגדרות" : "More settings"), hasDate && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: hasRecur ? 16 : 0
       }
     }, /*#__PURE__*/React.createElement("label", {
       style: lbl
@@ -5109,7 +5202,35 @@ const Modal = ({
     }, REMINDER_OPTIONS.map(o => /*#__PURE__*/React.createElement("option", {
       key: o.value,
       value: o.value
-    }, o.label))));
+    }, o.label)))), hasRecur ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("label", {
+      style: lbl
+    }, isHe ? "סיום חזרה" : "End Repeat"), /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      value: form.recurUntil,
+      min: form.date || undefined,
+      onChange: e => set("recurUntil", e.target.value),
+      style: inp(),
+      onFocus: e => e.target.style.borderColor = "#93C5FD",
+      onBlur: e => e.target.style.borderColor = "var(--border)"
+    }), form.recurUntil && /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      onClick: () => set("recurUntil", ""),
+      style: {
+        marginTop: 6,
+        border: "none",
+        background: "transparent",
+        color: C.text4,
+        fontSize: 11,
+        fontWeight: 600,
+        cursor: "pointer",
+        padding: 0
+      }
+    }, isHe ? "נקה תאריך" : "Clear date")) : !hasDate && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text4
+      }
+    }, isHe ? "אין הגדרות נוספות זמינות למשימה הזו כרגע." : "No additional settings available for this task yet."));
   })(), (showNote || modalNarrow) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
@@ -15091,7 +15212,9 @@ const SettingsModal = ({
   };
   const handleReset = async () => {
     onSpecialLoading("resetting");
-    // Clear all localStorage taskflow keys
+    // Local storage only -- never touches Google. Anything still on the
+    // person's calendar is the source of truth and comes right back on the
+    // next pull after reload; this button just wipes the local cache.
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(ARCHIVE_KEY);
     Object.keys(localStorage).filter(k => k.startsWith("taskflow")).forEach(k => localStorage.removeItem(k));
@@ -17726,29 +17849,53 @@ const GCal = (() => {
   // The signature travels with the event, so any device can tell whether what is in
   // Google already matches the local task without keeping its own records.
   // What reminder a task should actually carry on its Google event: an
-  // explicit choice always wins, but a task with no explicit choice isn't
-  // left without a reminder either -- it gets a sensible default instead,
-  // computed fresh from whatever the task's current date/time happen to be.
+  // explicit choice always wins. Absent one, the rules are:
+  //  - no date at all -> no reminder (nothing to anchor it to)
+  //  - a holiday -> 9:00 AM the same day
+  //  - repeats once a year, not a holiday -> 9:00 AM the day before
+  //  - repeats on any other cadence -> right at the moment it happens
+  //  - one-off (no repeat) with a clock time -> 30 minutes before
+  //  - one-off (no repeat), no clock time -> 9:00 AM the same day
   // Because this lives in taskSignature too (not just taskToEventBody),
   // re-evaluating it always keeps signature and push in lockstep: a task
-  // moving between timed and date-only (by any means -- the edit form, drag-
-  // and-drop, whatever) changes the resolved reminder, which changes the
-  // signature, which is exactly what tells the push effect there's
-  // something new to send. The same mechanism means every already-synced
-  // task picks up this default the next time a push runs, with no separate
+  // moving between timed and date-only, gaining or losing a repeat, or
+  // having its date changed (by any means -- the edit form, drag-and-drop,
+  // whatever) changes the resolved reminder, which changes the signature,
+  // which is exactly what tells the push effect there's something new to
+  // send. The same mechanism means every already-synced task picks up
+  // whatever the current rules say next time a push runs, with no separate
   // migration needed.
   function resolveReminderMinutes(t) {
+    if (isDateless(t)) return null; // no real date to anchor a reminder to, no exceptions
     if (t.reminderMinutes === "none") return null; // explicit opt-out
     if (t.reminderMinutes != null && t.reminderMinutes !== "") {
       const n = Number(t.reminderMinutes);
       if (Number.isFinite(n)) return n; // explicit override, in minutes-before
     }
-    if (isDateless(t)) return null; // no real date to anchor a reminder to
-    if (normTime(t.time)) return 30; // timed task: 30 minutes before
-    // Date-only ("all-day" on Google's side): Google counts an all-day
-    // event's reminder minutes back from the END of its day rather than its
-    // start, so 1440 - 9*60 = 900 lands the popup at 9:00 AM that same day.
-    return 1440 - 9 * 60;
+    const nt = normTime(t.time);
+    const timeMin = nt ? (() => {
+      const [h, m] = nt.split(":").map(Number);
+      return h * 60 + m;
+    })() : null;
+    // "N days before, at 9:00 AM": for a task with a clock time this counts
+    // back from that exact moment; for a date-only task (an "all-day" event
+    // on Google's side) it counts back from the END of its day instead
+    // (Google's own reminder anchor for all-day events), so N=0 still lands
+    // on 9:00 AM that same day rather than at midnight.
+    const daysBeforeAt9 = days => timeMin != null ? days * 1440 + (timeMin - 9 * 60) : (days + 1) * 1440 - 9 * 60;
+    if (isHolidayTask(t)) return daysBeforeAt9(0);
+    if (isRecurring(t)) {
+      if (t.recur === "year") return daysBeforeAt9(1); // once a year, not a holiday: a day's notice
+      // Any other repeat cadence: right at the moment it happens. For a
+      // date-only task that "moment" is its literal start (00:00 that day
+      // per Google's own all-day semantics) -- under the end-of-day anchor
+      // above that's a full 1440 minutes before it, not 0 (0 would instead
+      // land at the very end of the day).
+      return timeMin != null ? 0 : 1440;
+    }
+    // One-off, no repeat: the usual half hour of notice before a clock time,
+    // or 9:00 AM the same day when there isn't one.
+    return timeMin != null ? 30 : daysBeforeAt9(0);
   }
   function taskSignature(t) {
     return JSON.stringify([
@@ -17756,6 +17903,7 @@ const GCal = (() => {
       String(t.date || ""), normTime(t.time) || "",
       t.length == null ? "" : String(t.length),
       t.recur == null ? "" : String(t.recur),
+      t.recurUntil || "",
       resolveReminderMinutes(t),
       t.done ? 1 : 0, t.cancelled ? 1 : 0
     ]);
@@ -17775,6 +17923,7 @@ const GCal = (() => {
           taskitId: String(task.id),
           type: String(task.type || ""),
           recur: task.recur == null ? "" : String(task.recur),
+          recurUntil: task.recurUntil || "",
           seriesId: String(task.seriesId || ""),
           done: task.done ? "1" : "0",
           cancelled: task.cancelled ? "1" : "0",
@@ -17864,6 +18013,7 @@ const GCal = (() => {
       updated: event.updated ? new Date(event.updated).getTime() : Date.now()
     };
     if (p.seriesId) patch.seriesId = p.seriesId;
+    if (p.recurUntil) patch.recurUntil = p.recurUntil;
     if (p.hebcal === "1") patch.hebcal = true;
     if (p.intl === "1") patch.intl = true;
     if (p.nameEn) patch.nameEn = p.nameEn;
@@ -18845,39 +18995,83 @@ function App() {
     setGcalBusy(true); setGcalError(""); setGcalScanMsg("");
     try {
       const he = getLang() === "he";
+      const isHolidayish = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar");
+      // Same cross-language/format normalizer as the foreign-pull guard: a
+      // subscribed Google holiday calendar and this app's own Hebcal
+      // generation rarely word a holiday identically, so an exact string
+      // match misses the very duplicates this scan exists to catch.
+      const normHolidayName = s => String(s || "").trim().toLowerCase().replace(/^(erev|eve of)\s+/i, "").replace(/[^\p{L}\p{N}]+/gu, "");
+      // Previously this skipped every holiday and every foreign-imported task
+      // outright, which is exactly why duplicated holidays never got cleaned
+      // up here -- they're included now. Regular tasks keep the simple exact
+      // name+date match; holiday-ish ones get the fuzzy check below instead,
+      // since two genuine duplicates of a holiday are far more likely to be
+      // worded differently than two duplicates of a hand-typed task are.
+      const isSkippable = tk => !tk.date || !((tk.name || "").trim());
       const normKey = tk => (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "");
-      const isSkippable = tk => !tk.date || !((tk.name || "").trim()) || tk.hebcal || tk.intl || tk.type === "calendar" || tk.source === "google";
       const combined = [
         ...tasks.map(tk => ({ tk, src: "active" })),
         ...archiveTasks.map(tk => ({ tk, src: "archive" }))
       ];
+      const eligible = combined.filter(item => !isSkippable(item.tk));
+      const toDeleteIds = new Set();
+      // Pass 1: exact name+date groups, for everything except foreign
+      // imports (which get their own fuzzy pass below, since matching them
+      // into one of these groups by exact text would rarely fire).
       const groups = {};
-      combined.forEach(item => {
-        if (isSkippable(item.tk)) return;
+      eligible.filter(item => item.tk.source !== "google").forEach(item => {
         const k = normKey(item.tk);
         (groups[k] = groups[k] || []).push(item);
       });
-      const toDeleteIds = new Set();
+      // Prefer keeping a live app-generated holiday task over anything else
+      // (it's the one the app keeps regenerating and pushing on its own),
+      // then the earliest created, then the one with a time set.
+      const keepRank = item => isHolidayish(item.tk) ? 0 : 1;
       Object.values(groups).forEach(items => {
         if (items.length < 2) return;
-        // Keep the earliest-created copy (tie-break: the one with a time set).
         const sorted = [...items].sort((a, b) => {
+          const ra = keepRank(a), rb = keepRank(b);
+          if (ra !== rb) return ra - rb;
           const ca = a.tk.created || 0, cb = b.tk.created || 0;
           if (ca !== cb) return ca - cb;
           return (a.tk.time ? 0 : 1) - (b.tk.time ? 0 : 1);
         });
         sorted.slice(1).forEach(item => toDeleteIds.add(item.tk.id));
       });
+      // Pass 2: a foreign-imported task (from a subscribed Google holiday
+      // calendar, say) that names the same holiday, on the same date, as a
+      // native one this app already generates -- the exact scenario the
+      // foreign-pull guard now prevents going forward, but pre-existing
+      // pairs from before that fix need cleaning up here.
+      const nativeHolidays = eligible.filter(item => item.tk.source !== "google" && isHolidayish(item.tk) && !toDeleteIds.has(item.tk.id));
+      eligible.filter(item => item.tk.source === "google" && !toDeleteIds.has(item.tk.id)).forEach(item => {
+        const names = [normHolidayName(item.tk.name), normHolidayName(item.tk.nameEn)].filter(Boolean);
+        if (!names.length) return;
+        const dupe = nativeHolidays.some(n => n.tk.date === item.tk.date && (names.includes(normHolidayName(n.tk.name)) || names.includes(normHolidayName(n.tk.nameEn))));
+        if (dupe) toDeleteIds.add(item.tk.id);
+      });
+      const toDeleteById = new Map(combined.filter(item => toDeleteIds.has(item.tk.id)).map(item => [item.tk.id, item.tk]));
       const localDeleted = toDeleteIds.size;
       if (localDeleted) {
         setTasks(prev => prev.filter(tk => !toDeleteIds.has(tk.id)));
         setArchiveTasks(prev => (prev || []).filter(tk => !toDeleteIds.has(tk.id)));
         toDeleteIds.forEach(id => {
+          const doomed = toDeleteById.get(id);
           const loc = gcalLoc.current[id];
           delete gcalRemote.current[id];
           delete gcalLoc.current[id];
           delete gcalFailed.current[id];
-          if (loc) gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {});
+          // A foreign import's real Google event lives at its own
+          // calendarId/eventId, not at the derived id deleteTask expects --
+          // using the wrong one here would silently fail, or worse, target
+          // whatever that derived id happens to collide with.
+          if (doomed?.source === "google") {
+            if (doomed.googleCalendarId && doomed.googleEventId) {
+              gcalEnqueue(() => GCal.deleteForeignEvent(doomed.googleCalendarId, doomed.googleEventId)).catch(() => {});
+            }
+          } else if (loc) {
+            gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {});
+          }
         });
       }
 
@@ -18888,6 +19082,7 @@ function App() {
       gcalLoc.current = {};
       gcalFailed.current = {};
       await gcalPullNow();
+      if (prefGcalForeign) await gcalPullForeignNow();
       const remainingTasks = tasks.filter(tk => !toDeleteIds.has(tk.id));
       let uploaded = 0, failed = 0;
       for (const task of remainingTasks) {
@@ -19366,6 +19561,9 @@ function App() {
       nextDate.setDate(nextDate.getDate() + task.recur);
     }
     const nextDs = localDs(nextDate);
+    // End Repeat: once the next occurrence would land past it, the series
+    // is simply over -- nothing more spawns from here.
+    if (task.recurUntil && nextDs > task.recurUntil) return tasks;
     const sid = task.seriesId || task.id;
     if (tasks.some(t => (t.seriesId === sid || t.id === sid) && t.date === nextDs && !t.done && !t.cancelled)) return tasks;
     const nextName = task.recur === "year" ? bumpAnnualNumber(task.name) : task.name;
@@ -19374,6 +19572,7 @@ function App() {
       name: nextName,
       type: task.type,
       recur: task.recur,
+      recurUntil: task.recurUntil || null,
       date: nextDs,
       time: task.time || "",
       length: task.length != null ? task.length : null,
