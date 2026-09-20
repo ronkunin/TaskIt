@@ -19610,12 +19610,30 @@ function App() {
       const localById = {};
       for (const t of tasks) localById[t.id] = t;
       const NEEDS_REPAIR = "__needs_repair__"; // never equals a real taskSignature() output
+      // A holiday's name/date/time are TaskIt's own to define, but whether the
+      // person ticked it off (done / cancelled) is theirs -- and may have been
+      // set on another device. Last write wins, exactly like every other task:
+      // the event's Google-side modified time vs. this device's own `updated`.
+      // Returns just the state fields to adopt, or null to keep the local ones.
+      const holidayStateFromEvent = (event, local) => {
+        const pv = event.extendedProperties?.private || {};
+        const rd = pv.done === "1", rc = pv.cancelled === "1";
+        if (rd === !!local.done && rc === !!local.cancelled) return null;
+        const remoteUpdated = event.updated ? new Date(event.updated).getTime() : 0;
+        if (local.updated && !(remoteUpdated >= local.updated)) return null;
+        return { done: rd, cancelled: rc, updated: remoteUpdated || Date.now() };
+      };
       for (const { event, calendarId } of events) {
         const tid = event.extendedProperties?.private?.taskitId;
         if (!tid) continue;
         byId[tid] = event;
         loc[tid] = calendarId;
-        const localTask = localById[tid];
+        const rawLocal = localById[tid];
+        const adoptedState = rawLocal && GCal.isHolidayTask(rawLocal) ? holidayStateFromEvent(event, rawLocal) : null;
+        // Compare against the state we are about to adopt, otherwise a holiday
+        // completed elsewhere looks "drifted" here and gets pushed back to Google
+        // as pending, undoing the completion.
+        const localTask = adoptedState ? { ...rawLocal, ...adoptedState } : rawLocal;
         // Holiday events are a read-only mirror of what TaskIt itself computed —
         // never meant to be edited, locally or on Google's side. Nothing stops
         // someone renaming, redating, or adding a time/note to one directly in
@@ -19643,7 +19661,11 @@ function App() {
           // fields — see the NEEDS_REPAIR comment above. The task stays exactly
           // what TaskIt generated; it's Google's copy that gets corrected, by
           // the push effect, not the other way around.
-          if (existing && GCal.isHolidayTask(existing)) continue;
+          if (existing && GCal.isHolidayTask(existing)) {
+            const st = holidayStateFromEvent(event, existing);
+            if (st) next = (next === ts ? [...ts] : next).map(t => t.id === tid ? { ...t, ...st } : t);
+            continue;
+          }
           const patch = GCal.eventToTaskPatch(event);
           if (!existing) {
             next = next === ts ? [...ts] : next;
@@ -20642,7 +20664,8 @@ function App() {
           ...task,
           ...dateRestore,
           cancelled: false,
-          done: false
+          done: false,
+          updated: Date.now()
         };
       } else {
         const dateUpdate = task.date ? {} : {
@@ -20653,7 +20676,8 @@ function App() {
           ...task,
           ...dateUpdate,
           cancelled: true,
-          done: false
+          done: false,
+          updated: Date.now()
         };
       }
       const updated = ts.map(t => t.id === id ? updatedTask : t);
