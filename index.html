@@ -282,6 +282,7 @@ const T = {
     repeatPlaceholder: "e.g. 7",
     length: "Length",
     lengthNone: "Not set (1h)",
+    endTime: "End time",
     note: "Note",
     notePlaceholder: "Add notes for this task...",
     addNote: "Add note",
@@ -439,6 +440,7 @@ const T = {
     repeatPlaceholder: "לדוג׳ 7",
     length: "משך",
     lengthNone: "לא הוגדר (שעה)",
+    endTime: "שעת סיום",
     note: "הערה",
     notePlaceholder: "הוסף הערות למשימה...",
     addNote: "הוסף הערה",
@@ -1004,6 +1006,7 @@ const PREF_IL = "taskflow_pref_il"; // "yes" | "no" | null (unset = first time)
 const PREF_INTL = "taskflow_pref_intl"; // "yes" | "no" | null
 const PREF_LOOKAHEAD = "taskflow_pref_lookahead"; // "yes" | "no" — default "yes"
 const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null — default ON (only an explicit "no" turns it off)
+const ONBOARDED_KEY = "taskflow_onboarded"; // presence = the welcome dialog has already run once
 const getPref = key => localStorage.getItem(key); // null | "yes" | "no"
 const setPref = (key, val) => {
   try {
@@ -1728,8 +1731,6 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
 html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:4px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-@keyframes noteReveal{from{transform:translateY(-100%)}to{transform:translateY(0)}}
-.task-note-reveal{animation:noteReveal 0.24s cubic-bezier(0.4,0,0.2,1) forwards;position:relative;z-index:0;overflow:hidden}
 @keyframes slideInLeft{from{opacity:0;transform:translateX(52px)}to{opacity:1;transform:translateX(0)}}
 @keyframes slideInRight{from{opacity:0;transform:translateX(-52px)}to{opacity:1;transform:translateX(0)}}
 /* Date-group accordion entrance (by-date / search result groups) */
@@ -2579,10 +2580,7 @@ const TaskCard = ({
     ref: cardRef,
     "data-taskid": task.id,
     ...(dragHandlers && hovered ? dragHandlers : {}),
-    onMouseEnter: e => {
-      if (e.movementX === 0 && e.movementY === 0) return;
-      activateCard();
-    },
+    onMouseEnter: activateCard,
     onMouseLeave: () => setHovered(false),
     onClick: () => {
       if (!hovered && !done && !cancelled) activateCard();
@@ -2595,6 +2593,7 @@ const TaskCard = ({
       alignItems: hideTypeBadge || renaming ? "center" : "flex-start",
       gap: 12,
       padding: "13px 15px",
+      minHeight: 64,
       borderRadius: 12,
       position: "relative",
       background: cancelled || cancelling ? C.roseBg : completing ? C.greenBg : delaying ? C.amberBg : over ? C.redBg : justSynced || isNew ? "var(--blue-bg)" : C.card,
@@ -2689,6 +2688,7 @@ const TaskCard = ({
     const hasTags = !hideTypeBadge || over || visualCancelled || task.date && !hideDateTag || task.time || task.length != null && task.length !== "" || !!_noteText || isRecurring(task);
     return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       onClick: handleNameClick,
+      "data-nodrag": true,
       style: {
         fontSize: 14,
         fontWeight: 500,
@@ -2767,7 +2767,7 @@ const TaskCard = ({
       name: "clock",
       size: 10,
       color: "#94A3B8"
-    }), " ", task.time), shouldShowLengthTag(Number(task.length)) && /*#__PURE__*/React.createElement("span", {
+    }), " ", task.time), shouldShowLengthWords(Number(task.length)) && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -2779,7 +2779,7 @@ const TaskCard = ({
       name: "hourglass",
       size: 10,
       color: "#94A3B8"
-    }), " ", fmtLengthTag(Number(task.length))), isRecurring(task) && !hideRecurTag && /*#__PURE__*/React.createElement("span", {
+    }), " ", fmtShareLength(Number(task.length))), isRecurring(task) && !hideRecurTag && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -2933,10 +2933,19 @@ const TaskCard = ({
     name: "x",
     size: 13,
     color: "#BE123C"
-  }))))), _showNote && /*#__PURE__*/React.createElement("div", {
+  }))))), _noteText && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateRows: _showNote ? "1fr" : "0fr",
+      transition: "grid-template-rows 0.28s cubic-bezier(0.4,0,0.2,1)"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     ref: noteRef,
     onClick: e => e.stopPropagation(),
-    className: "task-note-reveal",
     style: {
       marginTop: -10,
       marginBottom: 8,
@@ -2956,7 +2965,7 @@ const TaskCard = ({
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: { whiteSpace: "pre-wrap", wordBreak: "break-word", userSelect: "text", WebkitUserSelect: "text", textAlign: "start", display: "block" }
-  }, _noteText)));
+  }, _noteText)))));
 };
 
 //  DELETE BUTTON (double-click confirm) 
@@ -3058,21 +3067,14 @@ const fmtLengthShort = mins => {
   if (h === 0) return `${m}${mu}`;
   return m === 0 ? `${h}${hu}` : `${h}${hu}${m}${mu}`;
 };
-// Whether a duration is worth showing as a tag at all. Only 45min up to — but
-// not including — 3h, and never exactly 1h, which is the unset/default length
-// (DEFAULT_TASK_LENGTH) and so carries no information.
-const shouldShowLengthTag = mins => Number.isFinite(mins) && mins >= 45 && mins < 180 && mins !== 60;
-// Numeric tag form: 45min / 1:30 / 2:00 / 2:30
-const fmtLengthTag = mins => {
-  const h = Math.floor(mins / 60),
-    m = mins % 60;
-  if (h === 0) return getLang() === "he" ? `${m} דק׳` : `${m}min`;
-  return `${h}:${String(m).padStart(2, "0")}`;
-};
-// A task 3h or longer shows its end time instead of a length tag -- the tag
-// alone ("3:00", "4:30"...) reads ambiguously at that size, while a time
-// range answers "when does this actually end" directly.
-const shouldShowTimeRange = mins => Number.isFinite(mins) && mins >= 180;
+// Whether a duration is worth showing in words at all. Any explicit length
+// up to (and including) 2h, except exactly 1h, which is the unset/default
+// length (DEFAULT_TASK_LENGTH) and so carries no information.
+const shouldShowLengthWords = mins => Number.isFinite(mins) && mins > 0 && mins <= 120 && mins !== 60;
+// A task longer than 2h shows its end time instead -- a duration in words
+// ("3 hours", "4 hours 30 min"...) or a length tag reads ambiguously at that
+// size, while a time range answers "when does this actually end" directly.
+const shouldShowTimeRange = mins => Number.isFinite(mins) && mins > 120;
 const computeEndTime = (startTime, mins) => {
   const [h, m] = startTime.split(":").map(Number);
   const total = ((h * 60 + m + mins) % 1440 + 1440) % 1440;
@@ -3270,21 +3272,31 @@ const renderTaskShareCanvas = ({
   const metaFont = `600 14px ${FONT}`;
   const typeFont = `700 11px ${FONT}`;
   const noteFont = `400 14px ${FONT}`;
-  const brandFont = `800 19px ${FONT}`;
+  const brandFont = `750 19px ${FONT}`;
   const taglineFont = `500 12px ${FONT}`;
   const meas = document.createElement("canvas").getContext("2d");
   meas.font = nameFont;
   const displayName = (name || "").trim() || (isHe ? "משימה ללא שם" : "Untitled task");
   const nameLines = truncateCanvasLines(wrapCanvasText(meas, displayName, contentW), 3);
   const lengthMins = Number(length);
-  const hasLength = Number.isFinite(lengthMins) && lengthMins > 0;
   const recurLabel = !recur ? "" : recur === "month" ? isHe ? "כל חודש" : "Every month" : recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", recur);
-  // Date, time, length and repeat all live on one line in the same style,
-  // wrapping onto a second line only if they don't fit.
+  // Date, time (or a start-end range above 2h), and repeat all live on one
+  // line in the same style, wrapping onto a second line only if they don't
+  // fit. Same threshold and mutually-exclusive time/length display as the
+  // task tile and the week grid: over 2h shows a range instead of a bare
+  // time; 2h and under shows the bare time plus the length spelled out in
+  // words, unless it's exactly the unset/default 1h, which carries no
+  // information either way.
   const metaParts = [];
   if (date) metaParts.push(fmtDate(date));
-  if (time) metaParts.push(time);
-  if (hasLength) metaParts.push(fmtShareLength(lengthMins));
+  if (time) {
+    if (shouldShowTimeRange(lengthMins)) {
+      metaParts.push(`${time}-${computeEndTime(time, lengthMins)}`);
+    } else {
+      metaParts.push(time);
+      if (shouldShowLengthWords(lengthMins)) metaParts.push(fmtShareLength(lengthMins));
+    }
+  }
   if (recurLabel) metaParts.push(recurLabel);
   // Each part is drawn on its own (with a separate bullet between) rather than as
   // one joined string, so mixed Hebrew / digits / Latin never get bidi-reordered.
@@ -3575,7 +3587,7 @@ const composeShareFrame = (contentCanvas, pixelRatio, frameOptions) => {
   const borderColor = resolveCssColor("var(--border)");
   const blueColor = resolveCssColor("var(--blue)");
   const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-  const brandFont = `800 19px ${FONT}`;
+  const brandFont = `750 19px ${FONT}`;
   const taglineFont = `500 12px ${FONT}`;
   const titleFont = `700 21px ${FONT}`;
   const PAD = 28; // side + bottom padding, CSS px
@@ -3951,6 +3963,7 @@ const Modal = ({
   }, [form.recur, form.type]);
   const handleNameChange = val => {
     set("name", val);
+    setError("");
     if (val.trim().length < 1) {
       setSuggestions([]);
       setShowSugg(false);
@@ -4000,14 +4013,14 @@ const Modal = ({
   };
   const handleSave = () => {
     if (!form.name.trim()) {
-      setError(t("nameRequired"));
+      setError("name");
       nameRef.current?.focus();
       return;
     }
     if (form.recur) {
       const parsed = parseRecur(form.recur);
       if (parsed === "invalid") {
-        setError(getLang() === "he" ? "חזרה לא תקינה. השתמש במספר ימים, \"חודש\" או \"שנה\"" : "Invalid repeat. Use a number of days, \"month\" or \"year\".");
+        setError("recur");
         return;
       }
     }
@@ -4503,7 +4516,10 @@ const Modal = ({
   }, t("taskName")), (() => {
     const isDoneEdit = editTask && isDone(editTask);
     const isCancelEdit = editTask && isCancelled(editTask);
-    const nameExtra = isDoneEdit ? {
+    const nameExtra = error === "name" ? {
+      borderColor: "var(--red)",
+      background: "var(--red-bg)"
+    } : isDoneEdit ? {
       borderColor: "var(--green)",
       color: "var(--green)",
       background: "var(--green-bg)"
@@ -4520,11 +4536,11 @@ const Modal = ({
       placeholder: t("taskNamePlaceholder"),
       onKeyDown: e => e.key === "Enter" && !showSugg && handleSave(),
       onFocus: e => {
-        e.target.style.borderColor = isDoneEdit ? "var(--green)" : isCancelEdit ? "var(--rose)" : "#93C5FD";
+        e.target.style.borderColor = error === "name" ? "var(--red)" : isDoneEdit ? "var(--green)" : isCancelEdit ? "var(--rose)" : "#93C5FD";
         if (suggestions.length) setShowSugg(true);
       },
       onBlur: e => {
-        e.target.style.borderColor = isDoneEdit ? "var(--green)" : isCancelEdit ? "var(--rose)" : "var(--border)";
+        e.target.style.borderColor = error === "name" ? "var(--red)" : isDoneEdit ? "var(--green)" : isCancelEdit ? "var(--rose)" : "var(--border)";
         setTimeout(() => setShowSugg(false), 150);
       },
       autoComplete: "off"
@@ -4899,7 +4915,7 @@ const Modal = ({
     return /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "1fr 1fr",
+        gridTemplateColumns: "1fr 1fr 1fr",
         gap: 12,
         marginBottom: 20
       }
@@ -4916,7 +4932,11 @@ const Modal = ({
         minWidth: 0,
         maxWidth: "100%",
         height: 44,
-        boxSizing: "border-box"
+        boxSizing: "border-box",
+        ...(error === "recur" ? {
+          borderColor: "var(--red)",
+          background: "var(--red-bg)"
+        } : {})
       }),
       value: form.recur,
       onChange: e => {
@@ -4930,8 +4950,8 @@ const Modal = ({
         if (v.trim() && form.type === "regular") set("type", "repeated");else if (!v.trim() && form.type === "repeated") set("type", "regular");
       },
       placeholder: getLang() === "he" ? "מספר ימים / חודש / שנה" : "days / month / year",
-      onFocus: e => e.target.style.borderColor = "#93C5FD",
-      onBlur: e => e.target.style.borderColor = "var(--border)"
+      onFocus: e => e.target.style.borderColor = error === "recur" ? "var(--red)" : "#93C5FD",
+      onBlur: e => e.target.style.borderColor = error === "recur" ? "var(--red)" : "var(--border)"
     })), /*#__PURE__*/React.createElement("div", {
       style: {
         minWidth: 0
@@ -4970,7 +4990,57 @@ const Modal = ({
     }, t("lengthNone")), (Number(form.length) > 0 && !LENGTH_OPTIONS.includes(Number(form.length)) ? [...LENGTH_OPTIONS, Number(form.length)].sort((x, y) => x - y) : LENGTH_OPTIONS).map(mins => /*#__PURE__*/React.createElement("option", {
       key: mins,
       value: String(mins)
-    }, fmtLength(mins))))));
+    }, fmtLength(mins))))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: lbl
+    }, t("endTime")), /*#__PURE__*/React.createElement("input", {
+      type: "time",
+      style: inp({
+        minWidth: 0,
+        maxWidth: "100%",
+        height: 44,
+        boxSizing: "border-box",
+        cursor: "pointer"
+      }),
+      // Derived from start time + length rather than its own stored field --
+      // editing it just solves for a new length instead. This is also how a
+      // duration that doesn't match any of the length dropdown's preset
+      // options (only reachable by typing an end time, not by picking from
+      // the dropdown) ends up in form.length -- and that's fine now, unlike
+      // before.
+      value: form.time && form.length ? computeEndTime(form.time, Number(form.length)) : "",
+      onChange: e => {
+        const endVal = e.target.value;
+        if (!endVal) {
+          set("length", "");
+          setError("");
+          return;
+        }
+        // Same next-hour default as the length dropdown above, if there's no
+        // start time yet to measure the duration from.
+        let startTime = form.time;
+        if (!startTime) {
+          const _n = new Date();
+          _n.setHours(_n.getHours() + 1, 0, 0, 0);
+          startTime = String(_n.getHours()).padStart(2, "0") + ":00";
+        }
+        const [sh, sm] = startTime.split(":").map(Number);
+        const [eh, em] = endVal.split(":").map(Number);
+        let diffMins = eh * 60 + em - (sh * 60 + sm);
+        if (diffMins <= 0) diffMins += 1440; // end time wrapped past midnight
+        setForm(f => ({
+          ...f,
+          time: startTime,
+          length: String(diffMins)
+        }));
+        setError("");
+      },
+      onFocus: e => e.target.style.borderColor = "#93C5FD",
+      onBlur: e => e.target.style.borderColor = "var(--border)"
+    })));
   })(), (showNote || modalNarrow) && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
@@ -4990,28 +5060,7 @@ const Modal = ({
     placeholder: t("notePlaceholder"),
     onFocus: e => e.target.style.borderColor = "#93C5FD",
     onBlur: e => e.target.style.borderColor = "var(--border)"
-  })), error && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 7,
-      padding: "9px 13px",
-      borderRadius: 9,
-      background: C.redBg,
-      border: `1px solid ${C.redBorder}`,
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "alert",
-    size: 13,
-    color: C.red
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      fontWeight: 500,
-      color: C.red
-    }
-  }, error)), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -6387,7 +6436,11 @@ const MonthView = ({
     const mMarkOverdue = !sharingMonth || !shareOptions || shareOptions.markOverdue !== false;
     const mShowCompletedMark = !sharingMonth || !shareOptions || shareOptions.showCompletedMark !== false;
     const mShowCompletedTasks = !sharingMonth || !shareOptions || shareOptions.showCompletedTasks !== false;
-    const mShowFutureRepeats = !sharingMonth || !shareOptions || shareOptions.showFutureRepeats !== false;
+    // Unlike the flags above (which suppress something normal browsing
+    // already shows), projecting future recurring occurrences is purely
+    // additive -- it must default to OFF outside of an actual capture, not
+    // fall back to "on" the way markOverdue/showCompleted*/markToday do.
+    const mShowFutureRepeats = !!(sharingMonth && shareOptions && shareOptions.showFutureRepeats !== false);
     const mMarkToday = !sharingMonth || !shareOptions || shareOptions.markToday !== false;
     const mSelectedTypes = sharingMonth && shareOptions ? shareOptions.selectedTypes : null;
     // Every pending recurring task's projected occurrence dates across the
@@ -7261,7 +7314,11 @@ const WeekView = ({
     const wMarkOverdue = !sharingWeek || !shareOptions || shareOptions.markOverdue !== false;
     const wShowCompletedMark = !sharingWeek || !shareOptions || shareOptions.showCompletedMark !== false;
     const wShowCompletedTasks = !sharingWeek || !shareOptions || shareOptions.showCompletedTasks !== false;
-    const wShowFutureRepeats = !sharingWeek || !shareOptions || shareOptions.showFutureRepeats !== false;
+    // Unlike the flags above (which suppress something normal browsing
+    // already shows), projecting future recurring occurrences is purely
+    // additive -- it must default to OFF outside of an actual capture, not
+    // fall back to "on" the way markOverdue/showCompleted*/markToday do.
+    const wShowFutureRepeats = !!(sharingWeek && shareOptions && shareOptions.showFutureRepeats !== false);
     const wMarkToday = !sharingWeek || !shareOptions || shareOptions.markToday !== false;
     const wSelectedTypes = sharingWeek && shareOptions ? shareOptions.selectedTypes : null;
     // Every pending recurring task's projected occurrence dates across the
@@ -7600,7 +7657,7 @@ const WeekView = ({
           // rather than let the surrounding RTL context reorder the digits.
           direction: "ltr"
         }
-      }, shouldShowTimeRange(Number(tk.length)) ? `${tk.time}-${computeEndTime(tk.time, Number(tk.length))}` : tk.time + (shouldShowLengthTag(Number(tk.length)) ? " · " + fmtLengthTag(Number(tk.length)) : "")) : null;
+      }, shouldShowTimeRange(Number(tk.length)) ? `${tk.time}-${computeEndTime(tk.time, Number(tk.length))}` : tk.time + (shouldShowLengthWords(Number(tk.length)) ? " · " + fmtShareLength(Number(tk.length)) : "")) : null;
       const locked = isDragLocked(tk);
       const beingDragged = drag && drag.id === tk.id;
       return /*#__PURE__*/React.createElement("div", {
@@ -8207,8 +8264,40 @@ const ListByDate = ({
         }
       }, new Date(k + "T00:00:00").toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
         weekday: "long"
-      }))), /*#__PURE__*/React.createElement("div", null, sortGroup(groups[k]).map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
+      }))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          // A wrapping row, not CSS multi-column: multi-column fills column
+          // A top-to-bottom before starting column B (and does that in
+          // document order regardless of RTL/LTR), which read wrong for
+          // Hebrew and could leave a lone task or two stacked in one narrow
+          // column with the rest of the row empty. A flex-wrap row lays
+          // tasks out left-to-right (or right-to-left in Hebrew) filling
+          // each row before wrapping to the next, and never reserves more
+          // columns than there are tasks to fill them -- one task is just
+          // one card-width, two are two side by side, and so on, wrapping
+          // only once a row is actually full. The browser decides how many
+          // fit from the available width (a narrow phone naturally lands on
+          // 1 per row, same as before this). No flexDirection override here:
+          // <html dir="rtl"> is already set app-wide for Hebrew, so a plain
+          // row already packs right-to-left on its own -- adding
+          // row-reverse on top of that cancels back out to LTR-looking
+          // order, which was the actual bug.
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 12
+        }
+      }, sortGroup(groups[k]).map((task, i) => /*#__PURE__*/React.createElement("div", {
         key: task.id,
+        style: {
+          // Grows to fill any leftover width in its row (two tasks split
+          // the row's width between them, one task fills the row on its
+          // own) rather than staying pinned to the 320px basis and leaving
+          // a gap -- a row only wraps once there's genuinely no more room.
+          flex: "1 1 320px",
+          maxWidth: "100%",
+          minWidth: 0
+        }
+      }, /*#__PURE__*/React.createElement(TaskCard, {
         task: task,
         justSynced: !!(window.__newTaskIds && window.__newTaskIds.has(task.id)),
         isNew: !!(newlyAddedIds && newlyAddedIds.has(task.id)),
@@ -8221,7 +8310,7 @@ const ListByDate = ({
         isDragging: !!drag && drag.id === task.id,
         delay: i * 0.04,
         hideDateTag: true
-      }))), /*#__PURE__*/React.createElement("div", {
+      })))), /*#__PURE__*/React.createElement("div", {
         style: {
           overflow: "hidden",
           height: activeDate === k || (quickInputs[k] || "").trim() ? "auto" : 0,
@@ -8234,8 +8323,12 @@ const ListByDate = ({
           alignItems: "center",
           gap: 10,
           marginTop: 4,
-          padding: "10px 14px",
-          borderRadius: 10,
+          // Matches TaskCard's own padding/corner radius/min-height, same as
+          // By Type's quick-add row, for visual consistency whenever this
+          // appears next to a task card.
+          padding: "13px 15px",
+          minHeight: 64,
+          borderRadius: 12,
           border: `1.5px dashed ${C.blue}`,
           background: C.card
         }
@@ -8700,10 +8793,39 @@ const ListByType = ({
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         paddingTop: 4,
-        borderRadius: 12
+        borderRadius: 12,
+        // A wrapping row, not CSS multi-column: multi-column fills column A
+        // top-to-bottom before starting column B (and does that in document
+        // order regardless of RTL/LTR), which read wrong for Hebrew and
+        // could leave a lone task or two stacked in one narrow column with
+        // the rest of the row empty. A flex-wrap row lays tasks out left-
+        // to-right (or right-to-left in Hebrew) filling each row before
+        // wrapping to the next, and never reserves more columns than there
+        // are tasks to fill them -- one task is just one card-width, two
+        // are two side by side, and so on, wrapping only once a row is
+        // actually full. The browser decides how many fit from the
+        // available width (a narrow phone naturally lands on 1 per row,
+        // same as before this). No flexDirection override here: <html
+        // dir="rtl"> is already set app-wide for Hebrew, so a plain row
+        // already packs right-to-left on its own -- adding row-reverse on
+        // top of that cancels back out to LTR-looking order, which was the
+        // actual bug.
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 12
       }
-    }, entries.map((task, i) => /*#__PURE__*/React.createElement(TaskCard, {
+    }, entries.map((task, i) => /*#__PURE__*/React.createElement("div", {
       key: task.id,
+      style: {
+        // Grows to fill any leftover width in its row (two tasks split the
+        // row's width between them, one task fills the row on its own)
+        // rather than staying pinned to the 320px basis and leaving a gap --
+        // a row only wraps once there's genuinely no more room.
+        flex: "1 1 320px",
+        maxWidth: "100%",
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement(TaskCard, {
       task: task,
       justSynced: !!(window.__newTaskIds && window.__newTaskIds.has(task.id)),
       onToggle: onToggle,
@@ -8716,15 +8838,23 @@ const ListByType = ({
       delay: i * 0.04,
       hideTypeBadge: true,
       isNew: !!(newlyAddedIds && newlyAddedIds.has(task.id))
-    })), /*#__PURE__*/React.createElement("div", {
+    }))), /*#__PURE__*/React.createElement("div", {
       "data-share-ignore": "true",
       style: {
+        // Same flex-item sizing as each task card above: grows to fill
+        // whatever width is left in its row, or the whole row if it ends up
+        // alone on the last line.
+        flex: "1 1 320px",
+        maxWidth: "100%",
+        minWidth: 0,
         display: "flex",
         alignItems: "center",
         gap: 10,
-        marginTop: 6,
-        padding: "10px 14px",
-        borderRadius: 10,
+        // Matches TaskCard's own padding/corner radius/min-height so the two
+        // line up cleanly when they end up side by side in the same row.
+        padding: "13px 15px",
+        minHeight: 64,
+        borderRadius: 12,
         border: `1.5px dashed ${m.border}`,
         background: C.card,
         boxShadow: "inset 0 1px 3px rgba(0,0,0,0.04)"
@@ -11259,7 +11389,7 @@ const GaugeChart = ({
     y: cy + W * 0.21,
     textAnchor: "middle",
     fontSize: W * 0.155,
-    fontWeight: "800",
+    fontWeight: "750",
     fill: dispColor,
     fontFamily: "inherit",
     style: {
@@ -12936,7 +13066,6 @@ const Dashboard = ({
       onToggle: onToggle,
       onEdit: onEdit,
       onCancel: onCancel,
-      onDelay: onDelay,
       onRename: onRename,
       dragHandlers: upDragHandlersFor(tk, null, null),
       isDragging: !!upDrag && upDrag.id === tk.id,
@@ -13065,7 +13194,6 @@ const Dashboard = ({
         onToggle: onToggle,
         onEdit: onEdit,
         onCancel: onCancel,
-        onDelay: onDelay,
         onRename: onRename,
         dragHandlers: upDragHandlersFor(tk, null, null),
         isDragging: !!upDrag && upDrag.id === tk.id,
@@ -13790,6 +13918,606 @@ const ShareOptionsDialog = ({
     strokeLinecap: "round"
   })), isHe ? "העתק תמונה" : "Copy Photo"))));
 };
+// ── Google Calendar setup guide (reusable content, shown both from the ─────
+// welcome flow and from Settings' "How to connect Google" button) ─────────
+// The app ships with a working Client ID, but Google OAuth Client IDs are
+// tied to the exact origin they were registered for -- so this only actually
+// works out of the box on the domain it was created on. Anyone self-hosting
+// this file elsewhere needs their own, which means a real trip through
+// Google Cloud Console. This walks through that once, and lets them paste
+// the result in.
+const GoogleSetupGuide = ({
+  onConnect,
+  gcalBusy,
+  gcalError,
+  gcalConnected
+}) => {
+  const isHe = getLang() === "he";
+  const [clientIdInput, setClientIdInput] = useState(() => {
+    try {
+      return GCal.usingDefaultClientId() ? "" : GCal.getClientId();
+    } catch {
+      return "";
+    }
+  });
+  const [saved, setSaved] = useState(false);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const usingDefault = (() => {
+    try {
+      return GCal.usingDefaultClientId();
+    } catch {
+      return true;
+    }
+  })();
+  const copyOrigin = () => {
+    try {
+      navigator.clipboard.writeText(origin);
+      appToast(isHe ? "הועתק" : "Copied");
+    } catch {}
+  };
+  const handleSaveClientId = () => {
+    GCal.setClientId(clientIdInput);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+  const steps = [{
+    title: isHe ? "פתח את Google Cloud Console" : "Open Google Cloud Console",
+    body: isHe ? "צור פרויקט חדש (או בחר פרויקט קיים)." : "Create a new project (or pick an existing one).",
+    href: "https://console.cloud.google.com/projectcreate"
+  }, {
+    title: isHe ? "הפעל את Google Calendar API" : "Enable the Google Calendar API",
+    body: isHe ? "בתוך הפרויקט, חפש את Calendar API והפעל אותו." : "Inside that project, search for the Calendar API and enable it.",
+    href: "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
+  }, {
+    title: isHe ? "הגדר את מסך הסכמה (OAuth consent screen)" : "Configure the OAuth consent screen",
+    body: isHe ? "בחר \"External\", הוסף את עצמך כ-Test user, והוסף את ההרשאה calendar." : "Choose \"External\", add yourself as a test user, and add the calendar scope.",
+    href: "https://console.cloud.google.com/apis/credentials/consent"
+  }, {
+    title: isHe ? "צור פרטי גישה מסוג OAuth Client ID" : "Create an OAuth Client ID",
+    body: isHe ? "סוג האפליקציה: Web application. בשדה Authorized JavaScript origins הוסף את הכתובת הזו:" : "Application type: Web application. Under Authorized JavaScript origins, add this exact address:",
+    href: "https://console.cloud.google.com/apis/credentials",
+    showOrigin: true
+  }, {
+    title: isHe ? "העתק את ה-Client ID והדבק אותו למטה" : "Copy the Client ID and paste it below",
+    body: isHe ? "גוגל ייצור מזהה שנראה כמו 123...apps.googleusercontent.com." : "Google will generate an ID that looks like 123....apps.googleusercontent.com."
+  }];
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 14,
+      marginBottom: 18
+    }
+  }, steps.map((s, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      background: C.blueBg,
+      border: `1px solid ${C.blueBorder}`,
+      color: C.blue,
+      fontSize: 12,
+      fontWeight: 700,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0
+    }
+  }, i + 1), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: C.text
+    }
+  }, s.title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      marginTop: 2,
+      lineHeight: 1.4
+    }
+  }, s.body), s.showOrigin && /*#__PURE__*/React.createElement("div", {
+    onClick: copyOrigin,
+    title: isHe ? "לחץ להעתקה" : "Click to copy",
+    style: {
+      marginTop: 6,
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "6px 10px",
+      borderRadius: 8,
+      background: C.card2,
+      border: `1px solid ${C.border2}`,
+      cursor: "pointer",
+      width: "fit-content",
+      maxWidth: "100%"
+    }
+  }, /*#__PURE__*/React.createElement("code", {
+    style: {
+      fontSize: 12,
+      color: C.text,
+      direction: "ltr",
+      unicodeBidi: "embed",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap"
+    }
+  }, origin), /*#__PURE__*/React.createElement(Icon, {
+    name: "copy",
+    size: 12,
+    color: C.text4
+  })), s.href && /*#__PURE__*/React.createElement("a", {
+    href: s.href,
+    target: "_blank",
+    rel: "noopener noreferrer",
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 4,
+      marginTop: 6,
+      fontSize: 12,
+      fontWeight: 600,
+      color: C.blue,
+      textDecoration: "none"
+    }
+  }, isHe ? "פתח" : "Open", " →")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `1px solid ${C.border}`,
+      paddingTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: C.text3,
+      display: "block",
+      marginBottom: 6
+    }
+  }, isHe ? "Client ID משלך" : "Your Client ID"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: clientIdInput,
+    onChange: e => setClientIdInput(e.target.value),
+    placeholder: usingDefault ? isHe ? "לא הוגדר (משתמש בברירת המחדל)" : "Not set (using built-in default)" : GCal.getClientId(),
+    style: {
+      flex: 1,
+      minWidth: 0,
+      padding: "10px 12px",
+      borderRadius: 9,
+      border: `1.5px solid ${C.border}`,
+      background: C.card2,
+      color: C.text,
+      fontSize: 12,
+      direction: "ltr",
+      textAlign: getLang() === "he" ? "right" : "left",
+      outline: "none"
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: handleSaveClientId,
+    style: {
+      padding: "0 16px",
+      borderRadius: 9,
+      border: "none",
+      background: saved ? C.green : "#3B82F6",
+      color: "#fff",
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, saved ? "✓" : isHe ? "שמור" : "Save")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.text4,
+      marginTop: 6
+    }
+  }, isHe ? "השאר ריק כדי להשתמש בברירת המחדל של האפליקציה." : "Leave blank to use the app's built-in default.")), /*#__PURE__*/React.createElement("button", {
+    onClick: onConnect,
+    disabled: gcalBusy || gcalConnected,
+    style: {
+      marginTop: 16,
+      width: "100%",
+      padding: "13px 0",
+      borderRadius: 12,
+      border: "none",
+      background: gcalConnected ? C.greenBg : gcalBusy ? C.border2 : "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: gcalConnected ? C.green : "#fff",
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: gcalBusy || gcalConnected ? "default" : "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8
+    }
+  }, gcalConnected ? isHe ? "✓ מחובר" : "✓ Connected" : gcalBusy ? isHe ? "מתחבר…" : "Connecting…" : isHe ? "התחבר עם Google" : "Sign in with Google"), gcalError && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10,
+      padding: "9px 12px",
+      borderRadius: 9,
+      background: C.redBg,
+      border: `1px solid ${C.redBorder}`,
+      color: C.red,
+      fontSize: 12
+    }
+  }, gcalError)));
+};
+// ── Welcome / onboarding dialog, shown once for a new user ─────────────────
+const WelcomeModal = ({
+  open,
+  onClose,
+  onConnect,
+  gcalBusy,
+  gcalError,
+  gcalConnected,
+  initialStep
+}) => {
+  const isHe = getLang() === "he";
+  const [visible, setVisible] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [step, setStep] = useState("choice"); // "choice" | "google"
+  useEffect(() => {
+    if (open) {
+      setVisible(true);
+      setClosing(false);
+      setStep(initialStep || "choice");
+    } else if (visible) {
+      setClosing(true);
+      setTimeout(() => {
+        setVisible(false);
+        setClosing(false);
+      }, 220);
+    }
+  }, [open]);
+  // Once a Google connection actually succeeds mid-flow, there's nothing left
+  // to do here -- close automatically rather than making the person find
+  // their own way out.
+  useEffect(() => {
+    if (step === "google" && gcalConnected) {
+      const timer = setTimeout(onClose, 900);
+      return () => clearTimeout(timer);
+    }
+  }, [step, gcalConnected]);
+  if (!visible) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 2200,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20,
+      opacity: closing ? 0 : 1,
+      transition: "opacity 0.2s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      inset: 0,
+      background: "rgba(0,0,0,0.5)",
+      backdropFilter: "blur(6px)",
+      WebkitBackdropFilter: "blur(6px)"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      background: "var(--card)",
+      borderRadius: 22,
+      padding: 26,
+      width: "100%",
+      maxWidth: 420,
+      maxHeight: "88vh",
+      overflowY: "auto",
+      boxShadow: "0 24px 64px rgba(0,0,0,0.3)",
+      border: `1px solid ${C.border}`,
+      transform: closing ? "scale(0.96)" : "scale(1)",
+      transition: "transform 0.2s ease"
+    }
+  }, step === "choice" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 52,
+      height: 52,
+      borderRadius: 14,
+      background: "linear-gradient(135deg,#3B82F6,#2563EB)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "28",
+    height: "28",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "#fff",
+    strokeWidth: "2.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("polyline", {
+    points: "20 6 9 17 4 12"
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 750,
+      color: C.text,
+      marginBottom: 6
+    }
+  }, isHe ? "ברוכים הבאים ל-TaskIt" : "Welcome to TaskIt"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.text3,
+      lineHeight: 1.5,
+      marginBottom: 22
+    }
+  }, isHe ? "איך תרצו לעבוד? אפשר להתחיל ב\"אופליין\" ולהתחבר ל-Google מאוחר יותר מההגדרות בכל שלב." : "How would you like to work? You can start offline and connect Google later from Settings at any time."), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setStep("google"),
+    style: {
+      width: "100%",
+      padding: "14px 16px",
+      borderRadius: 14,
+      border: "none",
+      background: "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: "#fff",
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20
+    }
+  }, "🔗"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1,
+      textAlign: isHe ? "right" : "left"
+    }
+  }, isHe ? "התחברות עם Google" : "Sign in with Google"), /*#__PURE__*/React.createElement(Icon, {
+    name: isHe ? "chevLeft" : "chevRight",
+    size: 16,
+    color: "#fff"
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    style: {
+      width: "100%",
+      padding: "14px 16px",
+      borderRadius: 14,
+      border: `1.5px solid ${C.border2}`,
+      background: "transparent",
+      color: C.text,
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20
+    }
+  }, "📴"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1,
+      textAlign: isHe ? "right" : "left"
+    }
+  }, isHe ? "המשך אופליין" : "Continue offline"))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      marginBottom: 6
+    }
+  }, initialStep !== "google" && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setStep("choice"),
+    style: {
+      border: "none",
+      background: "transparent",
+      cursor: "pointer",
+      display: "flex",
+      padding: 2,
+      color: C.text3
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: isHe ? "chevRight" : "chevLeft",
+    size: 18,
+    color: "currentColor"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 750,
+      color: C.text
+    }
+  }, isHe ? "חיבור ל-Google" : "Connect Google")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      lineHeight: 1.5,
+      marginBottom: 18
+    }
+  }, isHe ? "כדי להתחבר צריך פרטי גישה משלכם מ-Google Cloud (חד פעמי, כמה דקות)." : "Connecting needs your own Google Cloud credentials (one-time, a few minutes)."), /*#__PURE__*/React.createElement(GoogleSetupGuide, {
+    onConnect: onConnect,
+    gcalBusy: gcalBusy,
+    gcalError: gcalError,
+    gcalConnected: gcalConnected
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    style: {
+      width: "100%",
+      marginTop: 14,
+      padding: "11px 0",
+      borderRadius: 12,
+      border: "none",
+      background: "transparent",
+      color: C.text4,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, isHe ? "דלג לעת עתה, אמשיך אופליין" : "Skip for now, continue offline"))));
+};
+// ── Holiday calendar offer, as a proper dialog instead of an on-page banner ──
+const HolidayPromptModal = ({
+  open,
+  prefIL,
+  prefIntl,
+  onAcceptIL,
+  onDeclineIL,
+  onAcceptIntl,
+  onDeclineIntl
+}) => {
+  const isHe = getLang() === "he";
+  const [visible, setVisible] = useState(false);
+  const [closing, setClosing] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setVisible(true);
+      setClosing(false);
+    } else if (visible) {
+      setClosing(true);
+      setTimeout(() => {
+        setVisible(false);
+        setClosing(false);
+      }, 220);
+    }
+  }, [open]);
+  if (!visible) return null;
+  const questions = [...(prefIL === null ? [{
+    key: "il",
+    emoji: "✡️",
+    label: isHe ? "חגים וימי זיכרון ישראליים" : "Israeli holidays & memorial days",
+    onYes: onAcceptIL,
+    onNo: onDeclineIL
+  }] : []), ...(prefIntl === null ? [{
+    key: "intl",
+    emoji: "🌍",
+    label: isHe ? "חגים בינלאומיים" : "International holidays",
+    onYes: onAcceptIntl,
+    onNo: onDeclineIntl
+  }] : [])];
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 2100,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20,
+      opacity: closing ? 0 : 1,
+      transition: "opacity 0.2s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      inset: 0,
+      background: "rgba(0,0,0,0.4)",
+      backdropFilter: "blur(6px)",
+      WebkitBackdropFilter: "blur(6px)"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      background: "var(--card)",
+      borderRadius: 20,
+      padding: 24,
+      width: "100%",
+      maxWidth: 380,
+      boxShadow: "0 24px 64px rgba(0,0,0,0.25)",
+      border: `1px solid ${C.border}`,
+      transform: closing ? "scale(0.96)" : "scale(1)",
+      transition: "transform 0.2s ease"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 750,
+      color: C.text,
+      marginBottom: 4
+    }
+  }, isHe ? "לוח שנה של חגים" : "Holiday calendar"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.text3,
+      marginBottom: 18,
+      lineHeight: 1.5
+    }
+  }, isHe ? "להוסיף חגים אוטומטית ללוח השנה? אפשר לשנות את זה בכל שלב מההגדרות." : "Add holidays to your calendar automatically? You can change this later from Settings."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }
+  }, questions.map(q => /*#__PURE__*/React.createElement("div", {
+    key: q.key,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      padding: "12px 14px",
+      borderRadius: 12,
+      background: C.amberBg,
+      border: `1px solid ${C.amberBorder}`
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 18,
+      flexShrink: 0
+    }
+  }, q.emoji), /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1,
+      minWidth: 0,
+      fontSize: 13,
+      fontWeight: 600,
+      color: C.text
+    }
+  }, q.label), /*#__PURE__*/React.createElement("button", {
+    onClick: q.onNo,
+    style: {
+      padding: "6px 12px",
+      borderRadius: 8,
+      border: `1px solid ${C.border2}`,
+      background: "transparent",
+      color: C.text3,
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, isHe ? "לא" : "No"), /*#__PURE__*/React.createElement("button", {
+    onClick: q.onYes,
+    style: {
+      padding: "6px 12px",
+      borderRadius: 8,
+      border: "none",
+      background: C.amber,
+      color: "#fff",
+      fontSize: 12,
+      fontWeight: 700,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, isHe ? "כן" : "Yes"))))));
+};
 const SettingsModal = ({
   open,
   onClose,
@@ -13816,6 +14544,7 @@ const SettingsModal = ({
   gcalScanMsg,
   onConnectGCal,
   onDisconnectGCal,
+  onOpenGoogleSetup,
   onScanGCal,
   gcalStats,
   gcalReady,
@@ -14405,7 +15134,24 @@ const SettingsModal = ({
     ? (isHe ? "מעדכן…" : "Working…")
     : gcalConnected
       ? (isHe ? "נתק" : "Disconnect")
-      : (isHe ? "חבר" : "Connect"))), gcalConnected && /*#__PURE__*/React.createElement(Row, {
+      : (isHe ? "חבר" : "Connect"))), !gcalConnected && /*#__PURE__*/React.createElement(Row, {
+    icon: "❓",
+    label: isHe ? "איך מתחברים ל-Google?" : "How to connect Google",
+    sub: isHe ? "מדריך הגדרה שלב-אחר-שלב" : "Step-by-step setup guide"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onOpenGoogleSetup,
+    style: {
+      padding: "6px 14px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, isHe ? "הצג" : "Show")), gcalConnected && /*#__PURE__*/React.createElement(Row, {
     icon: gcalStats && gcalStats.pending === 0 && gcalStats.failed === 0 ? "✅" : "🔄",
     label: isHe ? "סריקה וסנכרון" : "Scan & sync",
     sub: !gcalReady
@@ -16305,7 +17051,19 @@ const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 const GCal = (() => {
-  const CLIENT_ID = "524595139539-bfgctn3aak51v38ua94m553v44ppg2ve.apps.googleusercontent.com";
+  const DEFAULT_CLIENT_ID = "524595139539-bfgctn3aak51v38ua94m553v44ppg2ve.apps.googleusercontent.com";
+  const LS_CLIENT_ID = "taskflow_gcal_client_id";
+  // The built-in Client ID only works on the exact origin it was registered
+  // for in Google Cloud -- anyone self-hosting this app on a different
+  // domain needs to supply their own, created following the in-app setup
+  // guide. A blank/missing override just falls back to the built-in one.
+  let CLIENT_ID = (() => {
+    try {
+      return localStorage.getItem(LS_CLIENT_ID) || DEFAULT_CLIENT_ID;
+    } catch {
+      return DEFAULT_CLIENT_ID;
+    }
+  })();
   const SCOPE = "https://www.googleapis.com/auth/calendar";
   const CAL_PREFIX = "TaskIt · ";
   const API = "https://www.googleapis.com/calendar/v3";
@@ -17225,7 +17983,21 @@ const GCal = (() => {
     eventToTaskPatch, ensureCalendarId, shouldSync, syncSkipReason,
     taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds,
     listForeignCalendars, pullForeign, patchForeignEvent, deleteForeignEvent, foreignTaskId,
-    isHolidayTask, eventMatchesTask
+    isHolidayTask, eventMatchesTask,
+    // Custom Client ID, for anyone self-hosting this app on an origin the
+    // built-in one isn't registered for (see the in-app Google setup guide).
+    getClientId: () => CLIENT_ID,
+    usingDefaultClientId: () => CLIENT_ID === DEFAULT_CLIENT_ID,
+    setClientId: id => {
+      const trimmed = (id || "").trim();
+      CLIENT_ID = trimmed || DEFAULT_CLIENT_ID;
+      try {
+        if (trimmed) localStorage.setItem(LS_CLIENT_ID, trimmed);else localStorage.removeItem(LS_CLIENT_ID);
+      } catch {}
+      // Force the next connect() to build a fresh token client against the
+      // new ID -- the cached one (if any) was initialized with the old one.
+      tokenClient = null;
+    }
   };
 })();
 
@@ -17428,6 +18200,24 @@ function App() {
   const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL));
   const [prefLookahead, setPrefLookahead] = useState(() => getPref(PREF_LOOKAHEAD) !== "no"); // default ON
   const [prefGcalForeign, setPrefGcalForeign] = useState(() => getPref(PREF_GCAL_FOREIGN) !== "no"); // default ON
+  // New-user welcome dialog (offline vs Google) -- shown once, the very
+  // first time the app runs on a device.
+  const [showWelcome, setShowWelcome] = useState(() => {
+    try {
+      return !localStorage.getItem(ONBOARDED_KEY);
+    } catch {
+      return false;
+    }
+  });
+  const dismissWelcome = () => {
+    try {
+      localStorage.setItem(ONBOARDED_KEY, "1");
+    } catch {}
+    setShowWelcome(false);
+  };
+  // Reopens the same dialog's Google step from Settings, for anyone who
+  // chose offline at first and changes their mind later.
+  const [showGoogleSetup, setShowGoogleSetup] = useState(false);
   const [online, setOnline] = useState(() => navigator.onLine);
 
   // ── Google Calendar sync state ──────────────────────────────────────────
@@ -20027,99 +20817,6 @@ function App() {
         marginTop: 3
       }
     }, s.label)))));
-  })(), (() => {
-    const isHe = getLang() === "he";
-    const prompts = [];
-    if (prefIL === null) prompts.push({
-      key: "il",
-      emoji: "✡️",
-      en: "Add Israeli holidays to your calendar?",
-      he: "להוסיף חגים וימי זיכרון ישראליים ללוח השנה?",
-      onYes: acceptIL,
-      onNo: declineIL,
-      color: dark ? "#C4853A" : C.amber,
-      bg: dark ? "#2A1F0F" : C.amberBg,
-      border: dark ? "#5C3D18" : C.amberBorder,
-      btnBg: dark ? "#7A5228" : C.amber,
-      btnColor: dark ? "#F0D9B5" : "#fff"
-    });
-    if (prefIntl === null) prompts.push({
-      key: "intl",
-      emoji: "🌍",
-      en: "Add international holidays to your calendar?",
-      he: "להוסיף חגים בינלאומיים ללוח השנה?",
-      onYes: acceptIntl,
-      onNo: declineIntl,
-      color: dark ? "#C4853A" : C.amber,
-      bg: dark ? "#2A1F0F" : C.amberBg,
-      border: dark ? "#5C3D18" : C.amberBorder,
-      btnBg: dark ? "#7A5228" : C.amber,
-      btnColor: dark ? "#F0D9B5" : "#fff"
-    });
-    if (!prompts.length) return null;
-    return /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        marginBottom: 16
-      }
-    }, prompts.map(p => /*#__PURE__*/React.createElement("div", {
-      key: p.key,
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "12px 14px",
-        borderRadius: 12,
-        background: p.bg,
-        border: `1px solid ${p.border}`,
-        animation: "fadeIn 0.3s ease"
-      }
-    }, p.icon ? p.icon : /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 20,
-        flexShrink: 0
-      }
-    }, p.emoji), /*#__PURE__*/React.createElement("span", {
-      style: {
-        flex: 1,
-        fontSize: 13,
-        fontWeight: 500,
-        color: C.text,
-        lineHeight: 1.4
-      }
-    }, isHe ? p.he : p.en), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 6,
-        flexShrink: 0
-      }
-    }, /*#__PURE__*/React.createElement("button", {
-      onClick: p.onYes,
-      style: {
-        padding: "5px 14px",
-        borderRadius: 7,
-        border: "none",
-        background: p.btnBg || p.color,
-        color: p.btnColor || "#fff",
-        fontSize: 12,
-        fontWeight: 700,
-        cursor: "pointer"
-      }
-    }, isHe ? "כן" : "Yes"), /*#__PURE__*/React.createElement("button", {
-      onClick: p.onNo,
-      style: {
-        padding: "5px 14px",
-        borderRadius: 7,
-        border: `1px solid ${p.border}`,
-        background: dark ? p.bg : "transparent",
-        color: p.color,
-        fontSize: 12,
-        fontWeight: 600,
-        cursor: "pointer"
-      }
-    }, isHe ? "לא" : "No")))));
   })(), /*#__PURE__*/React.createElement("div", {
     key: slideKey.current,
     style: {
@@ -20266,6 +20963,29 @@ function App() {
     surface: shareDialogSurface,
     availableTypes: shareAvailableTypes,
     busy: shareBusy
+  }), /*#__PURE__*/React.createElement(WelcomeModal, {
+    open: showWelcome,
+    onClose: dismissWelcome,
+    onConnect: handleConnectGCal,
+    gcalBusy: gcalBusy,
+    gcalError: gcalError,
+    gcalConnected: gcalConnected
+  }), /*#__PURE__*/React.createElement(WelcomeModal, {
+    open: showGoogleSetup,
+    onClose: () => setShowGoogleSetup(false),
+    onConnect: handleConnectGCal,
+    gcalBusy: gcalBusy,
+    gcalError: gcalError,
+    gcalConnected: gcalConnected,
+    initialStep: "google"
+  }), /*#__PURE__*/React.createElement(HolidayPromptModal, {
+    open: !showWelcome && (prefIL === null || prefIntl === null),
+    prefIL: prefIL,
+    prefIntl: prefIntl,
+    onAcceptIL: acceptIL,
+    onDeclineIL: declineIL,
+    onAcceptIntl: acceptIntl,
+    onDeclineIntl: declineIntl
   }), /*#__PURE__*/React.createElement(SettingsModal, {
     open: dataModalOpen,
     onClose: () => setDataModalOpen(false),
@@ -20291,6 +21011,7 @@ function App() {
     gcalScanMsg: gcalScanMsg,
     onConnectGCal: handleConnectGCal,
     onDisconnectGCal: handleDisconnectGCal,
+    onOpenGoogleSetup: () => setShowGoogleSetup(true),
     onScanGCal: handleScanGCal,
     gcalStats: gcalStats,
     gcalReady: gcalReady,
