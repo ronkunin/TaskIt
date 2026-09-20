@@ -1448,6 +1448,38 @@ const countPendingOccurrences = (task, winStart, winEnd) => {
 };
 
 // Simple occurrence: a task occurs on its date only
+// Like countPendingOccurrences, but returns the actual date strings instead
+// of just a count -- used by the week/month share photo's "show future
+// repeated tasks" option to know which day cells a pending recurring task's
+// projected future occurrences fall on.
+const occurrenceDatesInRange = (task, winStart, winEnd) => {
+  if (!task.date || !isRecurring(task) || !isPending(task)) return [];
+  const taskDate = new Date(task.date + "T00:00:00");
+  const ws = new Date(winStart);
+  ws.setHours(0, 0, 0, 0);
+  const we = new Date(winEnd);
+  we.setHours(23, 59, 59, 999);
+  const dates = [];
+  const MAX = 500;
+  let i = 0;
+  if (task.recur === "month" || task.recur === "year") {
+    let d = new Date(taskDate);
+    while (d <= we && i < MAX) {
+      if (d >= ws) dates.push(localDs(d));
+      if (task.recur === "month") d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());else d = new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());
+      i++;
+    }
+  } else {
+    const interval = (parseInt(task.recur) || 1) * 864e5;
+    let d = new Date(taskDate);
+    while (d <= we && i < MAX) {
+      if (d >= ws) dates.push(localDs(d));
+      d = new Date(d.getTime() + interval);
+      i++;
+    }
+  }
+  return dates;
+};
 const occursOnDate = (task, ds) => {
   if (!task.date) return false;
   return task.date === ds;
@@ -2706,7 +2738,24 @@ const TaskCard = ({
       name: "calendar",
       size: 10,
       color: "#94A3B8"
-    }), " ", fmtDate(task.date)), task.time && /*#__PURE__*/React.createElement("span", {
+    }), " ", fmtDate(task.date)), task.time && shouldShowTimeRange(Number(task.length)) && /*#__PURE__*/React.createElement("span", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 3,
+        fontSize: 11,
+        color: C.text3
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "clock",
+      size: 10,
+      color: "#94A3B8"
+    }), " ", /*#__PURE__*/React.createElement("span", {
+      style: {
+        direction: "ltr",
+        unicodeBidi: "embed"
+      }
+    }, `${task.time}-${computeEndTime(task.time, Number(task.length))}`)), task.time && !shouldShowTimeRange(Number(task.length)) && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -3019,6 +3068,15 @@ const fmtLengthTag = mins => {
     m = mins % 60;
   if (h === 0) return getLang() === "he" ? `${m} דק׳` : `${m}min`;
   return `${h}:${String(m).padStart(2, "0")}`;
+};
+// A task 3h or longer shows its end time instead of a length tag -- the tag
+// alone ("3:00", "4:30"...) reads ambiguously at that size, while a time
+// range answers "when does this actually end" directly.
+const shouldShowTimeRange = mins => Number.isFinite(mins) && mins >= 180;
+const computeEndTime = (startTime, mins) => {
+  const [h, m] = startTime.split(":").map(Number);
+  const total = ((h * 60 + m + mins) % 1440 + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 };
 // Effective length of a task in minutes (defaults to 1 hour when unset)
 const getTaskLength = task => {
@@ -3636,6 +3694,23 @@ const loadHtml2Canvas = () => {
 // -- a slow or missing CDN, html2canvas throwing on some CSS it doesn't
 // understand, a rejected clipboard write -- always ends in a toast, never
 // silence.
+// Temporarily forces the app's color theme for the duration of a share
+// capture, regardless of the person's actual dark/light mode setting, then
+// restores whatever was there before. Light mode is the absence of the
+// data-theme attribute, not an explicit value, so restoring means putting
+// the attribute back exactly as found (present or not) rather than always
+// setting or clearing it.
+const withForcedShareTheme = async (bright, fn) => {
+  const root = document.documentElement;
+  const hadAttr = root.hasAttribute("data-theme");
+  const prevValue = root.getAttribute("data-theme");
+  if (bright) root.removeAttribute("data-theme");else root.setAttribute("data-theme", "dark");
+  try {
+    await fn();
+  } finally {
+    if (hadAttr) root.setAttribute("data-theme", prevValue);else root.removeAttribute("data-theme");
+  }
+};
 const shareElementAsImage = async (el, filename, frameOptions) => {
   if (!el) return;
   const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("share-image-timeout")), ms))]);
@@ -5331,17 +5406,19 @@ const MonthView = ({
     setSharingMonth(true);
     try {
       appToast(t("sharePreparing"));
-      // Always flip captureWide before snapshotting -- not just on a narrow
-      // phone screen. This is what forces the landscape capture width, hides
-      // off-month task chips, and switches off the "today" highlight, and
-      // all three matter on a wide screen just as much as a narrow one.
-      await new Promise(resolve => {
-        setCaptureWide(true);
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
-      });
-      await shareElementAsImage(monthWideCaptureRef.current, `${getLang() === "he" ? "חודש" : "month"}.png`, {
-        title: getMonths()[month],
-        titleAccent: String(year)
+      await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        // Always flip captureWide before snapshotting -- not just on a narrow
+        // phone screen. This is what forces the landscape capture width, hides
+        // off-month task chips, and switches off the "today" highlight, and
+        // all three matter on a wide screen just as much as a narrow one.
+        await new Promise(resolve => {
+          setCaptureWide(true);
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+        await shareElementAsImage(monthWideCaptureRef.current, `${getLang() === "he" ? "חודש" : "month"}.png`, {
+          title: getMonths()[month],
+          titleAccent: String(year)
+        });
       });
     } finally {
       setCaptureWide(false);
@@ -6308,20 +6385,45 @@ const MonthView = ({
     // Share dialog options only take effect while actually capturing --
     // normal on-screen browsing always shows everything, fully marked.
     const mMarkOverdue = !sharingMonth || !shareOptions || shareOptions.markOverdue !== false;
-    const mMarkCompleted = !sharingMonth || !shareOptions || shareOptions.markCompleted !== false;
+    const mShowCompletedMark = !sharingMonth || !shareOptions || shareOptions.showCompletedMark !== false;
+    const mShowCompletedTasks = !sharingMonth || !shareOptions || shareOptions.showCompletedTasks !== false;
+    const mShowFutureRepeats = !sharingMonth || !shareOptions || shareOptions.showFutureRepeats !== false;
+    const mMarkToday = !sharingMonth || !shareOptions || shareOptions.markToday !== false;
     const mSelectedTypes = sharingMonth && shareOptions ? shareOptions.selectedTypes : null;
+    // Every pending recurring task's projected occurrence dates across the
+    // visible month (the current month only, matching the off-month-tasks-
+    // hidden rule below), computed once -- used to place a "virtual" copy of
+    // the task on each future date it lands on, same as the pending-tile/
+    // chart look-ahead calculation does elsewhere.
+    const mFutureByDate = mShowFutureRepeats ? (() => {
+      const map = {};
+      const monthStart = new Date(year, month, 1);
+      const monthEnd = new Date(year, month + 1, 0);
+      tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tk => {
+        occurrenceDatesInRange(tk, monthStart, monthEnd).forEach(ds => {
+          if (ds === tk.date) return; // the real, stored occurrence is added normally
+          (map[ds] || (map[ds] = [])).push({
+            ...tk,
+            date: ds,
+            _projected: true
+          });
+        });
+      });
+      return map;
+    })() : {};
     return cells.map((cell, i) => {
     const ds = localDs(cell.date);
     const isT = !cell.other && cell.date.toDateString() === realToday.toDateString();
     // Kept separate from `isT` (used above for task inclusion, e.g. pulling an
     // undated done/cancelled task into today's cell) so the share capture
     // only turns off the *visual* "today" emphasis, not the actual content.
-    const showToday = isT && !captureWide;
+    // The "Mark today" share option can put that emphasis back for the photo.
+    const showToday = isT && (!captureWide || mMarkToday);
     const isCellPast = !cell.other && isCurrentMonth && cell.date < realToday;
     // A shared month image is meant to represent this month only -- tasks
     // peeking in from the tail end of the previous/next month just add
     // noise, so they're left off the grid entirely while capturing.
-    const dayTasks = cell.other && captureWide ? [] : sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))).filter(task => !mSelectedTypes || mSelectedTypes.has(task.type || "regular")).filter(task => mMarkCompleted || !(isDone(task) || isCancelled(task))));
+    const dayTasks = cell.other && captureWide ? [] : sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))).concat(mFutureByDate[ds] || []).filter(task => !mSelectedTypes || mSelectedTypes.has(task.type || "regular")).filter(task => mShowCompletedTasks || !(isDone(task) || isCancelled(task))));
     const isDropDayW = dragDs === ds;
     const isRipple = rippleDs === ds;
     return /*#__PURE__*/React.createElement("div", {
@@ -6387,7 +6489,7 @@ const MonthView = ({
       dragHandlers: monthDragHandlers(tk),
       isDragging: !!drag && drag.id === tk.id,
       markOverdue: mMarkOverdue,
-      markCompleted: mMarkCompleted
+      markCompleted: mShowCompletedMark
     })), dayTasks.length > 3 && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
@@ -6907,28 +7009,30 @@ const WeekView = ({
     setSharingWeek(true);
     try {
       appToast(t("sharePreparing"));
-      // Always flip captureWide before snapshotting -- not just on a narrow
-      // phone screen. Besides forcing the wide (desktop) layout when needed,
-      // this is also what switches off the "today" blue header highlight and
-      // the red current-time line (see showToday/nowLine above), and that
-      // suppression matters just as much on a wide screen as on a narrow
-      // one. Wait a couple of frames for the browser to actually paint it.
-      await new Promise(resolve => {
-        setCaptureWide(true);
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
-      });
-      // Same date-range text the in-app header shows above the grid (see
-      // navBar below), reused here as the share image's title row.
-      const weekTitle = days[0].toLocaleDateString(t("dateLocale"), {
-        month: "short",
-        day: "numeric"
-      }) + " - " + days[6].toLocaleDateString(t("dateLocale"), {
-        month: "short",
-        day: "numeric",
-        year: "numeric"
-      });
-      await shareElementAsImage(weekCaptureRef.current, `${getLang() === "he" ? "שבוע" : "week"}.png`, {
-        title: weekTitle
+      await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        // Always flip captureWide before snapshotting -- not just on a narrow
+        // phone screen. Besides forcing the wide (desktop) layout when needed,
+        // this is also what switches off the "today" blue header highlight and
+        // the red current-time line (see showToday/nowLine above), and that
+        // suppression matters just as much on a wide screen as on a narrow
+        // one. Wait a couple of frames for the browser to actually paint it.
+        await new Promise(resolve => {
+          setCaptureWide(true);
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+        // Same date-range text the in-app header shows above the grid (see
+        // navBar below), reused here as the share image's title row.
+        const weekTitle = days[0].toLocaleDateString(t("dateLocale"), {
+          month: "short",
+          day: "numeric"
+        }) + " - " + days[6].toLocaleDateString(t("dateLocale"), {
+          month: "short",
+          day: "numeric",
+          year: "numeric"
+        });
+        await shareElementAsImage(weekCaptureRef.current, `${getLang() === "he" ? "שבוע" : "week"}.png`, {
+          title: weekTitle
+        });
       });
     } finally {
       setCaptureWide(false);
@@ -7155,12 +7259,33 @@ const WeekView = ({
     // Share dialog options only take effect while actually capturing --
     // normal on-screen browsing always shows everything, fully marked.
     const wMarkOverdue = !sharingWeek || !shareOptions || shareOptions.markOverdue !== false;
-    const wMarkCompleted = !sharingWeek || !shareOptions || shareOptions.markCompleted !== false;
+    const wShowCompletedMark = !sharingWeek || !shareOptions || shareOptions.showCompletedMark !== false;
+    const wShowCompletedTasks = !sharingWeek || !shareOptions || shareOptions.showCompletedTasks !== false;
+    const wShowFutureRepeats = !sharingWeek || !shareOptions || shareOptions.showFutureRepeats !== false;
+    const wMarkToday = !sharingWeek || !shareOptions || shareOptions.markToday !== false;
     const wSelectedTypes = sharingWeek && shareOptions ? shareOptions.selectedTypes : null;
+    // Every pending recurring task's projected occurrence dates across the
+    // whole visible week, computed once rather than per day -- used below to
+    // place a "virtual" copy of the task on each future date it lands on,
+    // same as the pending-tile/chart look-ahead calculation does elsewhere.
+    const wFutureByDate = wShowFutureRepeats ? (() => {
+      const map = {};
+      tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tk => {
+        occurrenceDatesInRange(tk, days[0], days[6]).forEach(ds => {
+          if (ds === tk.date) return; // the real, stored occurrence is added normally
+          (map[ds] || (map[ds] = [])).push({
+            ...tk,
+            date: ds,
+            _projected: true
+          });
+        });
+      });
+      return map;
+    })() : {};
     const dayData = days.map(day => {
       const ds = localDs(day);
       const isT = day.toDateString() === TODAY.toDateString();
-      const all = tasks.filter(tk => tk.date === ds || isT && !tk.date && (isDone(tk) || isCancelled(tk))).filter(tk => !wSelectedTypes || wSelectedTypes.has(tk.type || "regular")).filter(tk => wMarkCompleted || !(isDone(tk) || isCancelled(tk)));
+      const all = tasks.filter(tk => tk.date === ds || isT && !tk.date && (isDone(tk) || isCancelled(tk))).concat(wFutureByDate[ds] || []).filter(tk => !wSelectedTypes || wSelectedTypes.has(tk.type || "regular")).filter(tk => wShowCompletedTasks || !(isDone(tk) || isCancelled(tk)));
       const untimed = sortForByType(all.filter(tk => !tk.time));
       const timed = layoutDayTasks(all.filter(tk => !!tk.time));
       return {
@@ -7204,11 +7329,11 @@ const WeekView = ({
       ds,
       isT
     }, i) => {
-      // While a share-image capture is in flight, the "today" emphasis (blue
-      // header highlight) is switched off -- a saved/shared image has no
-      // "now" once it's out of the app, so singling out one day just reads as
-      // a stray highlight rather than useful information.
-      const showToday = isT && !captureWide;
+      // During a share-image capture, the "today" emphasis (blue header
+      // highlight) is off by default -- a saved/shared image has no "now"
+      // once it's out of the app, so singling out one day can read as a
+      // stray highlight. The "Mark today" share option puts it back.
+      const showToday = isT && (!captureWide || wMarkToday);
       const dow = /*#__PURE__*/React.createElement("div", {
         style: {
           fontSize: 10,
@@ -7280,8 +7405,8 @@ const WeekView = ({
 
     // --- no-time tray ---
     const untimedChip = tk => {
-      const donOnDay = wMarkCompleted && isDone(tk),
-        cancelOnDay = wMarkCompleted && isCancelled(tk),
+      const donOnDay = wShowCompletedMark && isDone(tk),
+        cancelOnDay = wShowCompletedMark && isCancelled(tk),
         over = wMarkOverdue && !donOnDay && !cancelOnDay && isOverdue(tk),
         m = getTypeMeta(tk.type);
       const locked = isDragLocked(tk);
@@ -7327,10 +7452,10 @@ const WeekView = ({
       untimed,
       isT
     }, i) => {
-      // Same suppression as the header's "today" highlight and the now-line
-      // below: a shared image has no "right now", so this faint today tint
-      // shouldn't single out one column in the exported PNG either.
-      const showToday = isT && !captureWide;
+      // Same as the header's "today" highlight above: off by default during
+      // capture (a shared image has no "right now"), but the "Mark today"
+      // share option brings this faint column tint back too.
+      const showToday = isT && (!captureWide || wMarkToday);
       const isAllDayTarget = !!drag && !drag.outside && drag.payload && drag.payload.allDay && drag.payload.ds === ds;
       return /*#__PURE__*/React.createElement("div", {
         key: i,
@@ -7432,8 +7557,8 @@ const WeekView = ({
       lane,
       laneCount
     }, idx = 0) => {
-      const donOnDay = wMarkCompleted && isDone(tk),
-        cancelOnDay = wMarkCompleted && isCancelled(tk),
+      const donOnDay = wShowCompletedMark && isDone(tk),
+        cancelOnDay = wShowCompletedMark && isCancelled(tk),
         over = wMarkOverdue && !donOnDay && !cancelOnDay && isOverdue(tk),
         m = getTypeMeta(tk.type);
       const top = (start - DAY_START * 60) * pxPerMin;
@@ -7469,9 +7594,13 @@ const WeekView = ({
           marginTop: 1,
           whiteSpace: "nowrap",
           overflow: "hidden",
-          textOverflow: "ellipsis"
+          textOverflow: "ellipsis",
+          // This line is time/duration info only (never the task name), so
+          // it's always safe -- and in Hebrew, necessary -- to force LTR
+          // rather than let the surrounding RTL context reorder the digits.
+          direction: "ltr"
         }
-      }, tk.time + (shouldShowLengthTag(Number(tk.length)) ? " · " + fmtLengthTag(Number(tk.length)) : "")) : null;
+      }, shouldShowTimeRange(Number(tk.length)) ? `${tk.time}-${computeEndTime(tk.time, Number(tk.length))}` : tk.time + (shouldShowLengthTag(Number(tk.length)) ? " · " + fmtLengthTag(Number(tk.length)) : "")) : null;
       const locked = isDragLocked(tk);
       const beingDragged = drag && drag.id === tk.id;
       return /*#__PURE__*/React.createElement("div", {
@@ -7518,14 +7647,14 @@ const WeekView = ({
       isT,
       timed
     }, i) => {
-      // Same suppression as the header and the untimed row above: a shared
-      // image has no "right now", so neither the now-line nor the faint
-      // today column tint should single one day out in the exported PNG.
-      const showToday = isT && !captureWide;
-      // Suppressed during a share-image capture -- "right now" is a
-      // moment-in-time indicator that stops being meaningful the instant the
-      // image is saved, so it's left off the shared PNG entirely.
-      const nowLine = showToday && nowMinutes >= DAY_START * 60 && nowMinutes <= DAY_END * 60 ? /*#__PURE__*/React.createElement("div", {
+      // Same as the header and the untimed row above: off by default during
+      // capture, restored by the "Mark today" share option.
+      const showToday = isT && (!captureWide || wMarkToday);
+      // Suppressed during a share-image capture regardless of "Mark today" --
+      // "right now" is a moment-in-time indicator that stops being meaningful
+      // the instant the image is saved, so it's left off the shared PNG
+      // entirely even when today's date is otherwise being emphasized.
+      const nowLine = isT && !captureWide && nowMinutes >= DAY_START * 60 && nowMinutes <= DAY_END * 60 ? /*#__PURE__*/React.createElement("div", {
         style: {
           position: "absolute",
           top: (nowMinutes - DAY_START * 60) * pxPerMin,
@@ -8241,14 +8370,16 @@ const ListByType = ({
     setSharingType(true);
     try {
       appToast(t("sharePreparing"));
-      // Wait a couple of frames for the capture-only expansion (every
-      // section forced open) and padding/background below -- plus the
-      // loading overlay covering the screen -- to actually paint before
-      // snapshotting.
-      await new Promise(resolve => {
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        // Wait a couple of frames for the capture-only expansion (every
+        // section forced open) and padding/background below -- plus the
+        // loading overlay covering the screen -- to actually paint before
+        // snapshotting.
+        await new Promise(resolve => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+        await shareElementAsImage(typeCaptureRef.current, `${getLang() === "he" ? "לפי-סוג" : "by-type"}.png`);
       });
-      await shareElementAsImage(typeCaptureRef.current, `${getLang() === "he" ? "לפי-סוג" : "by-type"}.png`);
     } finally {
       setSharingType(false);
     }
@@ -12085,13 +12216,15 @@ const Dashboard = ({
     setSharingUpNext(true);
     try {
       appToast(t("sharePreparing"));
-      // Wait a couple of frames for the capture-only padding/background
-      // above (and the loading overlay covering the screen) to actually
-      // paint before snapshotting.
-      await new Promise(resolve => {
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        // Wait a couple of frames for the capture-only padding/background
+        // above (and the loading overlay covering the screen) to actually
+        // paint before snapshotting.
+        await new Promise(resolve => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        });
+        await shareElementAsImage(upNextCaptureRef.current, `${getLang() === "he" ? "המשימות-הקרובות" : "up-next"}.png`);
       });
-      await shareElementAsImage(upNextCaptureRef.current, `${getLang() === "he" ? "המשימות-הקרובות" : "up-next"}.png`);
     } finally {
       setSharingUpNext(false);
     }
@@ -13330,25 +13463,29 @@ const ShareOptionsToggle = ({
     width: 44,
     height: 26,
     borderRadius: 13,
-    border: "none",
+    // Off state is a plain neutral gray -- not a theme "border" color, which
+    // in this app's palettes is itself blue-tinted and reads too close to
+    // the on-state blue to tell apart at a glance.
+    border: on ? "none" : "1px solid #94A3B8",
     cursor: "pointer",
     flexShrink: 0,
-    background: on ? "#3B82F6" : "var(--border2)",
+    background: on ? "#3B82F6" : "#CBD5E1",
     position: "relative",
-    transition: "background 0.2s",
-    padding: 0
+    transition: "background 0.2s,border-color 0.2s",
+    padding: 0,
+    boxSizing: "border-box"
   }
 }, /*#__PURE__*/React.createElement("div", {
   style: {
     position: "absolute",
-    top: 3,
+    top: on ? 3 : 2,
     width: 20,
     height: 20,
     borderRadius: 10,
-    background: "#fff",
-    left: on ? "21px" : "3px",
-    transition: "left 0.2s cubic-bezier(0.34,1.56,0.64,1)",
-    boxShadow: "0 1px 4px rgba(0,0,0,0.2)"
+    background: on ? "#fff" : "#64748B",
+    left: on ? "21px" : "2px",
+    transition: "left 0.2s cubic-bezier(0.34,1.56,0.64,1),background 0.2s",
+    boxShadow: "0 1px 4px rgba(0,0,0,0.25)"
   }
 }));
 const ShareOptionsDialog = ({
@@ -13362,11 +13499,18 @@ const ShareOptionsDialog = ({
   const isHe = getLang() === "he";
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [brightMode, setBrightMode] = useState(true);
   const [markOverdue, setMarkOverdue] = useState(true);
-  const [markCompleted, setMarkCompleted] = useState(true);
+  const [showCompletedMark, setShowCompletedMark] = useState(true);
+  const [showCompletedTasks, setShowCompletedTasks] = useState(true);
+  const [showFutureRepeats, setShowFutureRepeats] = useState(true);
+  const [markToday, setMarkToday] = useState(true);
   const [showDetails, setShowDetails] = useState(true);
   const [selectedTypes, setSelectedTypes] = useState(() => new Set());
   const showDetailsOption = surface === "upnext" || surface === "bytype";
+  const showCompletedOptions = surface === "week" || surface === "month";
+  const showFutureRepeatsOption = surface === "week" || surface === "month";
+  const showMarkTodayOption = surface === "week" || surface === "month";
   const showTypeFilter = (surface === "week" || surface === "month" || surface === "upnext") && availableTypes && availableTypes.length > 0;
   useEffect(() => {
     if (open) {
@@ -13375,8 +13519,12 @@ const ShareOptionsDialog = ({
       // Reset to "everything on" every time the dialog opens, rather than
       // remembering the last choice, so the fast path (open, Copy Photo) is
       // always a complete, unfiltered photo.
+      setBrightMode(true);
       setMarkOverdue(true);
-      setMarkCompleted(true);
+      setShowCompletedMark(true);
+      setShowCompletedTasks(true);
+      setShowFutureRepeats(true);
+      setMarkToday(true);
       setShowDetails(true);
       setSelectedTypes(new Set((availableTypes || []).map(tp => tp.type)));
     } else if (visible) {
@@ -13398,8 +13546,12 @@ const ShareOptionsDialog = ({
   const allTypesSelected = availableTypes && selectedTypes.size === availableTypes.length;
   const handleConfirm = () => {
     onConfirm({
+      brightMode,
       markOverdue,
-      markCompleted,
+      showCompletedMark: showCompletedOptions ? showCompletedMark : true,
+      showCompletedTasks: showCompletedOptions ? showCompletedTasks : true,
+      showFutureRepeats: showFutureRepeatsOption ? showFutureRepeats : true,
+      markToday: showMarkTodayOption ? markToday : true,
       showDetails: showDetailsOption ? showDetails : true,
       selectedTypes: showTypeFilter ? selectedTypes : null
     });
@@ -13454,50 +13606,61 @@ const ShareOptionsDialog = ({
       color: C.text4,
       marginBottom: 8
     }
-  }, isHe ? "בחר מה יופיע בתמונה" : "Choose what shows up in the photo"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      borderTop: `1px solid ${C.border}`
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: SHARE_TOGGLE_ROW_STYLE
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 14,
-      fontWeight: 500,
-      color: C.text
-    }
-  }, isHe ? "סמן משימות באיחור" : "Mark overdue tasks"), /*#__PURE__*/React.createElement(ShareOptionsToggle, {
-    on: markOverdue,
-    onToggle: () => setMarkOverdue(v => !v)
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...SHARE_TOGGLE_ROW_STYLE,
-      borderTop: `1px solid ${C.border}`
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 14,
-      fontWeight: 500,
-      color: C.text
-    }
-  }, isHe ? "סמן הושלמו/בוטלו" : "Mark completed/cancelled"), /*#__PURE__*/React.createElement(ShareOptionsToggle, {
-    on: markCompleted,
-    onToggle: () => setMarkCompleted(v => !v)
-  })), showDetailsOption && /*#__PURE__*/React.createElement("div", {
-    style: {
-      ...SHARE_TOGGLE_ROW_STYLE,
-      borderTop: `1px solid ${C.border}`
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 14,
-      fontWeight: 500,
-      color: C.text
-    }
-  }, isHe ? "הצג פרטים (שעה/תאריך/משך)" : "Show details (time/date/length)"), /*#__PURE__*/React.createElement(ShareOptionsToggle, {
-    on: showDetails,
-    onToggle: () => setShowDetails(v => !v)
-  }))), showTypeFilter && /*#__PURE__*/React.createElement("div", {
+  }, isHe ? "בחר מה יופיע בתמונה" : "Choose what shows up in the photo"), (() => {
+    // One row per toggle: label, current value, and its setter. Filtered
+    // down to whichever rows apply to this surface, then rendered as a
+    // single bordered list so a first-row-only outer border and every-other
+    // row's top border don't have to be repeated by hand.
+    const rows = [{
+      label: isHe ? "תמונה בהירה" : "Bright photo",
+      on: brightMode,
+      set: setBrightMode
+    }, {
+      label: isHe ? "סמן משימות באיחור" : "Mark overdue tasks",
+      on: markOverdue,
+      set: setMarkOverdue
+    }, ...(showCompletedOptions ? [{
+      label: isHe ? "סמן הושלמו/בוטלו" : "Mark completed/cancelled",
+      on: showCompletedMark,
+      set: setShowCompletedMark
+    }, {
+      label: isHe ? "הצג משימות שהושלמו/בוטלו" : "Show completed/cancelled tasks",
+      on: showCompletedTasks,
+      set: setShowCompletedTasks
+    }] : []), ...(showFutureRepeatsOption ? [{
+      label: isHe ? "הצג משימות חוזרות עתידיות" : "Show future repeated tasks",
+      on: showFutureRepeats,
+      set: setShowFutureRepeats
+    }] : []), ...(showMarkTodayOption ? [{
+      label: isHe ? "סמן את היום" : "Mark today",
+      on: markToday,
+      set: setMarkToday
+    }] : []), ...(showDetailsOption ? [{
+      label: isHe ? "הצג פרטים" : "Show details",
+      on: showDetails,
+      set: setShowDetails
+    }] : [])];
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        borderTop: `1px solid ${C.border}`
+      }
+    }, rows.map((row, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: i === 0 ? SHARE_TOGGLE_ROW_STYLE : {
+        ...SHARE_TOGGLE_ROW_STYLE,
+        borderTop: `1px solid ${C.border}`
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14,
+        fontWeight: 500,
+        color: C.text
+      }
+    }, row.label), /*#__PURE__*/React.createElement(ShareOptionsToggle, {
+      on: row.on,
+      onToggle: () => row.set(v => !v)
+    }))));
+  })(), showTypeFilter && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 16
     }
