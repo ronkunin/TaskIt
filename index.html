@@ -113,7 +113,7 @@
     html, body { margin: 0; padding: 0; height: 100%; }
     body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
     html { background: #F0F7FF; }
-    @media (prefers-color-scheme: dark) { html { background: #0F172A; } }
+    @media (prefers-color-scheme: dark) { html:not([data-theme="light"]) { background: #0F172A; } }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     #root { min-height: 100%; min-height: -webkit-fill-available; }
     .sticky-header { position: -webkit-sticky; position: sticky; top: 0; }
@@ -233,7 +233,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "4.1";
+const APP_VERSION = "4.6";
 
 const {
   useState,
@@ -894,17 +894,22 @@ const isExcludedHebcalTask = task => {
   return false;
 };
 // ── Selection lock ────────────────────────────────────────────────────────────
-// Tasks that can never be modified through the app: Hebrew/international
-// holidays, the synthetic "calendar" type used for auto-generated holiday
-// entries, and Google events shared into the account read-only. These must
-// never be selectable in bulk-select mode, in any view, since bulk actions
-// (delete/date/time/type/clear) would either fail silently or -- for delete --
-// actually remove the holiday locally and fire a DELETE at the underlying
-// Google event. Plain Google-owned events the user imported themselves
-// (source==="google", not googleShared) ARE editable through the edit modal
-// and drag handlers, so they stay selectable -- this is intentionally a
-// narrower check than the drag-lock used for reschedule gestures.
-const isSelectLocked = tk => !!(tk && (tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared));
+// Google events shared into the account read-only can never be modified or
+// even selected in bulk-select mode -- selecting one would offer bulk actions
+// that could never actually apply to it. Plain Google-owned events the user
+// imported themselves (source==="google", not googleShared) ARE editable
+// through the edit modal and drag handlers, so they stay selectable -- this
+// is intentionally a narrower check than the drag-lock used for reschedule
+// gestures.
+const isSelectLocked = tk => !!(tk && tk.googleShared);
+// Hebrew/international holidays and the synthetic "calendar" type used for
+// auto-generated holiday entries CAN be selected in bulk-select mode (e.g. to
+// share them alongside other tasks), but can never be modified through the
+// app -- bulk date/time/type/clear-details/delete would either fail silently
+// or -- for delete -- actually remove the holiday locally. Every bulk action
+// other than Share must re-check this (and skip any task it's true for)
+// before touching a selected task.
+const isBulkEditLocked = tk => !!(tk && (tk.hebcal || tk.intl || tk.type === "calendar" || isSelectLocked(tk)));
 // ── Storage helpers (localStorage-only) ──────────────────────────────────────
 // _rawSave kept for legacy archive promote only (unused path now)
 const _rawLoad = key => {
@@ -1552,6 +1557,78 @@ const renderShareGroupedColumns = (groups, shareOptions) => {
   return { content, width };
 };
 
+// ── Selected-tasks photo: one plain vertical list ───────────────────────────
+// No title, no date sections -- just the tasks, one under another. Each card
+// grows to fit its own name and note (nothing is truncated). `options`:
+//   markOverdue         red styling for overdue tasks
+//   showCompletedMark   done/cancelled look done/cancelled; when off they look
+//                       exactly like ordinary pending tasks
+//   showDetails         date/time/repeat line and the note
+const SHARE_LIST_WIDTH = 340;
+const renderShareTaskList = (tasks, options) => {
+  const isHe = getLang() === "he";
+  const markOverdue = !options || options.markOverdue !== false;
+  const markCompleted = !options || options.showCompletedMark !== false;
+  const showDetails = !options || options.showDetails !== false;
+  return /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", width: SHARE_LIST_WIDTH }
+  }, tasks.map((task, idx) => {
+    const doneT = markCompleted && isDone(task);
+    const cancelledT = markCompleted && isCancelled(task);
+    // A done/cancelled task is never "overdue"; with marks off it is simply
+    // treated like any other pending task, including the overdue check.
+    const overdueT = markOverdue && !doneT && !cancelledT && !isDone(task) && !isCancelled(task) && isOverdue(task);
+    const nameColor = cancelledT ? C.text4 : overdueT ? C.red : doneT ? C.green : C.text;
+    const recurLabel = !task.recur ? "" : task.recur === "month" ? isHe ? "כל חודש" : "Every month" : task.recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", task.recur);
+    // Start-end range plus the length in words, same as the single-task photo.
+    const metaParts = [];
+    if (showDetails) {
+      if (task.date) metaParts.push(fmtDate(task.date));
+      metaParts.push(...shareTimeParts(task.time, task.length));
+      if (recurLabel) metaParts.push(recurLabel);
+    }
+    const note = showDetails && task.note != null ? String(task.note).trim() : "";
+    return /*#__PURE__*/React.createElement("div", {
+      key: task.id || idx,
+      style: {
+        boxSizing: "border-box",
+        padding: "12px 14px",
+        borderRadius: 12,
+        border: `1px solid ${overdueT ? C.redBorder : C.border}`,
+        background: overdueT ? C.redBg : C.card,
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 15,
+        fontWeight: 600,
+        lineHeight: 1.3,
+        color: nameColor,
+        textDecoration: cancelledT ? "line-through" : "none",
+        overflowWrap: "anywhere",
+        textAlign: "start"
+      }
+    }, taskDisplayName(task)), metaParts.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: overdueT ? C.red : doneT ? C.green : C.text4,
+        textAlign: "start"
+      }
+    }, metaParts.join(" · ")), note && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        lineHeight: 1.45,
+        color: C.text3,
+        whiteSpace: "pre-wrap",
+        overflowWrap: "anywhere",
+        textAlign: "start"
+      }
+    }, note)));
+  }));
+};
+
 // New simple model: each task is independent
 // recur = interval in days; when completed a new task is spawned with date+recur
 const isRecurring = t => !!(t.recur && (t.recur === "month" || t.recur === "year" || typeof t.recur === "number" && t.recur > 0 || typeof t.recur === "string" && parseInt(t.recur) > 0));
@@ -1703,7 +1780,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --gauge-track:#D4E2F4;
 }
 @media(prefers-color-scheme:dark){
-  :root{
+  :root:not([data-theme="light"]){
     --bg:#0F172A; --bg2:#1E293B; --bg3:#1E293B; --bg4:#1E2D45; --bg5:#162032;
     --border:#334155; --border2:#475569; --border3:#2D3F55;
     --text:#F1F5F9; --text2:#CBD5E1; --text3:#94A3B8; --text4:#64748B; --text5:#475569;
@@ -1781,7 +1858,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --gauge-track:#B9D4FF;
 }
 @media(prefers-color-scheme:dark){
-  :root:not([data-palette="boldest"]){
+  :root:not([data-palette="boldest"]):not([data-theme="light"]){
     --bg:#0B1220; --bg2:#141F33; --bg3:#16233A; --bg4:#17263F; --bg5:#101B2C;
     --border:#25406B; --border2:#2F5486; --border3:#1D3355;
     --text:#EAF2FF; --text2:#C3D6F0; --text3:#8FADD1; --text4:#5E7FA3; --text5:#3A5473;
@@ -1856,7 +1933,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --gauge-track:#8FB8FF;
 }
 @media(prefers-color-scheme:dark){
-  :root[data-palette="boldest"]{
+  :root[data-palette="boldest"]:not([data-theme="light"]){
   --bg:#060C18; --bg2:#0F1A30; --bg3:#122040; --bg4:#14264A; --bg5:#0B1526;
   --border:#2F5FA8; --border2:#3D74C8; --border3:#234A86;
   --text:#F2F7FF; --text2:#CFE0F8; --text3:#9DBAE0; --text4:#6D8FBA; --text5:#456185;
@@ -1968,7 +2045,10 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes syncSavedPop{0%{transform:scale(1)}20%{transform:scale(1.5)}50%{transform:scale(0.9)}70%{transform:scale(1.2)}100%{transform:scale(1)}}
 @keyframes checkBounce{0%{transform:scale(1)}30%{transform:scale(1.4)}55%{transform:scale(0.85)}75%{transform:scale(1.1)}100%{transform:scale(1)}}
 @keyframes completeGlow{0%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(34,197,94,.22),0 2px 20px rgba(34,197,94,.14)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}}
-@keyframes bulkBarIn{from{opacity:0}to{opacity:1}}
+@keyframes bulkBarIn{from{opacity:0;transform:translate(-50%,10px) scale(0.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+@keyframes bulkBarOut{from{opacity:1;transform:translate(-50%,0) scale(1)}to{opacity:0;transform:translate(-50%,10px) scale(0.97)}}
+@keyframes navBarOut{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(10px) scale(0.97)}}
+@keyframes navBarIn{from{opacity:0;transform:translateY(10px) scale(0.97)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes completeShrink{0%{opacity:1;max-height:200px;margin-bottom:8px;padding-top:13px;padding-bottom:13px}50%{opacity:.6;max-height:200px}100%{opacity:0;max-height:0;margin-bottom:0;padding-top:0;padding-bottom:0;border-top-width:0;border-bottom-width:0}}
 .task-completing{animation:completeGlow .45s ease forwards,completeShrink .55s ease .35s forwards;pointer-events:none;overflow:hidden;background:#F0FDF4!important;border-color:#BBF7D0!important}
 @keyframes cancelGlow{0%{box-shadow:0 0 0 0 rgba(239,68,68,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(239,68,68,.22),0 2px 20px rgba(239,68,68,.14)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0),0 1px 4px rgba(0,0,0,.04)}}
@@ -3459,6 +3539,18 @@ const fmtShareLength = mins => {
   if (he) return m === 30 ? `${hp} וחצי` : m === 15 ? `${hp} ורבע` : `${hp} ו-${m} דקות`;
   return `${hp} ${m} min`;
 };
+// The time part(s) of a shared task's details line: with a start time and an
+// explicit length it is BOTH the start-end range and the length in words
+// ("09:00-10:30", "1 hour 30 min"); with just a time, the bare time. Used by
+// the single-task photo and the selected-tasks photo so they read the same.
+const shareTimeParts = (time, length) => {
+  if (!time) return [];
+  const mins = Number(length);
+  if (Number.isFinite(mins) && mins > 0) {
+    return [`${time}-${computeEndTime(time, mins)}`, fmtShareLength(mins)];
+  }
+  return [time];
+};
 // Builds a PNG-ready canvas summarizing a task -- TaskIt branding on top, then
 // the type tag plus a completed / cancelled / late tag when relevant, the name,
 // date/time, length and repeat tags (when set), and the note -- styled to match
@@ -3517,14 +3609,7 @@ const renderTaskShareCanvas = ({
   // information either way.
   const metaParts = [];
   if (date) metaParts.push(fmtDate(date));
-  if (time) {
-    if (shouldShowTimeRange(lengthMins)) {
-      metaParts.push(`${time}-${computeEndTime(time, lengthMins)}`);
-    } else {
-      metaParts.push(time);
-      if (shouldShowLengthWords(lengthMins)) metaParts.push(fmtShareLength(lengthMins));
-    }
-  }
+  metaParts.push(...shareTimeParts(time, length));
   if (recurLabel) metaParts.push(recurLabel);
   // Each part is drawn on its own (with a separate bullet between) rather than as
   // one joined string, so mixed Hebrew / digits / Latin never get bidi-reordered.
@@ -3944,11 +4029,29 @@ const withForcedShareTheme = async (bright, fn) => {
   const root = document.documentElement;
   const hadAttr = root.hasAttribute("data-theme");
   const prevValue = root.getAttribute("data-theme");
-  if (bright) root.removeAttribute("data-theme");else root.setAttribute("data-theme", "dark");
+  const prevScheme = root.style.colorScheme;
+  const prevDark = window.__dark;
+  // Everything that decides a color has to follow the checkbox, not the
+  // site's own mode: the CSS variables (explicit data-theme, so an OS-level
+  // dark preference can't override it), the color-scheme hint, and the hex
+  // colors computed in JS at render time (custom type chips read
+  // window.__dark), which only change once the app re-renders.
+  const apply = isDark => {
+    root.setAttribute("data-theme", isDark ? "dark" : "light");
+    root.style.colorScheme = isDark ? "dark" : "light";
+    window.__dark = isDark;
+    if (window.__appForceRender) window.__appForceRender();
+  };
+  const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  apply(!bright);
+  await settle();
   try {
     await fn();
   } finally {
     if (hadAttr) root.setAttribute("data-theme", prevValue);else root.removeAttribute("data-theme");
+    root.style.colorScheme = prevScheme;
+    window.__dark = prevDark;
+    if (window.__appForceRender) window.__appForceRender();
   }
 };
 const shareElementAsImage = async (el, filename, frameOptions) => {
@@ -4382,6 +4485,9 @@ const Modal = ({
         setShowNote(false);
         set("note", "");
       } else {
+        // Same reasoning as the settings toggle above: only one of the two
+        // dense panels is ever open at a time.
+        setShowMoreOptions(false);
         setShowNote(true);
         setTimeout(() => noteRef.current?.focus(), 60);
       }
@@ -4736,7 +4842,16 @@ const Modal = ({
     }
   }, /*#__PURE__*/React.createElement("button", {
     type: "button",
-    onClick: () => setShowMoreOptions(v => !v),
+    onClick: () => {
+      const next = !showMoreOptions;
+      // Settings and note are both dense blocks -- showing both at once is
+      // too much, so opening one always collapses the other. On a narrow
+      // (portrait) modal the note has no separate toggle button and is
+      // shown automatically whenever settings isn't open, so this also
+      // covers hiding/restoring it there.
+      if (next) setShowNote(false);
+      setShowMoreOptions(next);
+    },
     title: getLang() === "he" ? "עוד הגדרות" : "More settings",
     style: {
       width: 32,
@@ -5444,7 +5559,7 @@ const Modal = ({
         color: C.text4
       }
     }, isHe ? "אין הגדרות נוספות זמינות למשימה הזו כרגע." : "No additional settings available for this task yet."));
-  })(), (showNote || modalNarrow) && /*#__PURE__*/React.createElement("div", {
+  })(), (showNote || modalNarrow) && !showMoreOptions && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
     }
@@ -14352,6 +14467,9 @@ const ShareOptionsDialog = ({
   const [selectedTypes, setSelectedTypes] = useState(() => new Set());
   const showDetailsOption = surface === "upnext" || surface === "bytype" || surface === "bulk";
   const showCompletedOptions = surface === "week" || surface === "month";
+  // Selected-tasks photo lists exactly the tasks you picked, so there is no
+  // "show completed tasks" filter there -- only whether they *look* completed.
+  const showCompletedMarkOption = showCompletedOptions || surface === "bulk";
   const showFutureRepeatsOption = surface === "week" || surface === "month";
   const showMarkTodayOption = surface === "week" || surface === "month";
   const showTypeFilter = (surface === "week" || surface === "month" || surface === "upnext") && availableTypes && availableTypes.length > 0;
@@ -14391,7 +14509,7 @@ const ShareOptionsDialog = ({
     onConfirm({
       brightMode,
       markOverdue,
-      showCompletedMark: showCompletedOptions ? showCompletedMark : true,
+      showCompletedMark: showCompletedMarkOption ? showCompletedMark : true,
       showCompletedTasks: showCompletedOptions ? showCompletedTasks : true,
       showFutureRepeats: showFutureRepeatsOption ? showFutureRepeats : true,
       markToday: showMarkTodayOption ? markToday : true,
@@ -14462,11 +14580,11 @@ const ShareOptionsDialog = ({
       label: isHe ? "סמן משימות באיחור" : "Mark overdue tasks",
       on: markOverdue,
       set: setMarkOverdue
-    }, ...(showCompletedOptions ? [{
+    }, ...(showCompletedMarkOption ? [{
       label: isHe ? "סמן הושלמו/בוטלו" : "Mark completed/cancelled",
       on: showCompletedMark,
       set: setShowCompletedMark
-    }, {
+    }] : []), ...(showCompletedOptions ? [{
       label: isHe ? "הצג משימות שהושלמו/בוטלו" : "Show completed/cancelled tasks",
       on: showCompletedTasks,
       set: setShowCompletedTasks
@@ -18797,6 +18915,17 @@ const GCal = (() => {
   };
 })();
 
+// A normal double-click's pace, shared by every "double-click to confirm"
+// control in the bulk bar (the delete/clear icons AND the date/time/type
+// picker inputs below) so they all feel the same, rather than a fast reflex
+// test.
+const BULK_DBLCLICK_MS = 600;
+// How long the bar's appear/disappear animation takes. On exit, App keeps
+// the bar mounted (with its content frozen as it was) for exactly this long
+// after Cancel, then actually unmounts it, so it always animates away
+// instead of vanishing instantly.
+const BULK_BAR_ANIM_MS = 200;
+
 // ── Bulk selection: floating action bar shown while selecting tasks ────────
 // Wide screens: one centered pill (cancel · count · actions).
 // Narrow screens (phones / portrait): the bar takes the bottom nav's slot
@@ -18811,11 +18940,28 @@ const BulkActionBar = ({
   busy = false,
   narrow = false,
   armed = null,
-  notice = ""
+  notice = "",
+  pickerKind = null,
+  pickerTasks = [],
+  onPickerApply,
+  onPickerBack,
+  closing = false
 }) => {
   const isHe = getLang() === "he";
   const disabled = count === 0 || busy;
   const isArmed = action => !!armed && armed.kind === action;
+  // The date/time/type picker inputs stage a value as the person picks it;
+  // it's only applied when they press the "Set" button next to it, so
+  // browsing a native date/time picker or trying a few type chips never
+  // commits anything by itself.
+  const [stagedDate, setStagedDate] = useState(todayStr());
+  const [stagedTime, setStagedTime] = useState("09:00");
+  const [stagedType, setStagedType] = useState(null);
+  useEffect(() => {
+    if (pickerKind === "date") setStagedDate(todayStr());
+    if (pickerKind === "time") setStagedTime("09:00");
+    if (pickerKind === "type") setStagedType(null);
+  }, [pickerKind]);
   const labelOf = {
     date: t("bulkSetDate"),
     time: t("bulkSetTime"),
@@ -18823,8 +18969,9 @@ const BulkActionBar = ({
     clear: t("bulkClearDetails"),
     delete: t("bulkDelete")
   };
-  const headline = notice ? notice : armed ? t("bulkTapAgain", labelOf[armed.kind] || "", armed.valueLabel || "") : t("selectedCount", count);
-  const headColor = notice ? C.green : armed ? armed.kind === "delete" ? C.red : C.blue : C.text;
+  const pickerTitle = pickerKind === "date" ? t("bulkPickDate") : pickerKind === "time" ? t("bulkPickTime") : pickerKind === "type" ? t("bulkPickType") : "";
+  const headline = pickerKind ? pickerTitle : notice ? notice : armed ? t("bulkTapAgain", labelOf[armed.kind] || "", armed.valueLabel || "") : t("selectedCount", count);
+  const headColor = pickerKind ? C.blue : notice ? C.green : armed ? armed.kind === "delete" ? C.red : C.blue : C.text;
   const btn = (icon, label, action, danger) => /*#__PURE__*/React.createElement("button", {
     key: action,
     onClick: () => onAction(action),
@@ -18905,7 +19052,141 @@ const BulkActionBar = ({
     name: "x",
     size: 16
   }));
-  const actions = [btn("calendar", t("bulkSetDate"), "date"), btn("clock", t("bulkSetTime"), "time"), btn("tag", t("bulkSetType"), "type"), btn("noteIcon", t("bulkClearDetails"), "clear"), btn("share", t("bulkShare"), "share"), btn("trash", t("bulkDelete"), "delete", true)];
+  // Shown instead of cancelBtn while a picker (date/time/type) is open --
+  // steps back to the plain action icons without leaving the bar or
+  // exiting select mode, so nothing ever pops up as a separate screen.
+  const backBtn = /*#__PURE__*/React.createElement("button", {
+    onClick: onPickerBack,
+    title: t("cancel"),
+    "aria-label": t("cancel"),
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: narrow ? 34 : 28,
+      height: narrow ? 34 : 28,
+      borderRadius: "50%",
+      border: "none",
+      background: "transparent",
+      cursor: "pointer",
+      color: C.blue,
+      flexShrink: 0,
+      touchAction: "manipulation"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: isHe ? "chevRight" : "chevLeft",
+    size: 16
+  }));
+  const actions = [btn("calendar", t("bulkSetDate"), "date"), btn("clock", t("bulkSetTime"), "time"), btn("tag", t("bulkSetType"), "type"), btn("share", t("bulkShare"), "share"), btn("noteIcon", t("bulkClearDetails"), "clear"), btn("trash", t("bulkDelete"), "delete", true)];
+  // Inline replacement for the action-icon row while a picker is active --
+  // this lives in the exact same bar, so picking a date/time/type never
+  // opens a separate screen. Choosing a value only stages it here; a "Set"
+  // button next to the input/chips applies it -- no double-clicking the
+  // input itself, which fought with the native date/time picker reopening
+  // on tap.
+  const pickerInputStyle = {
+    flex: 1,
+    minWidth: 0,
+    padding: narrow ? "10px 12px" : "8px 12px",
+    borderRadius: 10,
+    border: `1px solid ${C.border2}`,
+    background: C.card2,
+    color: C.text,
+    fontSize: 15,
+    fontFamily: "'Inter',sans-serif",
+    outline: "none",
+    boxSizing: "border-box"
+  };
+  const setBtnStyle = disabledSet => ({
+    flexShrink: 0,
+    padding: narrow ? "10px 16px" : "8px 14px",
+    borderRadius: 10,
+    border: "none",
+    background: disabledSet ? C.border2 : C.blue,
+    color: disabledSet ? C.text4 : "#fff",
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: disabledSet ? "default" : "pointer",
+    whiteSpace: "nowrap"
+  });
+  let pickerRow = null;
+  if (pickerKind === "date") {
+    pickerRow = /*#__PURE__*/React.createElement(React.Fragment, {
+      key: "picker-date"
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      autoFocus: true,
+      defaultValue: stagedDate,
+      onChange: e => {
+        if (e.target.value) setStagedDate(e.target.value);
+      },
+      style: pickerInputStyle
+    }), /*#__PURE__*/React.createElement("button", {
+      onClick: () => onPickerApply(stagedDate),
+      disabled: !stagedDate,
+      style: setBtnStyle(!stagedDate)
+    }, t("set")));
+  } else if (pickerKind === "time") {
+    pickerRow = /*#__PURE__*/React.createElement(React.Fragment, {
+      key: "picker-time"
+    }, /*#__PURE__*/React.createElement("input", {
+      type: "time",
+      autoFocus: true,
+      defaultValue: stagedTime,
+      onChange: e => {
+        if (e.target.value) setStagedTime(e.target.value);
+      },
+      style: pickerInputStyle
+    }), /*#__PURE__*/React.createElement("button", {
+      onClick: () => onPickerApply(stagedTime),
+      disabled: !stagedTime,
+      style: setBtnStyle(!stagedTime)
+    }, t("set")));
+  } else if (pickerKind === "type") {
+    const builtinTypes = Object.keys(TYPE_META).filter(tp => !isLegacyType(tp) && tp !== "calendar");
+    // "google" is technically a custom type but not a real destination --
+    // see the same exclusion in the single-task edit modal.
+    const customTypes = [...new Set((pickerTasks || []).map(tk => tk.type).filter(tp => isCustomType(tp) && tp !== "google"))];
+    const typeChoices = [...builtinTypes, ...customTypes];
+    pickerRow = /*#__PURE__*/React.createElement(React.Fragment, {
+      key: "picker-type"
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        overflowX: "auto",
+        flex: 1,
+        minWidth: 0,
+        padding: "2px 0"
+      }
+    }, typeChoices.map(tp => {
+      const meta = getTypeMeta(tp);
+      const staged = stagedType === tp;
+      return /*#__PURE__*/React.createElement("button", {
+        key: tp,
+        onClick: () => setStagedType(tp),
+        style: {
+          flexShrink: 0,
+          padding: "7px 14px",
+          borderRadius: 999,
+          border: `1px solid ${meta.border}`,
+          background: meta.bg,
+          color: meta.color,
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: "pointer",
+          whiteSpace: "nowrap",
+          ...(staged ? {
+            boxShadow: `inset 0 0 0 2px ${meta.color}`
+          } : {})
+        }
+      }, meta.labelKey ? t(meta.labelKey) : tp);
+    })), /*#__PURE__*/React.createElement("button", {
+      onClick: () => stagedType && onPickerApply(stagedType),
+      disabled: !stagedType,
+      style: setBtnStyle(!stagedType)
+    }, t("set")));
+  }
   const shellStyle = {
     position: "fixed",
     left: "50%",
@@ -18916,7 +19197,8 @@ const BulkActionBar = ({
     WebkitBackdropFilter: "blur(20px) saturate(180%)",
     border: `1px solid ${C.border2}`,
     boxShadow: "0 8px 28px rgba(0,0,0,0.20)",
-    animation: "bulkBarIn 0.2s ease",
+    animation: closing ? `bulkBarOut ${BULK_BAR_ANIM_MS}ms ease forwards` : "bulkBarIn 0.2s ease",
+    pointerEvents: closing ? "none" : "auto",
     direction: isHe ? "rtl" : "ltr"
   };
   if (narrow) {
@@ -18939,7 +19221,7 @@ const BulkActionBar = ({
         gap: 6,
         padding: "0 4px"
       }
-    }, cancelBtn, /*#__PURE__*/React.createElement("div", {
+    }, pickerKind ? backBtn : cancelBtn, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 14,
         fontWeight: 700,
@@ -18954,11 +19236,12 @@ const BulkActionBar = ({
       style: {
         display: "flex",
         alignItems: "stretch",
-        gap: 2,
+        gap: pickerKind ? 8 : 2,
         borderTop: `1px solid ${C.border2}`,
-        paddingTop: 4
+        paddingTop: 4,
+        paddingInline: pickerKind ? 4 : 0
       }
-    }, actions));
+    }, pickerKind ? pickerRow : actions));
   }
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -18970,9 +19253,9 @@ const BulkActionBar = ({
       gap: 2,
       padding: "8px 8px",
       maxWidth: "calc(100vw - 20px)",
-      overflowX: "auto"
+      overflowX: pickerKind ? "visible" : "auto"
     }
-  }, cancelBtn, /*#__PURE__*/React.createElement("div", {
+  }, pickerKind ? backBtn : cancelBtn, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       fontWeight: 700,
@@ -18990,163 +19273,14 @@ const BulkActionBar = ({
       flexShrink: 0,
       margin: "2px 2px"
     }
-  }), actions);
-};
-
-// ── Bulk selection: bottom-sheet picker for date / time / type / confirms ──
-const BulkPickerModal = ({
-  kind,
-  count,
-  tasks,
-  onApply,
-  onClose
-}) => {
-  const isHe = getLang() === "he";
-  const [dateVal, setDateVal] = useState(todayStr());
-  const [timeVal, setTimeVal] = useState("09:00");
-  useEffect(() => {
-    if (kind === "date") setDateVal(todayStr());
-    if (kind === "time") setTimeVal("09:00");
-  }, [kind]);
-  if (!kind) return null;
-  const builtinTypes = Object.keys(TYPE_META).filter(tp => !isLegacyType(tp) && tp !== "calendar");
-  // "google" is technically a custom type (it has no TYPE_META entry) but it's
-  // not a real destination -- it just marks a task as mirroring a foreign
-  // Google event. Offering it here would let a bulk retype silently turn
-  // selected tasks into fake, unlinked "google" tasks. The single-task edit
-  // modal excludes it the same way (see existingCustomTypes above it).
-  const customTypes = [...new Set((tasks || []).map(tk => tk.type).filter(tp => isCustomType(tp) && tp !== "google"))];
-  const typeChoices = [...builtinTypes, ...customTypes];
-  const isConfirm = kind === "delete" || kind === "clear";
-  const title = kind === "date" ? t("bulkPickDate") : kind === "time" ? t("bulkPickTime") : kind === "type" ? t("bulkPickType") : kind === "delete" ? t("bulkDelete") : t("bulkClearDetails");
-  return /*#__PURE__*/React.createElement("div", {
-    onClick: onClose,
-    style: {
-      position: "fixed",
-      inset: 0,
-      zIndex: 600,
-      background: "rgba(15,23,42,0.45)",
-      display: "flex",
-      alignItems: "flex-end",
-      justifyContent: "center",
-      animation: "fadeIn 0.15s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: e => e.stopPropagation(),
-    dir: isHe ? "rtl" : "ltr",
-    style: {
-      width: "100%",
-      maxWidth: 440,
-      background: C.card,
-      borderTopLeftRadius: 20,
-      borderTopRightRadius: 20,
-      padding: "20px 20px calc(20px + env(safe-area-inset-bottom, 0px))",
-      boxShadow: "0 -8px 30px rgba(0,0,0,0.25)",
-      boxSizing: "border-box"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 16,
-      fontWeight: 700,
-      color: C.text,
-      marginBottom: 16
-    }
-  }, title), kind === "date" && /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    value: dateVal,
-    autoFocus: true,
-    onChange: e => setDateVal(e.target.value),
-    style: {
-      width: "100%",
-      padding: "12px 14px",
-      borderRadius: 10,
-      border: `1px solid ${C.border2}`,
-      fontSize: 16,
-      background: C.card2,
-      color: C.text,
-      marginBottom: 16,
-      boxSizing: "border-box"
-    }
-  }), kind === "time" && /*#__PURE__*/React.createElement("input", {
-    type: "time",
-    value: timeVal,
-    autoFocus: true,
-    onChange: e => setTimeVal(e.target.value),
-    style: {
-      width: "100%",
-      padding: "12px 14px",
-      borderRadius: 10,
-      border: `1px solid ${C.border2}`,
-      fontSize: 16,
-      background: C.card2,
-      color: C.text,
-      marginBottom: 16,
-      boxSizing: "border-box"
-    }
-  }), kind === "type" && /*#__PURE__*/React.createElement("div", {
+  }), pickerKind ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      flexWrap: "wrap",
-      gap: 8,
-      marginBottom: 16,
-      maxHeight: 280,
-      overflowY: "auto"
-    }
-  }, typeChoices.map(tp => {
-    const meta = getTypeMeta(tp);
-    return /*#__PURE__*/React.createElement("button", {
-      key: tp,
-      onClick: () => onApply(tp),
-      style: {
-        padding: "8px 14px",
-        borderRadius: 999,
-        border: `1px solid ${meta.border}`,
-        background: meta.bg,
-        color: meta.color,
-        fontSize: 13,
-        fontWeight: 600,
-        cursor: "pointer"
-      }
-    }, meta.labelKey ? t(meta.labelKey) : tp);
-  })), isConfirm && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 14,
-      color: C.text3,
-      marginBottom: 20,
-      lineHeight: 1.5
-    }
-  }, kind === "delete" ? t("bulkDeleteConfirm", count) : t("bulkClearDetailsConfirm", count)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: onClose,
-    style: {
+      alignItems: "center",
       flex: 1,
-      padding: "12px",
-      borderRadius: 10,
-      border: `1px solid ${C.border2}`,
-      background: "transparent",
-      color: C.text3,
-      fontSize: 15,
-      fontWeight: 600,
-      cursor: "pointer"
+      minWidth: 220
     }
-  }, t("cancel")), (kind === "date" || kind === "time" || isConfirm) && /*#__PURE__*/React.createElement("button", {
-    onClick: () => onApply(kind === "date" ? dateVal : kind === "time" ? timeVal : true),
-    style: {
-      flex: 1,
-      padding: "12px",
-      borderRadius: 10,
-      border: "none",
-      background: kind === "delete" ? C.red : C.blue,
-      color: "#fff",
-      fontSize: 15,
-      fontWeight: 700,
-      cursor: "pointer"
-    }
-  }, kind === "delete" ? t("bulkDelete") : kind === "date" || kind === "time" ? t("bulkContinue") : t("apply")))));
+  }, pickerRow) : actions);
 };
 
 function App() {
@@ -19169,22 +19303,49 @@ function App() {
   const [view, setView] = useState("home");
   // ── Bulk selection (multi-select + batch actions) ─────────────────────────
   const [selectMode, setSelectMode] = useState(false);
+  // Keeps the bottom nav mounted (playing a fade/scale out) for
+  // BULK_BAR_ANIM_MS right after entering select mode, so it crossfades with
+  // the bar's entrance instead of just vanishing the instant selectMode
+  // flips on.
+  const [navClosing, setNavClosing] = useState(false);
+  // Keeps the bar mounted (playing its exit animation, content frozen as it
+  // was) for BULK_BAR_ANIM_MS after Cancel/exit, instead of the bar just
+  // vanishing the instant selectMode flips off.
+  const [bulkBarClosing, setBulkBarClosing] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [bulkPickerKind, setBulkPickerKind] = useState(null); // null | "date" | "time" | "type" | "clear" | "delete"
   const toggleSelectMode = () => {
-    if (selectMode) exitSelectMode();else setSelectMode(true);
+    if (selectMode) {
+      exitSelectMode();
+    } else {
+      setSelectMode(true);
+      setNavClosing(true);
+      setTimeout(() => setNavClosing(false), BULK_BAR_ANIM_MS);
+    }
   };
-  // Two-step confirm for every bulk change: the first tap arms an action (for
-  // date/time/type it opens the picker and stages the chosen value), the second
-  // tap on the same icon actually applies it.
+  // Delete / clear-details confirm by double-clicking the same icon in the
+  // bar: the first tap arms it for a short beat (just long enough to catch a
+  // real second tap), the second tap within that window applies it. Wait too
+  // long and it disarms on its own instead of sitting there waiting.
   const [armedBulk, setArmedBulk] = useState(null); // null | {kind, value?, valueLabel?}
   const [bulkNotice, setBulkNotice] = useState("");
   const exitSelectMode = () => {
-    setSelectMode(false);
-    setSelectedIds(new Set());
-    setBulkPickerKind(null);
-    setArmedBulk(null);
-    setBulkNotice("");
+    if (!selectMode) return;
+    // Play the bar's exit animation with its current content still showing,
+    // then actually drop the selection state once it's finished animating
+    // away -- clearing it up front would flash the bar back to its "empty"
+    // look for the last instant it's on screen. The nav fades back in over
+    // the same stretch, so the two crossfade instead of the nav popping in
+    // right as the bar disappears.
+    setBulkBarClosing(true);
+    setTimeout(() => {
+      setSelectMode(false);
+      setSelectedIds(new Set());
+      setBulkPickerKind(null);
+      setArmedBulk(null);
+      setBulkNotice("");
+      setBulkBarClosing(false);
+    }, BULK_BAR_ANIM_MS);
   };
   // A staged action only makes sense for the exact selection it was armed on,
   // and it shouldn't linger forever.
@@ -19193,7 +19354,10 @@ function App() {
   }, [selectedIds]);
   useEffect(() => {
     if (!armedBulk) return;
-    const id = setTimeout(() => setArmedBulk(null), 8000);
+    // A normal double-click's pace -- long enough for an ordinary second
+    // tap, not a race against the clock, but not "come back whenever"
+    // either.
+    const id = setTimeout(() => setArmedBulk(null), BULK_DBLCLICK_MS);
     return () => clearTimeout(id);
   }, [armedBulk]);
   useEffect(() => {
@@ -19202,10 +19366,11 @@ function App() {
     return () => clearTimeout(id);
   }, [bulkNotice]);
   const toggleTaskSelected = id => {
-    // Central refusal: whatever view called this, a locked task (holiday,
-    // international holiday, auto-generated "calendar" entry, or a Google
-    // event shared into the account read-only) can never enter the
-    // selection, even if some row's own click-guard was missed or bypassed.
+    // Central refusal: whatever view called this, a task locked out of
+    // selection entirely (a Google event shared into the account read-only)
+    // can never enter the selection, even if some row's own click-guard was
+    // missed or bypassed. Holidays ARE selectable -- they're just excluded
+    // from every bulk action except Share (see isBulkEditLocked below).
     const tk = tasks.find(t => t.id === id) || archiveTasks.find(t => t.id === id);
     if (tk && isSelectLocked(tk)) return;
     setSelectedIds(prev => {
@@ -19265,56 +19430,18 @@ function App() {
   const [bulkSharing, setBulkSharing] = useState(false);
   const [bulkShareOptions, setBulkShareOptions] = useState(null);
   const bulkShareCaptureRef = useRef(null);
-  const buildBulkShareGroups = ids => {
-    const isHe = getLang() === "he";
-    const all = [...tasks, ...archiveTasks];
-    const selected = all.filter(tk => ids.has(tk.id));
-    const sortGroupTasks = arr => [...arr].sort((a, b) => {
-      const overA = isOverdue(a), overB = isOverdue(b);
-      if (overA && !overB) return -1;
-      if (!overA && overB) return 1;
+  // The selected tasks as one flat list, oldest first: by date (undated last),
+  // then clock time (untimed first), then name.
+  const buildBulkShareList = ids => {
+    const selected = [...tasks, ...archiveTasks].filter(tk => ids.has(tk.id));
+    return selected.sort((a, b) => {
+      if (!!a.date !== !!b.date) return a.date ? -1 : 1;
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
       const aHasTime = !!a.time, bHasTime = !!b.time;
-      if (!aHasTime && !bHasTime) return (a.name || "").localeCompare(b.name || "");
-      if (!aHasTime) return -1;
-      if (!bHasTime) return 1;
+      if (aHasTime !== bHasTime) return aHasTime ? 1 : -1;
       if (a.time !== b.time) return a.time < b.time ? -1 : 1;
       return (a.name || "").localeCompare(b.name || "");
     });
-    const byDate = {};
-    const noDate = [];
-    selected.forEach(tk => {
-      if (!tk.date) { noDate.push(tk); return; }
-      (byDate[tk.date] = byDate[tk.date] || []).push(tk);
-    });
-    const tds = todayStr();
-    const tmrwD = new Date(TODAY);
-    tmrwD.setDate(tmrwD.getDate() + 1);
-    const tmrwDs = localDs(tmrwD);
-    const groups = Object.keys(byDate).sort().map(ds => {
-      const isToday = ds === tds;
-      const label = isToday ? t("today") : ds === tmrwDs ? t("tomorrow") : fmtDate(ds);
-      return {
-        key: ds,
-        label,
-        color: isToday ? C.blue : C.text2,
-        bg: isToday ? C.blueBg : C.card2,
-        border: isToday ? C.blueBorder : C.border,
-        dot: isToday ? C.blue : C.text3,
-        tasks: sortGroupTasks(byDate[ds])
-      };
-    });
-    if (noDate.length) {
-      groups.push({
-        key: "__nodate",
-        label: isHe ? "ללא תאריך" : "No date",
-        color: C.text2,
-        bg: C.card2,
-        border: C.border,
-        dot: C.text3,
-        tasks: sortGroupTasks(noDate)
-      });
-    }
-    return groups;
   };
   const openBulkShare = () => {
     if (selectedIds.size === 0) return;
@@ -19333,9 +19460,7 @@ function App() {
         await new Promise(resolve => {
           requestAnimationFrame(() => requestAnimationFrame(resolve));
         });
-        await shareElementAsImage(bulkShareCaptureRef.current, `${getLang() === "he" ? "משימות-נבחרות" : "selected-tasks"}.png`, {
-          title: t("bulkShareTitle", selectedIds.size)
-        });
+        await shareElementAsImage(bulkShareCaptureRef.current, `${getLang() === "he" ? "משימות-נבחרות" : "selected-tasks"}.png`);
       });
     } finally {
       setBulkSharing(false);
@@ -20484,13 +20609,14 @@ function App() {
     setTasks(ts => ts.filter(t => t.id !== id));
   };
   // ── Bulk actions on the current selection ─────────────────────────────────
-  // `isSelectLocked` filters are defensive, not the primary gate: a locked
-  // task should never make it into `selectedIds` in the first place (every
-  // view's checkbox is hidden for one, and toggleTaskSelected itself refuses
-  // to add one) — but a bulk action re-checks anyway, the same way the
-  // single-task handlers (handleDelay, handleReschedule, handleDropType...)
-  // never trust the caller and always re-check hebcal/intl/calendar/googleShared
-  // themselves before doing anything irreversible.
+  // `isBulkEditLocked` filters below are the primary gate for every bulk
+  // action except Share: holidays CAN be selected (toggleTaskSelected only
+  // refuses a true `isSelectLocked` task, i.e. a read-only shared Google
+  // event), but date/time/type/clear/delete must still skip any selected
+  // holiday, the same way the single-task handlers (handleDelay,
+  // handleReschedule, handleDropType...) never trust the caller and always
+  // re-check hebcal/intl/calendar/googleShared themselves before doing
+  // anything irreversible.
   const handleBulkBarAction = kind => {
     if (kind === "share") {
       setArmedBulk(null);
@@ -20498,6 +20624,8 @@ function App() {
       return;
     }
     if (armedBulk && armedBulk.kind === kind) {
+      // Only clear/delete ever reach here -- date/time/type apply directly
+      // from their picker sheet now, with no separate arm step.
       const value = armedBulk.value;
       setArmedBulk(null);
       applyBulkPicker(value === undefined ? true : value, kind);
@@ -20514,37 +20642,32 @@ function App() {
       valueLabel: String(selectedIds.size)
     });
   };
-  const stageBulkPicker = value => {
+  // Picking a date/time/type applies it right away -- no second "tap again"
+  // step back in the bar. Only the genuinely destructive actions (clear
+  // details, delete) still arm-then-confirm, and they do it in place in the
+  // bar itself without ever opening a separate screen.
+  const applyFromPicker = value => {
     const kind = bulkPickerKind;
     setBulkPickerKind(null);
     if (!kind) return;
-    let valueLabel = String(value);
-    if (kind === "type") {
-      const meta = getTypeMeta(value);
-      valueLabel = meta && meta.labelKey ? t(meta.labelKey) : String(value);
-    }
-    setArmedBulk({
-      kind,
-      value,
-      valueLabel
-    });
+    applyBulkPicker(value, kind);
   };
   const handleBulkDelete = ids => {
     [...tasks, ...archiveTasks].forEach(tk => {
-      if (!ids.has(tk.id) || isSelectLocked(tk)) return;
+      if (!ids.has(tk.id) || isBulkEditLocked(tk)) return;
       if (tk.source === "google" && !tk.googleShared) {
         gcalEnqueue(() => GCal.deleteForeignEvent(tk.googleCalendarId, tk.googleEventId)).catch(() => {});
         delete gcalForeignPushed.current[tk.id];
       }
     });
-    setTasks(ts => ts.filter(t => !ids.has(t.id) || isSelectLocked(t)));
+    setTasks(ts => ts.filter(t => !ids.has(t.id) || isBulkEditLocked(t)));
     // Archived tasks (done/cancelled beyond the recent buffer) live in
     // archiveTasks, not tasks — the filter above never sees them, which is
     // exactly why a bulk delete of an archived task used to report success
     // and do nothing.
     if (archiveTasks.some(t => ids.has(t.id))) {
       setArchiveTasks(arr => {
-        const updated = (arr || []).filter(t => !ids.has(t.id) || isSelectLocked(t));
+        const updated = (arr || []).filter(t => !ids.has(t.id) || isBulkEditLocked(t));
         _cacheArchiveToLocal(updated);
         return updated;
       });
@@ -20557,7 +20680,15 @@ function App() {
   const bulkPatchFor = (kind, value, task) => {
     const now = Date.now();
     if (kind === "date") return { date: value, _autoDate: undefined, updated: now };
-    if (kind === "time") return { time: value, updated: now };
+    if (kind === "time") {
+      // A time needs a date to anchor it. Unlike the single-task edit modal
+      // (which quietly anchors a newly-timed dateless task to today), bulk
+      // set-time must never invent a date behind the user's back -- a
+      // dateless task in the selection is simply skipped, same as a locked
+      // (holiday) task.
+      if (!task.date) return null;
+      return { time: value, updated: now };
+    }
     if (kind === "clear") return { note: "", updated: now };
     if (kind === "type") {
       if (task.type === value) return null;
@@ -20600,13 +20731,13 @@ function App() {
     // the old bulk delete did.
     const revived = [];
     archiveTasks.forEach(arch => {
-      if (!ids.has(arch.id) || isSelectLocked(arch)) return;
+      if (!ids.has(arch.id) || isBulkEditLocked(arch)) return;
       const patch = bulkPatchFor(kind, value, arch);
       if (patch) revived.push({ ...arch, ...patch });
     });
     if (revived.length) {
       setArchiveTasks(arr => {
-        const updated = (arr || []).filter(t => !ids.has(t.id) || isSelectLocked(t));
+        const updated = (arr || []).filter(t => !ids.has(t.id) || isBulkEditLocked(t));
         _cacheArchiveToLocal(updated);
         return updated;
       });
@@ -20617,7 +20748,7 @@ function App() {
       const base = revived.length ? [...ts, ...revived] : ts;
       return base.map(t => {
         if (revivedIds.has(t.id)) return t; // already carries its patch
-        if (!ids.has(t.id) || isSelectLocked(t)) return t;
+        if (!ids.has(t.id) || isBulkEditLocked(t)) return t;
         const patch = bulkPatchFor(kind, value, t);
         return patch ? { ...t, ...patch } : t;
       });
@@ -21140,6 +21271,8 @@ function App() {
   // Expose dark-mode state globally so custom-type color helpers can pick
   // the right (light vs dark) bold hue without prop-drilling
   if (typeof window !== "undefined") window.__dark = dark;
+  const [, setRenderTick] = useState(0);
+  if (typeof window !== "undefined") window.__appForceRender = () => setRenderTick(n => n + 1);
   if (typeof window !== "undefined") window.__openLoad = () => {
     setDataModalTab("load");
     setDataModalOpen(true);
@@ -21156,7 +21289,10 @@ function App() {
   // Apply dark + RTL
   useEffect(() => {
     document.documentElement.style.colorScheme = dark ? "dark" : "light";
-    if (dark) document.documentElement.setAttribute("data-theme", "dark");else document.documentElement.removeAttribute("data-theme");
+    // Always explicit ("light" or "dark"): with the attribute merely absent, a
+    // device whose OS is dark falls back to the prefers-color-scheme CSS and
+    // stays dark even when the app (or a share capture) asks for light.
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
   }, [dark]);
   useEffect(() => {
     document.documentElement.dir = lang === "he" ? "rtl" : "ltr";
@@ -21878,7 +22014,7 @@ function App() {
     name: "settings",
     size: 15,
     color: C.text3
-  })))), narrow && !selectMode && /*#__PURE__*/React.createElement("div", {
+  })))), narrow && (!selectMode || navClosing || bulkBarClosing) && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
       bottom: 0,
@@ -21994,7 +22130,12 @@ function App() {
         WebkitBackdropFilter: "blur(40px) saturate(180%)",
         border: dark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(255,255,255,0.7)",
         boxShadow: dark ? "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" : "0 8px 32px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.8)",
-        pointerEvents: "all",
+        // Crossfades with the bulk bar instead of just popping in/out:
+        // fades+settles out the instant select mode is entered (in step with
+        // the bulk bar fading in), and fades+settles back in while the bulk
+        // bar is playing its own exit animation.
+        animation: navClosing ? `navBarOut ${BULK_BAR_ANIM_MS}ms ease forwards` : bulkBarClosing ? `navBarIn ${BULK_BAR_ANIM_MS}ms ease forwards` : undefined,
+        pointerEvents: navClosing ? "none" : "all",
         minWidth: 300,
         maxWidth: 560,
         width: "calc(100% - 32px)",
@@ -22661,20 +22802,19 @@ function App() {
         localStorage.removeItem("taskflow_hebcal_ids");
       }
     }
-  }), selectMode && /*#__PURE__*/React.createElement(BulkActionBar, {
+  }), (selectMode || bulkBarClosing) && /*#__PURE__*/React.createElement(BulkActionBar, {
     narrow: narrow,
     armed: armedBulk,
     notice: bulkNotice,
     count: selectedIds.size,
     onAction: handleBulkBarAction,
     onCancel: exitSelectMode,
-    busy: bulkSharing
-  }), bulkPickerKind && /*#__PURE__*/React.createElement(BulkPickerModal, {
-    kind: bulkPickerKind,
-    count: selectedIds.size,
-    tasks: tasks,
-    onApply: stageBulkPicker,
-    onClose: () => setBulkPickerKind(null)
+    busy: bulkSharing,
+    pickerKind: bulkPickerKind,
+    pickerTasks: tasks,
+    onPickerApply: applyFromPicker,
+    onPickerBack: () => setBulkPickerKind(null),
+    closing: bulkBarClosing
   }), /*#__PURE__*/React.createElement(ShareOptionsDialog, {
     open: bulkShareDialogOpen,
     onClose: () => setBulkShareDialogOpen(false),
@@ -22684,24 +22824,19 @@ function App() {
     busy: bulkSharing
   }), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
     active: bulkSharing
-  }), bulkSharing && (() => {
-    const groups = buildBulkShareGroups(selectedIds);
-    const { content, width } = renderShareGroupedColumns(groups, bulkShareOptions);
-    const wide = width > SHARE_GROUP_COL_WIDTH;
-    return /*#__PURE__*/React.createElement("div", {
-      ref: bulkShareCaptureRef,
-      style: {
-        position: "fixed",
-        top: 0,
-        insetInlineStart: -99999,
-        padding: "18px 16px",
-        background: "var(--card)",
-        borderRadius: 14,
-        width: wide ? width + 16 * 2 + 4 : SHARE_GROUP_COL_WIDTH + 32,
-        boxSizing: "border-box"
-      }
-    }, content);
-  })());
+  }), bulkSharing && /*#__PURE__*/React.createElement("div", {
+    ref: bulkShareCaptureRef,
+    style: {
+      position: "fixed",
+      top: 0,
+      insetInlineStart: -99999,
+      padding: "18px 16px 8px",
+      background: "var(--card)",
+      borderRadius: 14,
+      width: SHARE_LIST_WIDTH + 32,
+      boxSizing: "border-box"
+    }
+  }, renderShareTaskList(buildBulkShareList(selectedIds), bulkShareOptions)));
 }
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(/*#__PURE__*/React.createElement(App, null));
