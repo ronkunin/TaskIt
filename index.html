@@ -826,6 +826,33 @@ const ARCHIVE_KEY = "taskflow_v5_archive";
 const CHARTS_KEY = "taskflow_v4_charts";
 const COLLAPSED_KEY = "taskflow_v5_collapsed";
 const ARCHIVE_BUFFER = 100;
+// ── Status marks in titles ────────────────────────────────────────────────
+// A calendar event whose title starts with a check mark (✔ ✅ ☑ ✓) means
+// "completed", one that starts with a cross (✖ ❌ ✗ ✘ 🚫) means "cancelled".
+// These are the same marks TaskIt itself writes onto Google event titles.
+// Returns the title with the mark(s) removed plus the status it stood for.
+// A title that is nothing but a mark is left untouched.
+const STATUS_MARK_RE = /^\s*(?:(\u2714\uFE0F?|\u2705|\u2611\uFE0F?|\u2713)|(\u2716\uFE0F?|\u274C|\u2717|\u2718|\u{1F6AB}))\s*/u;
+const splitStatusMark = raw => {
+  const original = String(raw == null ? "" : raw);
+  let rest = original,
+    done = false,
+    cancelled = false,
+    first = true;
+  for (let i = 0; i < 4; i++) {
+    const m = STATUS_MARK_RE.exec(rest);
+    if (!m) break;
+    if (first) {
+      done = !!m[1];
+      cancelled = !!m[2];
+      first = false;
+    }
+    rest = rest.slice(m[0].length);
+  }
+  rest = rest.trim();
+  if (first || !rest) return { name: original.trim(), done: false, cancelled: false };
+  return { name: rest, done, cancelled };
+};
 const migrateTask = t => {
   // Strip legacy duration field
   const {
@@ -878,6 +905,20 @@ const migrateTask = t => {
     if ((he === "מימונה" || en === "Mimouna") && task.id && /sukkot/i.test(task.id)) {
       task.name = "Hoshana Raba";
       task.nameEn = "Hoshana Raba"; // will be excluded by HEBCAL_EXCLUDE
+    }
+  }
+  // Tasks imported from an .ics file before status marks were understood still
+  // carry the ✔ / ✖ in their name -- move it into the task's real state.
+  if (task.ics && typeof task.name === "string") {
+    const mk = splitStatusMark(task.name);
+    if (mk.name !== task.name.trim()) {
+      task.name = mk.name;
+      if (mk.cancelled) {
+        task.cancelled = true;
+        task.done = false;
+      } else if (mk.done && !task.cancelled) {
+        task.done = true;
+      }
     }
   }
   return task;
@@ -1072,6 +1113,7 @@ const PREF_IL = "taskflow_pref_il"; // "yes" | "no" | null (unset = first time)
 const PREF_INTL = "taskflow_pref_intl"; // "yes" | "no" | null
 const PREF_LOOKAHEAD = "taskflow_pref_lookahead"; // "yes" | "no" — default "yes"
 const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null — default ON (only an explicit "no" turns it off)
+const PREF_SINGLE_COLUMN_LISTS = "taskflow_pref_single_column_lists"; // "yes" | "no" | null — default OFF (relative-width columns, as today)
 const ONBOARDED_KEY = "taskflow_onboarded"; // presence = the welcome dialog has already run once
 const getPref = key => localStorage.getItem(key); // null | "yes" | "no"
 const setPref = (key, val) => {
@@ -1557,78 +1599,6 @@ const renderShareGroupedColumns = (groups, shareOptions) => {
   return { content, width };
 };
 
-// ── Selected-tasks photo: one plain vertical list ───────────────────────────
-// No title, no date sections -- just the tasks, one under another. Each card
-// grows to fit its own name and note (nothing is truncated). `options`:
-//   markOverdue         red styling for overdue tasks
-//   showCompletedMark   done/cancelled look done/cancelled; when off they look
-//                       exactly like ordinary pending tasks
-//   showDetails         date/time/repeat line and the note
-const SHARE_LIST_WIDTH = 340;
-const renderShareTaskList = (tasks, options) => {
-  const isHe = getLang() === "he";
-  const markOverdue = !options || options.markOverdue !== false;
-  const markCompleted = !options || options.showCompletedMark !== false;
-  const showDetails = !options || options.showDetails !== false;
-  return /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", flexDirection: "column", width: SHARE_LIST_WIDTH }
-  }, tasks.map((task, idx) => {
-    const doneT = markCompleted && isDone(task);
-    const cancelledT = markCompleted && isCancelled(task);
-    // A done/cancelled task is never "overdue"; with marks off it is simply
-    // treated like any other pending task, including the overdue check.
-    const overdueT = markOverdue && !doneT && !cancelledT && !isDone(task) && !isCancelled(task) && isOverdue(task);
-    const nameColor = cancelledT ? C.text4 : overdueT ? C.red : doneT ? C.green : C.text;
-    const recurLabel = !task.recur ? "" : task.recur === "month" ? isHe ? "כל חודש" : "Every month" : task.recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", task.recur);
-    // Start-end range plus the length in words, same as the single-task photo.
-    const metaParts = [];
-    if (showDetails) {
-      if (task.date) metaParts.push(fmtDate(task.date));
-      metaParts.push(...shareTimeParts(task.time, task.length));
-      if (recurLabel) metaParts.push(recurLabel);
-    }
-    const note = showDetails && task.note != null ? String(task.note).trim() : "";
-    return /*#__PURE__*/React.createElement("div", {
-      key: task.id || idx,
-      style: {
-        boxSizing: "border-box",
-        padding: "12px 14px",
-        borderRadius: 12,
-        border: `1px solid ${overdueT ? C.redBorder : C.border}`,
-        background: overdueT ? C.redBg : C.card,
-        marginBottom: 10
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 15,
-        fontWeight: 600,
-        lineHeight: 1.3,
-        color: nameColor,
-        textDecoration: cancelledT ? "line-through" : "none",
-        overflowWrap: "anywhere",
-        textAlign: "start"
-      }
-    }, taskDisplayName(task)), metaParts.length > 0 && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: overdueT ? C.red : doneT ? C.green : C.text4,
-        textAlign: "start"
-      }
-    }, metaParts.join(" · ")), note && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12.5,
-        lineHeight: 1.45,
-        color: C.text3,
-        whiteSpace: "pre-wrap",
-        overflowWrap: "anywhere",
-        textAlign: "start"
-      }
-    }, note)));
-  }));
-};
-
 // New simple model: each task is independent
 // recur = interval in days; when completed a new task is spawned with date+recur
 const isRecurring = t => !!(t.recur && (t.recur === "month" || t.recur === "year" || typeof t.recur === "number" && t.recur > 0 || typeof t.recur === "string" && parseInt(t.recur) > 0));
@@ -2047,8 +2017,8 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes completeGlow{0%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(34,197,94,.22),0 2px 20px rgba(34,197,94,.14)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0),0 1px 4px rgba(0,0,0,.04)}}
 @keyframes bulkBarIn{from{opacity:0;transform:translate(-50%,10px) scale(0.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
 @keyframes bulkBarOut{from{opacity:1;transform:translate(-50%,0) scale(1)}to{opacity:0;transform:translate(-50%,10px) scale(0.97)}}
-@keyframes navBarOut{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(10px) scale(0.97)}}
-@keyframes navBarIn{from{opacity:0;transform:translateY(10px) scale(0.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes bulkBarInTop{from{opacity:0;transform:translate(-50%,-10px) scale(0.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+@keyframes bulkBarOutTop{from{opacity:1;transform:translate(-50%,0) scale(1)}to{opacity:0;transform:translate(-50%,-10px) scale(0.97)}}
 @keyframes completeShrink{0%{opacity:1;max-height:200px;margin-bottom:8px;padding-top:13px;padding-bottom:13px}50%{opacity:.6;max-height:200px}100%{opacity:0;max-height:0;margin-bottom:0;padding-top:0;padding-bottom:0;border-top-width:0;border-bottom-width:0}}
 .task-completing{animation:completeGlow .45s ease forwards,completeShrink .55s ease .35s forwards;pointer-events:none;overflow:hidden;background:#F0FDF4!important;border-color:#BBF7D0!important}
 @keyframes cancelGlow{0%{box-shadow:0 0 0 0 rgba(239,68,68,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(239,68,68,.22),0 2px 20px rgba(239,68,68,.14)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0),0 1px 4px rgba(0,0,0,.04)}}
@@ -3551,16 +3521,17 @@ const shareTimeParts = (time, length) => {
   }
   return [time];
 };
-// Builds a PNG-ready canvas summarizing a task -- TaskIt branding on top, then
-// the type tag plus a completed / cancelled / late tag when relevant, the name,
-// date/time, length and repeat tags (when set), and the note -- styled to match
-// the app's current theme so the shared image looks native.
+// Builds one task's card content (type + status chips, name, date/time/repeat
+// line, note) for a share image -- shared by the single-task share (one card
+// filling the whole frame, square corners flush with the frame's own inset)
+// and the "selected tasks" bulk share (several of these stacked in one frame,
+// each with its own rounded corners so it reads as a distinct card).
 // `runLayout` executes the exact same measure-then-draw sequence twice (once
 // with ctx=null purely to find the final height, once for real) so the
 // measured height and the drawn content can never drift apart.
 // `recur` is the already-parsed value (number of days / "month" / "year" / null)
 // and `status` is one of "done" | "cancelled" | "late" | null.
-const renderTaskShareCanvas = ({
+const buildTaskShareCard = ({
   name,
   date,
   time,
@@ -3569,20 +3540,16 @@ const renderTaskShareCanvas = ({
   note,
   recur,
   status
-}) => {
+}, colors, W, cardRadius, minHeight = 0) => {
   const isHe = getLang() === "he";
   const m = getTypeMeta(type);
-  const cardColor = resolveCssColor("var(--card)");
-  const textColor = resolveCssColor("var(--text)");
-  const text2Color = resolveCssColor("var(--text2)");
-  const text3Color = resolveCssColor("var(--text3)");
-  const borderColor = resolveCssColor("var(--border)");
-  const scale = 2;
-  // Narrower and with a height floor taller than the width, so a short task
-  // (little more than a name and a date) still reads as a vertical card
-  // instead of a wide, mostly-empty horizontal strip. Richer content (a
-  // note, more chips) grows past this floor naturally.
-  const W = 420;
+  const {
+    cardColor,
+    textColor,
+    text2Color,
+    text3Color,
+    borderColor
+  } = colors;
   const PAD = 28;
   const contentW = W - PAD * 2;
   const align = isHe ? "right" : "left";
@@ -3592,13 +3559,10 @@ const renderTaskShareCanvas = ({
   const metaFont = `600 14px ${FONT}`;
   const typeFont = `700 11px ${FONT}`;
   const noteFont = `400 14px ${FONT}`;
-  const brandFont = `750 19px ${FONT}`;
-  const taglineFont = `500 12px ${FONT}`;
   const meas = document.createElement("canvas").getContext("2d");
   meas.font = nameFont;
   const displayName = (name || "").trim() || (isHe ? "משימה ללא שם" : "Untitled task");
   const nameLines = truncateCanvasLines(wrapCanvasText(meas, displayName, contentW), 3);
-  const lengthMins = Number(length);
   const recurLabel = !recur ? "" : recur === "month" ? isHe ? "כל חודש" : "Every month" : recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", recur);
   // Date, time (or a start-end range above 2h), and repeat all live on one
   // line in the same style, wrapping onto a second line only if they don't
@@ -3723,9 +3687,6 @@ const renderTaskShareCanvas = ({
     });
     return (row + 1) * h + row * 8;
   };
-  const BRAND = 30;
-  // Branding is deliberately identical in every language: English text, LTR layout.
-  const tagline = "Just Task It.";
   const runLayout = ctx => {
     let cy = PAD;
     // ── type tag + completed / cancelled / late tag
@@ -3792,7 +3753,54 @@ const renderTaskShareCanvas = ({
     cy += PAD;
     return cy;
   };
-  const CH = Math.max(Math.round(W * 1.3), runLayout(null));
+  const height = Math.max(minHeight, runLayout(null));
+  return {
+    height,
+    draw: (ctx, x, y) => {
+      ctx.save();
+      ctx.translate(x, y);
+      drawRoundedRectPath(ctx, 0.5, 0.5, W - 1, height - 1, cardRadius);
+      ctx.fillStyle = cardColor;
+      ctx.fill();
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.direction = isHe ? "rtl" : "ltr";
+      runLayout(ctx);
+      ctx.restore();
+    }
+  };
+};
+// Builds a PNG-ready canvas summarizing a single task -- TaskIt branding on
+// top, then the card itself (see buildTaskShareCard above) styled to match
+// the app's current theme so the shared image looks native.
+const renderTaskShareCanvas = payload => {
+  const isHe = getLang() === "he";
+  const scale = 2;
+  // Narrower and with a height floor taller than the width, so a short task
+  // (little more than a name and a date) still reads as a vertical card
+  // instead of a wide, mostly-empty horizontal strip. Richer content (a
+  // note, more chips) grows past this floor naturally.
+  const W = 420;
+  const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const brandFont = `750 19px ${FONT}`;
+  const taglineFont = `500 12px ${FONT}`;
+  const colors = {
+    cardColor: resolveCssColor("var(--card)"),
+    textColor: resolveCssColor("var(--text)"),
+    text2Color: resolveCssColor("var(--text2)"),
+    text3Color: resolveCssColor("var(--text3)"),
+    borderColor: resolveCssColor("var(--border)")
+  };
+  // Card has square corners flush with the frame's own inset -- it's the
+  // frame's only content, not one of several stacked cards. Height floor
+  // taller than the width so a short task (little more than a name and a
+  // date) still reads as a vertical card instead of a wide, mostly-empty
+  // horizontal strip; richer content grows past this floor naturally.
+  const card = buildTaskShareCard(payload, colors, W, 0, Math.round(W * 1.3));
+  const BRAND = 30;
+  // Branding is deliberately identical in every language: English text, LTR layout.
+  const tagline = "Just Task It.";
   // Outer frame: app background, branding + divider up top, then the task
   // card inset with its own margin -- same structure as the week / month /
   // Up Next / etc. share images, instead of the card filling the whole photo.
@@ -3800,7 +3808,7 @@ const renderTaskShareCanvas = ({
   const FRAME_PAD = 28;
   const brandBlockH = FRAME_PAD + BRAND + 14 /* gap */ + 1 /* divider */ + 16 /* gap */;
   const OW = W + FRAME_PAD * 2;
-  const OH = brandBlockH + CH + FRAME_PAD;
+  const OH = brandBlockH + card.height + FRAME_PAD;
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(OW * scale);
   canvas.height = Math.round(OH * scale);
@@ -3831,37 +3839,208 @@ const renderTaskShareCanvas = ({
   ctx.stroke();
   ctx.direction = "ltr";
   ctx.font = brandFont;
-  ctx.fillStyle = textColor;
+  ctx.fillStyle = colors.textColor;
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillText("TaskIt", lx + BRAND + 10, by + BRAND / 2 + 1);
   ctx.font = taglineFont;
-  ctx.fillStyle = text3Color;
+  ctx.fillStyle = colors.text3Color;
   ctx.textAlign = "right";
   ctx.fillText(tagline, OW - FRAME_PAD, by + BRAND / 2 + 1);
   ctx.direction = isHe ? "rtl" : "ltr";
   // divider
   const dy = FRAME_PAD + BRAND + 14;
-  ctx.strokeStyle = borderColor;
+  ctx.strokeStyle = colors.borderColor;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(FRAME_PAD, dy);
   ctx.lineTo(OW - FRAME_PAD, dy);
   ctx.stroke();
   // ── the task card itself, inset within the frame ──
-  drawRoundedRectPath(ctx, FRAME_PAD + 0.5, brandBlockH + 0.5, W - 1, CH - 1, 0);
-  ctx.fillStyle = cardColor;
+  card.draw(ctx, FRAME_PAD, brandBlockH);
+  return canvas;
+};
+
+// Copies a canvas to the clipboard as a PNG, falling back to a direct
+// download if the Clipboard API isn't available -- same fallback chain used
+// for the single-task share, factored out so the "selected tasks" bulk share
+// (also canvas-drawn, not an html2canvas DOM capture) can use it too.
+const copyOrDownloadShareCanvas = async (canvas, filename) => {
+  try {
+    if (!(navigator.clipboard && window.ClipboardItem)) throw new Error("no-clipboard-api");
+    const blobPromise = new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({
+      "image/png": blobPromise
+    })]);
+    appToast(t("shareCopied"));
+  } catch (err) {
+    try {
+      const url = canvas.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e2) {
+      // ignore -- toast below still informs the user either way
+    }
+    appToast(t("shareFailed"));
+  }
+};
+// If every selected task shares an obvious attribute -- the same date, the
+// same time, the same name, or the same type -- that becomes the title of
+// the shared photo instead of the generic "N selected tasks", since it's
+// more informative (e.g. sharing everything due today reads as that date
+// rather than just a count). Date+time together beat either alone; after
+// that, a shared name, then a shared type. Falls back to the plain count
+// title when nothing is common.
+const computeShareTitle = (tasksRaw, n) => {
+  if (!tasksRaw.length) return t("bulkShareTitle", n);
+  const allSame = key => {
+    const first = tasksRaw[0][key];
+    if (!first) return null;
+    return tasksRaw.every(tk => tk[key] === first) ? first : null;
+  };
+  const commonDate = allSame("date");
+  const commonTime = allSame("time");
+  if (commonDate && commonTime) return `${fmtDate(commonDate)}  •  ${commonTime}`;
+  if (commonDate) return fmtDate(commonDate);
+  if (commonTime) return commonTime;
+  const names = tasksRaw.map(tk => (taskDisplayName(tk) || "").trim());
+  if (names.every(nm => nm && nm === names[0])) return names[0];
+  const types = tasksRaw.map(tk => tk.type || "");
+  if (types.every(tp => tp === types[0])) return getTypeMeta(types[0]).label;
+  return t("bulkShareTitle", n);
+};
+// Builds a PNG-ready canvas for the bulk-select "Share" action -- the same
+// branding frame and the same per-task card style as the single-task share
+// (buildTaskShareCard: a type tag plus a completed/cancelled/late tag
+// instead of color-coding), just several cards stacked in one frame with a
+// title above them (see computeShareTitle).
+const renderBulkShareCanvas = (tasksRaw, options) => {
+  const isHe = getLang() === "he";
+  const markOverdue = !options || options.markOverdue !== false;
+  const markCompleted = !options || options.showCompletedMark !== false;
+  const showDetails = !options || options.showDetails !== false;
+  const scale = 2;
+  const W = 420;
+  const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const brandFont = `750 19px ${FONT}`;
+  const taglineFont = `500 12px ${FONT}`;
+  const titleFont = `700 19px ${FONT}`;
+  const colors = {
+    cardColor: resolveCssColor("var(--card)"),
+    textColor: resolveCssColor("var(--text)"),
+    text2Color: resolveCssColor("var(--text2)"),
+    text3Color: resolveCssColor("var(--text3)"),
+    borderColor: resolveCssColor("var(--border)")
+  };
+  const title = computeShareTitle(tasksRaw, tasksRaw.length);
+  const CARD_GAP = 12;
+  // Rounded corners since several of these sit stacked in one frame and each
+  // needs to read as its own distinct card -- unlike the single-task share,
+  // where the one card is flush with the frame's own inset.
+  const cards = tasksRaw.map(task => {
+    const doneT = markCompleted && isDone(task);
+    const cancelledT = markCompleted && isCancelled(task);
+    // A done/cancelled task is never "overdue"; with the mark off it is
+    // simply treated like any other pending task, including the overdue check.
+    const overdueT = markOverdue && !doneT && !cancelledT && isOverdue(task);
+    const status = doneT ? "done" : cancelledT ? "cancelled" : overdueT ? "late" : null;
+    const payload = {
+      name: taskDisplayName(task),
+      date: showDetails ? task.date : null,
+      time: showDetails ? task.time : null,
+      length: showDetails ? task.length : null,
+      type: task.type,
+      note: showDetails ? task.note : null,
+      recur: showDetails ? task.recur : null,
+      status
+    };
+    return buildTaskShareCard(payload, colors, W, 14);
+  });
+  const BRAND = 30;
+  const tagline = "Just Task It.";
+  const bgColor = resolveCssColor("var(--bg)");
+  const FRAME_PAD = 28;
+  const brandBlockH = FRAME_PAD + BRAND + 14 /* gap */ + 1 /* divider */ + 16 /* gap */;
+  const meas = document.createElement("canvas").getContext("2d");
+  meas.font = titleFont;
+  const titleLines = truncateCanvasLines(wrapCanvasText(meas, title, W), 2);
+  const TITLE_LINE_H = 25;
+  const titleBlockH = titleLines.length * TITLE_LINE_H + 18;
+  const cardsH = cards.reduce((sum, c) => sum + c.height, 0) + CARD_GAP * Math.max(0, cards.length - 1);
+  const OW = W + FRAME_PAD * 2;
+  // Same "don't let it read as a square" floor the single-task share uses,
+  // applied to the whole frame this time (not each card) -- with very few
+  // short tasks selected, the natural height could otherwise land close to
+  // the width. Extra room (if any) becomes breathing room below the last
+  // card rather than stretching anything.
+  const naturalOH = brandBlockH + titleBlockH + cardsH + FRAME_PAD;
+  const OH = Math.max(Math.round(OW * 1.3), naturalOH);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(OW * scale);
+  canvas.height = Math.round(OH * scale);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(scale, scale);
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, OW, OH);
+  // ── logo + wordmark + tagline, identical styling to the other share images ──
+  const lx = FRAME_PAD,
+    by = FRAME_PAD;
+  const grad = ctx.createLinearGradient(lx, by, lx + BRAND, by + BRAND);
+  grad.addColorStop(0, "#3B82F6");
+  grad.addColorStop(1, "#2563EB");
+  drawRoundedRectPath(ctx, lx, by, BRAND, BRAND, 9);
+  ctx.fillStyle = grad;
   ctx.fill();
-  ctx.strokeStyle = borderColor;
-  ctx.lineWidth = 1;
+  const k = BRAND * 0.5 / 24,
+    ox = lx + BRAND * 0.25,
+    oy = by + BRAND * 0.25;
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2.4;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(ox + 20 * k, oy + 6 * k);
+  ctx.lineTo(ox + 9 * k, oy + 17 * k);
+  ctx.lineTo(ox + 4 * k, oy + 12 * k);
   ctx.stroke();
-  // Card content is drawn in its own (0,0)-origin coordinate space, same as
-  // before -- just translated into place inside the inset card.
-  ctx.save();
-  ctx.translate(FRAME_PAD, brandBlockH);
+  ctx.direction = "ltr";
+  ctx.font = brandFont;
+  ctx.fillStyle = colors.textColor;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("TaskIt", lx + BRAND + 10, by + BRAND / 2 + 1);
+  ctx.font = taglineFont;
+  ctx.fillStyle = colors.text3Color;
+  ctx.textAlign = "right";
+  ctx.fillText(tagline, OW - FRAME_PAD, by + BRAND / 2 + 1);
   ctx.direction = isHe ? "rtl" : "ltr";
-  runLayout(ctx);
-  ctx.restore();
+  // divider
+  const dy = FRAME_PAD + BRAND + 14;
+  ctx.strokeStyle = colors.borderColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(FRAME_PAD, dy);
+  ctx.lineTo(OW - FRAME_PAD, dy);
+  ctx.stroke();
+  // ── title (the common attribute across every selected task, or a plain count) ──
+  ctx.font = titleFont;
+  ctx.fillStyle = colors.textColor;
+  ctx.textAlign = isHe ? "right" : "left";
+  ctx.textBaseline = "alphabetic";
+  const titleX = isHe ? OW - FRAME_PAD : FRAME_PAD;
+  titleLines.forEach((line, i) => {
+    ctx.fillText(line, titleX, brandBlockH + (i + 1) * TITLE_LINE_H - 6);
+  });
+  // ── the task cards, stacked ──
+  let cy = brandBlockH + titleBlockH;
+  cards.forEach(card => {
+    card.draw(ctx, FRAME_PAD, cy);
+    cy += card.height + CARD_GAP;
+  });
   return canvas;
 };
 
@@ -6316,7 +6495,7 @@ const MonthView = ({
       style: {
         animation: "fadeIn 0.22s ease"
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, dragPill, /*#__PURE__*/React.createElement("div", {
       ref: stickyHeaderRef,
       style: {
         position: "sticky",
@@ -6899,6 +7078,8 @@ const MonthView = ({
           t: tk,
           ds: ds,
           onTaskClick: onTaskClick,
+          dragHandlers: monthDragHandlers(tk),
+          isDragging: !!drag && drag.id === tk.id,
           selectMode: selectMode,
           selected: !!(selectedIds && selectedIds.has(tk.id)),
           onToggleSelect: onToggleSelect
@@ -8242,11 +8423,18 @@ const WeekView = ({
       const maxTitleLines = Math.max(1, Math.min(3, Math.floor(availForTitle / titleLineH)));
       const nameLine = /*#__PURE__*/React.createElement("div", {
         style: maxTitleLines > 1 ? {
-          display: "-webkit-box",
-          WebkitLineClamp: maxTitleLines,
-          WebkitBoxOrient: "vertical",
+          // Clip with a plain fixed max-height instead of -webkit-line-clamp:
+          // html2canvas (used for the share-photo capture) doesn't reliably
+          // honor -webkit-box/-webkit-line-clamp, so on a capture it could
+          // render the full, un-clamped text at its natural height/width --
+          // which, in a narrow lane from same-time tasks split side by side,
+          // visually spilled over and covered the neighboring block's name.
+          // A plain maxHeight + overflow:hidden clips the same way but is
+          // basic CSS box clipping that both the live browser and html2canvas
+          // apply consistently.
+          maxHeight: maxTitleLines * titleLineH,
           overflow: "hidden",
-          wordBreak: "break-word",
+          overflowWrap: "break-word",
           lineHeight: 1.25
         } : {
           whiteSpace: "nowrap",
@@ -8554,7 +8742,8 @@ const ListByDate = ({
   onDropDate,
   selectMode = false,
   selectedIds = null,
-  onToggleSelect = null
+  onToggleSelect = null,
+  singleColumnList = false
 }) => {
   // Drag a card onto another date group to move it to that date.
   const {
@@ -8914,7 +9103,7 @@ const ListByDate = ({
           // the row's width between them, one task fills the row on its
           // own) rather than staying pinned to the 320px basis and leaving
           // a gap -- a row only wraps once there's genuinely no more room.
-          flex: "1 1 320px",
+          flex: singleColumnList ? "1 1 100%" : "1 1 320px",
           maxWidth: "100%",
           minWidth: 0
         }
@@ -9061,7 +9250,8 @@ const ListByType = ({
   onAnyOpenChange,
   selectMode = false,
   selectedIds = null,
-  onToggleSelect = null
+  onToggleSelect = null,
+  singleColumnList = false
 }) => {
   // Drag a card onto another type group to change its type. Both the header and
   // the card area register as zones, so a collapsed group is still a target.
@@ -9448,7 +9638,7 @@ const ListByType = ({
         // row's width between them, one task fills the row on its own)
         // rather than staying pinned to the 320px basis and leaving a gap --
         // a row only wraps once there's genuinely no more room.
-        flex: "1 1 320px",
+        flex: singleColumnList ? "1 1 100%" : "1 1 320px",
         maxWidth: "100%",
         minWidth: 0
       }
@@ -9474,7 +9664,7 @@ const ListByType = ({
         // Same flex-item sizing as each task card above: grows to fill
         // whatever width is left in its row, or the whole row if it ends up
         // alone on the last line.
-        flex: "1 1 320px",
+        flex: singleColumnList ? "1 1 100%" : "1 1 320px",
         maxWidth: "100%",
         minWidth: 0,
         display: "flex",
@@ -14357,8 +14547,11 @@ const icsToTasks = (text, type, existingIds) => {
   let expanded = 0;
   for (const ev of events) {
     const st = icsParseDT(ev.start);
-    const name = String(ev.summary || "").trim();
+    const mark = splitStatusMark(ev.summary);
+    const name = mark.name;
     if (!st || !name) { skipped++; continue; }
+    const isCancelled = ev.status === "CANCELLED" || mark.cancelled;
+    const isDoneEv = mark.done && !isCancelled;
     let length = null;
     if (!st.allDay) {
       const en = ev.end ? icsParseDT(ev.end) : null;
@@ -14387,8 +14580,8 @@ const icsToTasks = (text, type, existingIds) => {
         length,
         note,
         recur: null,
-        done: false,
-        cancelled: ev.status === "CANCELLED",
+        done: isDoneEv,
+        cancelled: isCancelled,
         created: Date.now(),
         ics: true
       });
@@ -15369,6 +15562,8 @@ const SettingsModal = ({
   onToggleIntl,
   prefLookahead,
   onToggleLookahead,
+  singleColumnLists,
+  onToggleSingleColumnLists,
   onSpecialLoading,
   gcalConnected,
   gcalBusy,
@@ -15912,6 +16107,14 @@ const SettingsModal = ({
   }, /*#__PURE__*/React.createElement(Toggle, {
     on: prefLookahead,
     onToggle: onToggleLookahead,
+    color: "#6366F1"
+  })), /*#__PURE__*/React.createElement(Row, {
+    icon: "📶",
+    label: isHe ? "עמודות מרובות ברשימות" : "Multiple columns in lists",
+    sub: isHe ? !singleColumnLists ? "כמה כרטיסים בשורה כשיש מקום (כמו היום)" : "כרטיס אחד בכל שורה ב'לפי תאריך' ו'לפי סוג'" : !singleColumnLists ? "Multiple cards per row when there's room (as today)" : "One card per row in By Date & By Type"
+  }, /*#__PURE__*/React.createElement(Toggle, {
+    on: !singleColumnLists,
+    onToggle: onToggleSingleColumnLists,
     color: "#6366F1"
   })), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -16683,7 +16886,8 @@ const AllTasksView = ({
   onShareReady,
   selectMode = false,
   selectedIds = null,
-  onToggleSelect = null
+  onToggleSelect = null,
+  singleColumnLists = false
 }) => {
   const isHe = getLang() === "he";
   const byDate = activeTab === "date";
@@ -16773,7 +16977,8 @@ const AllTasksView = ({
     onDropDate: onDropDate,
     selectMode: selectMode,
     selectedIds: selectedIds,
-    onToggleSelect: onToggleSelect
+    onToggleSelect: onToggleSelect,
+    singleColumnList: singleColumnLists
   }) : /*#__PURE__*/React.createElement(ListByType, {
     tasks: tasks.filter(t => !isDone(t) && !isCancelled(t)),
     onToggle: onToggle,
@@ -16790,7 +16995,8 @@ const AllTasksView = ({
     onShareReady: onShareReady,
     selectMode: selectMode,
     selectedIds: selectedIds,
-    onToggleSelect: onToggleSelect
+    onToggleSelect: onToggleSelect,
+    singleColumnList: singleColumnLists
   }));
 };
 
@@ -16890,7 +17096,11 @@ const SEARCH_PAGE_SIZE = 7; // date-groups per page
 const SearchView = ({
   tasks,
   onEdit,
-  onShareReady
+  onShareReady,
+  selectMode = false,
+  selectedIds = null,
+  onToggleSelect = null,
+  onSetSelected = null
 }) => {
   const isHe = getLang() === "he";
   const viewWidth = useWindowWidth();
@@ -17217,6 +17427,147 @@ const SearchView = ({
     value: cancelledC,
     color: "#FB7185"
   }];
+
+  // ── Bulk-select helpers (select mode only) ─────────────────────────────────
+  // The quick-pick chips and the per-day checkboxes act on every matching
+  // result of the current search -- not only the pages scrolled into view so
+  // far. Anything that can't take a bulk action (holidays, read-only Google
+  // events) is left out so the selected count and the actions stay honest;
+  // those can still be ticked by hand, one at a time.
+  const bulkOn = !!(selectMode && onSetSelected);
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
+  const bulkPool = bulkOn ? filtered.filter(tk => !isBulkEditLocked(tk)) : [];
+  const isPendingTk = tk => !isDone(tk) && !isCancelled(tk);
+  const quickPicks = bulkOn ? [{
+    key: "all",
+    label: t("selectAll"),
+    list: bulkPool
+  }, {
+    key: "pending",
+    label: t("pendingL"),
+    list: bulkPool.filter(isPendingTk)
+  }, {
+    key: "overdue",
+    label: t("overdue"),
+    list: bulkPool.filter(isOverdue)
+  }, {
+    key: "done",
+    label: t("completedL"),
+    list: bulkPool.filter(isDone)
+  }, {
+    key: "cancelled",
+    label: t("cancelledL"),
+    list: bulkPool.filter(isCancelled)
+  }, {
+    key: "nodate",
+    label: t("noDate"),
+    list: bulkPool.filter(tk => !tk.date)
+  }].filter(p => p.key === "all" || p.list.length > 0) : [];
+  const invertSelection = () => {
+    const on = [],
+      off = [];
+    bulkPool.forEach(tk => (isSel(tk.id) ? off : on).push(tk.id));
+    if (on.length) onSetSelected(on, true);
+    if (off.length) onSetSelected(off, false);
+  };
+  const bulkChipStyle = active => ({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
+    padding: "5px 11px",
+    borderRadius: 16,
+    fontSize: 12,
+    fontWeight: 600,
+    fontFamily: "inherit",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    border: `1px solid ${active ? C.blueBorder : C.border2}`,
+    background: active ? C.blueBg : C.card2,
+    color: active ? C.blue : C.text3
+  });
+  const selectToolbar = bulkOn && filtered.length > 0 ? /*#__PURE__*/React.createElement("div", {
+    "data-share-ignore": "true",
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: 6,
+      margin: "0 0 12px",
+      padding: "8px 0",
+      borderTop: `1px solid ${C.border}`
+    }
+  }, quickPicks.map(p => {
+    const ids = p.list.map(tk => tk.id);
+    const active = ids.length > 0 && ids.every(isSel);
+    return /*#__PURE__*/React.createElement("button", {
+      key: p.key,
+      type: "button",
+      disabled: ids.length === 0,
+      onClick: () => onSetSelected(ids, !active),
+      style: {
+        ...bulkChipStyle(active),
+        opacity: ids.length === 0 ? 0.4 : 1
+      }
+    }, p.key === "all" && active ? t("deselectAll") : p.label, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontWeight: 700,
+        opacity: 0.6
+      }
+    }, ids.length));
+  }), bulkPool.length > 0 && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: invertSelection,
+    style: bulkChipStyle(false)
+  }, isHe ? "הפוך בחירה" : "Invert")) : null;
+  // A checkbox at the end of a date header that selects / clears that whole
+  // day's results in one tap (empty / partial / full states).
+  const groupSelectBtn = list => {
+    if (!bulkOn) return null;
+    const ids = list.filter(tk => !isBulkEditLocked(tk)).map(tk => tk.id);
+    if (!ids.length) return null;
+    const n = ids.filter(isSel).length;
+    const all = n === ids.length;
+    return /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      "data-share-ignore": "true",
+      onClick: e => {
+        e.stopPropagation();
+        onSetSelected(ids, !all);
+      },
+      title: all ? t("deselect") : t("select"),
+      "aria-label": all ? t("deselect") : t("select"),
+      style: {
+        [isHe ? "marginRight" : "marginLeft"]: "auto",
+        width: 20,
+        height: 20,
+        minWidth: 20,
+        padding: 0,
+        borderRadius: 6,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: n ? "none" : `1.5px solid ${C.border2}`,
+        background: n ? C.blue : "transparent"
+      }
+    }, n > 0 && /*#__PURE__*/React.createElement("svg", {
+      width: "11",
+      height: "11",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "#fff",
+      strokeWidth: "4",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }, all ? /*#__PURE__*/React.createElement("polyline", {
+      points: "20 6 9 17 4 12"
+    }) : /*#__PURE__*/React.createElement("line", {
+      x1: "5",
+      y1: "12",
+      x2: "19",
+      y2: "12"
+    })));
+  };
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       animation: "fadeIn 0.25s ease"
@@ -17582,7 +17933,7 @@ const SearchView = ({
         height: 160, prefLookahead: false,
         key: `search-line-${datePreset}-${fromDate}-${toDate}-${typeFilter}-${query}`
       })
-    )), sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    )), selectToolbar, sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "40px 0",
@@ -17702,7 +18053,7 @@ const SearchView = ({
           fontWeight: 600,
           color: C.text3
         }
-      }, t("noDate"))), /*#__PURE__*/React.createElement("div", {
+      }, t("noDate")), groupSelectBtn(dayTasks)), /*#__PURE__*/React.createElement("div", {
         style: {
           paddingLeft: isHe ? 0 : 38,
           paddingRight: isHe ? 38 : 0
@@ -17711,7 +18062,10 @@ const SearchView = ({
         key: tk.id,
         t: tk,
         ds: "",
-        onTaskClick: onEdit
+        onTaskClick: onEdit,
+        selectMode: selectMode,
+        selected: !!(selectedIds && selectedIds.has(tk.id)),
+        onToggleSelect: onToggleSelect
       })))))
       const date = new Date(ds + "T00:00:00");
       const todayDs = todayStr();
@@ -17822,7 +18176,7 @@ const SearchView = ({
           background: "#DBEAFE",
           color: C.blue
         }
-      }, t("today").toUpperCase())), /*#__PURE__*/React.createElement("div", {
+      }, t("today").toUpperCase()), groupSelectBtn(dayTasks)), /*#__PURE__*/React.createElement("div", {
         style: {
           paddingLeft: isHe ? 0 : 38,
           paddingRight: isHe ? 38 : 0
@@ -17831,7 +18185,10 @@ const SearchView = ({
         key: tk.id,
         t: tk,
         ds: ds,
-        onTaskClick: onEdit
+        onTaskClick: onEdit,
+        selectMode: selectMode,
+        selected: !!(selectedIds && selectedIds.has(tk.id)),
+        onToggleSelect: onToggleSelect
       })))))
     });
   })(), visibleCount < sortedKeys.length && /*#__PURE__*/React.createElement("div", {
@@ -18742,9 +19099,10 @@ const GCal = (() => {
 
   function foreignEventToTask(calendarId, calSummary, shared, event) {
     const untitled = getLang() === "he" ? "(ללא כותרת)" : "(untitled)";
+    const mark = splitStatusMark(event.summary);
     const patch = {
       id: foreignTaskId(calendarId, event.id),
-      name: event.summary || untitled,
+      name: mark.name || untitled,
       note: event.description || null,
       type: "google",
       source: "google",
@@ -18755,6 +19113,12 @@ const GCal = (() => {
       created: event.created ? new Date(event.created).getTime() : Date.now(),
       updated: event.updated ? new Date(event.updated).getTime() : Date.now()
     };
+    // A ✔ / ✖ title mark carries the status. Only set when a mark is present, so
+    // an unmarked event never overrides what the person ticked off in TaskIt.
+    if (mark.done || mark.cancelled) {
+      patch.done = mark.done;
+      patch.cancelled = mark.cancelled;
+    }
     // googleRawLength / googleAllDay remember what the event really looked like in
     // Google, so writing an edit back never silently reshapes it (see
     // patchForeignEvent). They're always set explicitly so a stale value can't
@@ -18805,10 +19169,20 @@ const GCal = (() => {
   // type-change can find its way back to the right calendar/event.
   async function pullForeign() {
     const cals = await listForeignCalendars(true);
-    const tasksOut = [];
     let complete = true;
     const timeMin = new Date(Date.now() - 60 * 864e5).toISOString();
     const timeMax = new Date(Date.now() + 400 * 864e5).toISOString();
+    // The same real appointment can be visible through more than one
+    // calendar -- e.g. an event you organize on a shared calendar also shows
+    // up on your own primary calendar as an attendee copy. Those are two
+    // distinct Google event resources (different calendarId/eventId pairs),
+    // which used to become two separate, never-reconciled local tasks.
+    // Google gives every copy of the same appointment the same iCalUID, so
+    // dedupe on that (falling back to the calendar+event identity, which is
+    // always unique, when a feed happens not to set it) and keep only one
+    // copy per real appointment -- preferring the one from a calendar the
+    // user actually owns, since that's the editable, authoritative copy.
+    const chosen = new Map(); // dupeKey -> { cal, ev }
     for (const cal of cals) {
       let pageToken = null, guard = 0;
       try {
@@ -18823,7 +19197,11 @@ const GCal = (() => {
             if (ev.status === "cancelled") continue;
             if (ev.extendedProperties?.private?.taskitId) continue; // one of ours, already covered by pullAll
             if (!ev.start) continue;
-            tasksOut.push(foreignEventToTask(cal.id, cal.summary, cal.accessRole !== "owner", ev));
+            const dupeKey = ev.iCalUID || (cal.id + "::" + ev.id);
+            const prior = chosen.get(dupeKey);
+            if (!prior || (cal.accessRole === "owner" && prior.cal.accessRole !== "owner")) {
+              chosen.set(dupeKey, { cal, ev });
+            }
           }
           pageToken = res?.nextPageToken || null;
         } while (pageToken && ++guard < 20);
@@ -18831,6 +19209,7 @@ const GCal = (() => {
         complete = false; // never let a partial read look like "these are gone"
       }
     }
+    const tasksOut = [...chosen.values()].map(({ cal, ev }) => foreignEventToTask(cal.id, cal.summary, cal.accessRole !== "owner", ev));
     return { tasks: tasksOut, complete };
   }
 
@@ -18927,12 +19306,13 @@ const BULK_DBLCLICK_MS = 600;
 const BULK_BAR_ANIM_MS = 200;
 
 // ── Bulk selection: floating action bar shown while selecting tasks ────────
-// Wide screens: one centered pill (cancel · count · actions).
-// Narrow screens (phones / portrait): the bar takes the bottom nav's slot
-// (the nav is hidden while selecting) and lays out as two rows -- a slim
-// header (cancel + count) and six equal-width action cells -- so every
-// action is visible without horizontal scrolling and nothing hides behind
-// the bottom nav.
+// Wide screens: one centered pill (cancel · count · actions), anchored to
+// the bottom.
+// Narrow screens (phones / portrait): a floating bar pinned near the TOP of
+// the screen instead, so the bottom nav stays put and visible the whole
+// time you're selecting. It lays out as two rows -- a slim header (cancel +
+// count) and six equal-width action cells -- so every action is visible
+// without horizontal scrolling.
 const BulkActionBar = ({
   count,
   onAction,
@@ -19205,7 +19585,11 @@ const BulkActionBar = ({
     return /*#__PURE__*/React.createElement("div", {
       style: {
         ...shellStyle,
-        bottom: "calc(12px + env(safe-area-inset-bottom, 0px))",
+        // 48px clears the narrow-layout sticky logo/icons header (it stays
+        // mounted and visible the whole time we're selecting), plus a 12px
+        // gap beneath it.
+        top: "calc(48px + 12px + env(safe-area-inset-top, 0px))",
+        animation: closing ? `bulkBarOutTop ${BULK_BAR_ANIM_MS}ms ease forwards` : "bulkBarInTop 0.2s ease",
         width: "calc(100% - 20px)",
         maxWidth: 560,
         borderRadius: 22,
@@ -19303,11 +19687,6 @@ function App() {
   const [view, setView] = useState("home");
   // ── Bulk selection (multi-select + batch actions) ─────────────────────────
   const [selectMode, setSelectMode] = useState(false);
-  // Keeps the bottom nav mounted (playing a fade/scale out) for
-  // BULK_BAR_ANIM_MS right after entering select mode, so it crossfades with
-  // the bar's entrance instead of just vanishing the instant selectMode
-  // flips on.
-  const [navClosing, setNavClosing] = useState(false);
   // Keeps the bar mounted (playing its exit animation, content frozen as it
   // was) for BULK_BAR_ANIM_MS after Cancel/exit, instead of the bar just
   // vanishing the instant selectMode flips off.
@@ -19319,8 +19698,6 @@ function App() {
       exitSelectMode();
     } else {
       setSelectMode(true);
-      setNavClosing(true);
-      setTimeout(() => setNavClosing(false), BULK_BAR_ANIM_MS);
     }
   };
   // Delete / clear-details confirm by double-clicking the same icon in the
@@ -19365,6 +19742,24 @@ function App() {
     const id = setTimeout(() => setBulkNotice(""), 1800);
     return () => clearTimeout(id);
   }, [bulkNotice]);
+  // Bulk (de)select for views that offer "select all / select this group".
+  // Read-only shared Google events can never enter the selection, same rule
+  // as toggleTaskSelected -- enforced here too so no caller can bypass it.
+  const setTasksSelected = (ids, on) => {
+    const byId = new Map();
+    tasks.forEach(t => byId.set(t.id, t));
+    archiveTasks.forEach(t => { if (!byId.has(t.id)) byId.set(t.id, t); });
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      ids.forEach(id => {
+        if (!on) { next.delete(id); return; }
+        const tk = byId.get(id);
+        if (tk && isSelectLocked(tk)) return;
+        next.add(id);
+      });
+      return next;
+    });
+  };
   const toggleTaskSelected = id => {
     // Central refusal: whatever view called this, a task locked out of
     // selection entirely (a Google event shared into the account read-only)
@@ -19420,16 +19815,17 @@ function App() {
   // ── Bulk-select "Share" action ──────────────────────────────────────────
   // Independent of the top-bar share button above (that one shares whatever
   // screen is currently mounted; this one shares an arbitrary, cross-view
-  // set of tasks the person hand-picked in select mode), but it reuses the
-  // exact same branded-image pipeline: an options dialog, a capture-only DOM
-  // node rendered off-screen, and shareElementAsImage/composeShareFrame for
-  // the actual PNG + clipboard/download + toast. Selection is intentionally
-  // left alone afterwards (no exitSelectMode call anywhere in this path) so
-  // the person can keep adjusting the same selection after sharing it.
+  // set of tasks the person hand-picked in select mode). Unlike the top-bar
+  // shares (which snapshot a real DOM node with html2canvas), this reuses
+  // the single task's hand-drawn canvas card style (see buildTaskShareCard /
+  // renderBulkShareCanvas) so a multi-task share looks like several
+  // single-task cards stacked together, not a plain list. Selection is
+  // intentionally left alone afterwards (no exitSelectMode call anywhere in
+  // this path) so the person can keep adjusting the same selection after
+  // sharing it.
   const [bulkShareDialogOpen, setBulkShareDialogOpen] = useState(false);
   const [bulkSharing, setBulkSharing] = useState(false);
   const [bulkShareOptions, setBulkShareOptions] = useState(null);
-  const bulkShareCaptureRef = useRef(null);
   // The selected tasks as one flat list, oldest first: by date (undated last),
   // then clock time (untimed first), then name.
   const buildBulkShareList = ids => {
@@ -19454,13 +19850,14 @@ function App() {
     try {
       appToast(t("sharePreparing"));
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
-        // Same two-frame wait every other share capture uses: the node above
-        // is only just mounting this render, so it needs a beat to actually
-        // paint (fonts, colors, layout) before html2canvas snapshots it.
+        // Same beat every other share gives the forced theme to actually
+        // apply (a re-render updates the CSS variables the canvas reads)
+        // before drawing.
         await new Promise(resolve => {
           requestAnimationFrame(() => requestAnimationFrame(resolve));
         });
-        await shareElementAsImage(bulkShareCaptureRef.current, `${getLang() === "he" ? "משימות-נבחרות" : "selected-tasks"}.png`);
+        const canvas = renderBulkShareCanvas(buildBulkShareList(selectedIds), options);
+        await copyOrDownloadShareCanvas(canvas, `${getLang() === "he" ? "משימות-נבחרות" : "selected-tasks"}.png`);
       });
     } finally {
       setBulkSharing(false);
@@ -19474,7 +19871,6 @@ function App() {
   const slideKey = React.useRef(0);
   const SLIDE_ORDER = ["home", "month", "week", "all-tasks", "search"];
   const navigateTo = nextView => {
-    if (nextView === "search" && selectMode) exitSelectMode();
     if (nextView === view) {
       setTappedTab(nextView);
       setTimeout(() => setTappedTab(null), 400);
@@ -19614,6 +20010,7 @@ function App() {
   const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL));
   const [prefLookahead, setPrefLookahead] = useState(() => getPref(PREF_LOOKAHEAD) !== "no"); // default ON
   const [prefGcalForeign, setPrefGcalForeign] = useState(() => getPref(PREF_GCAL_FOREIGN) !== "no"); // default ON
+  const [singleColumnLists, setSingleColumnLists] = useState(() => getPref(PREF_SINGLE_COLUMN_LISTS) === "yes"); // default OFF
   // New-user welcome dialog (offline vs Google) -- shown once, the very
   // first time the app runs on a device.
   const [showWelcome, setShowWelcome] = useState(() => {
@@ -19678,6 +20075,15 @@ function App() {
   const gcalLoc = useRef({});
   const gcalSeenIds = useRef(new Set());   // ids we have actually observed locally
   const gcalFailed = useRef({});           // taskId -> message
+  // Whether gcalPullNow has ever completed a full pull this "session" (since
+  // connect / reconnect). Deliberately its own flag rather than inferring
+  // "first pull" from gcalRemote.current being empty -- a manual rescan used
+  // to reset gcalRemote.current right before pulling, which made every scan
+  // look like the very first pull ever and re-armed the much more aggressive
+  // "not found remotely -> delete locally" rule meant only for true first
+  // pulls. That accidentally deleted tasks whose event simply hadn't shown up
+  // in that one read yet (timing, pagination, a concurrent delete elsewhere).
+  const gcalHasPulledOnce = useRef(false);
   const gcalQueue = useRef(Promise.resolve());
   const gcalSyncing = useRef(false);
 
@@ -19805,7 +20211,7 @@ function App() {
         // apart "was in localStorage at startup → deleted elsewhere → remove" from
         // "created in this session, not pushed yet → keep".
         if (complete) {
-          const isFirstPull = Object.keys(hadBefore).length === 0;
+          const isFirstPull = !gcalHasPulledOnce.current;
           next = (next === ts ? [...ts] : next).filter(t => {
             if (t.source === "google") return true; // lives in a foreign calendar, handled by gcalPullForeignNow
             // Holiday tasks are regenerated locally, not "owned" by whatever
@@ -19823,7 +20229,7 @@ function App() {
       });
 
       setGcalStats(s => ({ ...s, lastPull: Date.now() }));
-      if (complete) { setGcalReady(true); setGcalError(""); }
+      if (complete) { gcalHasPulledOnce.current = true; setGcalReady(true); setGcalError(""); }
     } catch (e) {
       setGcalError(e.message || String(e));
     } finally {
@@ -19875,6 +20281,11 @@ function App() {
             // always start pending.
             next.push({ done: false, cancelled: false, ...patch });
           } else {
+            // A ✔ / ✖ mark on the event adopts its status -- but only when the
+            // event was edited more recently than the local task, so a status
+            // just changed here (not yet pushed back) is never undone by a pull.
+            const remoteMarked = !!(patch.done || patch.cancelled);
+            const adopt = remoteMarked && !(existing.updated && patch.updated <= existing.updated);
             // Preserve local done/cancelled — those never come from the remote
             // event itself, only from what the person marked in TaskIt. Everything
             // else (title, note, date/time) follows the live Google event: by the
@@ -19883,8 +20294,8 @@ function App() {
             next = (next === ts ? [...ts] : next).map(t => t.id === id ? {
               ...t,
               ...patch,
-              done: existing.done,
-              cancelled: existing.cancelled
+              done: adopt ? !!patch.done : existing.done,
+              cancelled: adopt ? !!patch.cancelled : existing.cancelled
             } : t);
           }
           if (!byId[id]?.googleShared) {
@@ -19962,6 +20373,7 @@ function App() {
     gcalRemote.current = {};
     gcalLoc.current = {};
     gcalFailed.current = {};
+    gcalHasPulledOnce.current = false;
     setGcalStatus("");
     setGcalScanMsg("");
     // Foreign events only ever exist as a live mirror while connected — drop them
@@ -20008,8 +20420,12 @@ function App() {
       });
       // Prefer keeping a live app-generated holiday task over anything else
       // (it's the one the app keeps regenerating and pushing on its own),
-      // then the earliest created, then the one with a time set.
-      const keepRank = item => isHolidayish(item.tk) ? 0 : 1;
+      // then whichever copy is actually confirmed synced to a real Google
+      // event (so we never delete the one holding the real online link while
+      // keeping an orphan that was never pushed), then the earliest created,
+      // then the one with a time set.
+      const isLinked = item => !!gcalLoc.current[item.tk.id];
+      const keepRank = item => isHolidayish(item.tk) ? 0 : isLinked(item) ? 1 : 2;
       Object.values(groups).forEach(items => {
         if (items.length < 2) return;
         const sorted = [...items].sort((a, b) => {
@@ -20033,6 +20449,34 @@ function App() {
         const dupe = nativeHolidays.some(n => n.tk.date === item.tk.date && (names.includes(normHolidayName(n.tk.name)) || names.includes(normHolidayName(n.tk.nameEn))));
         if (dupe) toDeleteIds.add(item.tk.id);
       });
+      // Pass 3: the same real appointment can show up as two separate local
+      // "google" tasks when it's visible through more than one calendar --
+      // e.g. an event you organize on a shared calendar also lands on your
+      // own primary calendar as an attendee copy. pullForeign() now dedupes
+      // this going forward (matching by the event's iCalUID), but pairs
+      // created before that fix need a one-time local cleanup here. These are
+      // genuine independent Google Calendar events, not ones TaskIt created,
+      // so only the extra LOCAL copy is removed -- neither online event is
+      // ever touched by this pass.
+      const localOnlyIds = new Set();
+      const normEventKey = tk => (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "") + "|" + (tk.time || "");
+      const foreignGroups = {};
+      eligible.filter(item => item.tk.source === "google" && !isHolidayish(item.tk) && !toDeleteIds.has(item.tk.id)).forEach(item => {
+        const k = normEventKey(item.tk);
+        (foreignGroups[k] = foreignGroups[k] || []).push(item);
+      });
+      Object.values(foreignGroups).forEach(items => {
+        if (items.length < 2) return;
+        // Prefer a copy from a calendar the user owns (the authoritative,
+        // editable one) over a shared/attendee mirror; then just keep
+        // whichever copy has been around the longest.
+        const sorted = [...items].sort((a, b) => {
+          const oa = a.tk.googleShared ? 1 : 0, ob = b.tk.googleShared ? 1 : 0;
+          if (oa !== ob) return oa - ob;
+          return (a.tk.created || 0) - (b.tk.created || 0);
+        });
+        sorted.slice(1).forEach(item => { toDeleteIds.add(item.tk.id); localOnlyIds.add(item.tk.id); });
+      });
       const toDeleteById = new Map(combined.filter(item => toDeleteIds.has(item.tk.id)).map(item => [item.tk.id, item.tk]));
       const localDeleted = toDeleteIds.size;
       if (localDeleted) {
@@ -20044,6 +20488,7 @@ function App() {
           delete gcalRemote.current[id];
           delete gcalLoc.current[id];
           delete gcalFailed.current[id];
+          if (localOnlyIds.has(id)) return; // a real, independent Google event -- local copy only
           // A foreign import's real Google event lives at its own
           // calendarId/eventId, not at the derived id deleteTask expects --
           // using the wrong one here would silently fail, or worse, target
@@ -20061,8 +20506,16 @@ function App() {
       const { removedCount, migratedCount, calendarsRemoved } = await GCal.reconcileAndDedupe();
       const remoteDeleted = (removedCount || 0) + (migratedCount || 0) + (calendarsRemoved || 0);
 
-      gcalRemote.current = {};
-      gcalLoc.current = {};
+      // NOTE: this used to also reset gcalRemote.current / gcalLoc.current here
+      // to force a "fresh" read. gcalPullNow already rebuilds both from scratch
+      // on every call regardless, so that reset did nothing useful -- but it
+      // DID make gcalPullNow think this was the very first pull of the whole
+      // session (see gcalHasPulledOnce), which arms a much more aggressive
+      // "didn't see it in this one read -> assume deleted elsewhere -> remove
+      // locally" rule. That's exactly what could wipe out a task (and, once
+      // it's gone from local state, eventually its real online event too)
+      // just because this particular read hit a timing hiccup. Only clear the
+      // stale failure messages; leave the sync maps alone.
       gcalFailed.current = {};
       await gcalPullNow();
       if (prefGcalForeign) await gcalPullForeignNow();
@@ -20356,6 +20809,11 @@ function App() {
     const next = !prefLookahead;
     setPref(PREF_LOOKAHEAD, next ? "yes" : "no");
     setPrefLookahead(next);
+  };
+  const handleToggleSingleColumnLists = () => {
+    const next = !singleColumnLists;
+    setPref(PREF_SINGLE_COLUMN_LISTS, next ? "yes" : "no");
+    setSingleColumnLists(next);
   };
   const handleToggleIL = () => {
     if (prefIL === "yes") {
@@ -21643,7 +22101,6 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: toggleSelectMode,
-    disabled: view === "search",
     title: t("selectMode"),
     "aria-label": t("selectMode"),
     style: {
@@ -21652,13 +22109,12 @@ function App() {
       borderRadius: 10,
       border: `1px solid ${selectMode ? C.blueBorder : C.border2}`,
       background: selectMode ? C.blueBg : C.card2,
-      cursor: view === "search" ? "default" : "pointer",
+      cursor: "pointer",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
       flexShrink: 0,
       transition: "all 0.15s",
-      opacity: view === "search" ? 0.4 : 1,
       fontSize: 13,
       fontWeight: 600,
       color: selectMode ? C.blue : C.text3
@@ -21934,7 +22390,6 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: toggleSelectMode,
-    disabled: view === "search",
     title: t("selectMode"),
     "aria-label": t("selectMode"),
     style: {
@@ -21943,12 +22398,11 @@ function App() {
       borderRadius: 9,
       border: `1px solid ${selectMode ? C.blueBorder : C.border2}`,
       background: selectMode ? C.blueBg : C.card2,
-      cursor: view === "search" ? "default" : "pointer",
+      cursor: "pointer",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      flexShrink: 0,
-      opacity: view === "search" ? 0.4 : 1
+      flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement(Icon, {
     name: "check",
@@ -22014,7 +22468,7 @@ function App() {
     name: "settings",
     size: 15,
     color: C.text3
-  })))), narrow && (!selectMode || navClosing || bulkBarClosing) && /*#__PURE__*/React.createElement("div", {
+  })))), narrow && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
       bottom: 0,
@@ -22130,12 +22584,10 @@ function App() {
         WebkitBackdropFilter: "blur(40px) saturate(180%)",
         border: dark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(255,255,255,0.7)",
         boxShadow: dark ? "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" : "0 8px 32px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.8)",
-        // Crossfades with the bulk bar instead of just popping in/out:
-        // fades+settles out the instant select mode is entered (in step with
-        // the bulk bar fading in), and fades+settles back in while the bulk
-        // bar is playing its own exit animation.
-        animation: navClosing ? `navBarOut ${BULK_BAR_ANIM_MS}ms ease forwards` : bulkBarClosing ? `navBarIn ${BULK_BAR_ANIM_MS}ms ease forwards` : undefined,
-        pointerEvents: navClosing ? "none" : "all",
+        // The bulk-select bar lives up near the top now, so the bottom nav
+        // just stays put and usable the whole time -- no more crossfade
+        // with select mode entering/exiting.
+        pointerEvents: "all",
         minWidth: 300,
         maxWidth: 560,
         width: "calc(100% - 32px)",
@@ -22665,11 +23117,16 @@ function App() {
         return { ...t, type: newType, updated: now };
       }));
     },
-    collapseAllRef: collapseAllTypesRef
+    collapseAllRef: collapseAllTypesRef,
+    singleColumnLists: singleColumnLists
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
     tasks: [...tasks, ...archiveTasks],
     onEdit: openEdit,
-    onShareReady: registerShareAction
+    onShareReady: registerShareAction,
+    selectMode: selectMode,
+    selectedIds: selectedIds,
+    onToggleSelect: toggleTaskSelected,
+    onSetSelected: setTasksSelected
   })))), /*#__PURE__*/React.createElement(Modal, {
     open: modalOpen,
     onClose: () => {
@@ -22731,6 +23188,8 @@ function App() {
     onToggleIntl: handleToggleIntl,
     prefLookahead: prefLookahead,
     onToggleLookahead: handleToggleLookahead,
+    singleColumnLists: singleColumnLists,
+    onToggleSingleColumnLists: handleToggleSingleColumnLists,
     onSpecialLoading: setSpecialLoading,
     gcalConnected: gcalConnected,
     gcalBusy: gcalBusy,
@@ -22824,19 +23283,7 @@ function App() {
     busy: bulkSharing
   }), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
     active: bulkSharing
-  }), bulkSharing && /*#__PURE__*/React.createElement("div", {
-    ref: bulkShareCaptureRef,
-    style: {
-      position: "fixed",
-      top: 0,
-      insetInlineStart: -99999,
-      padding: "18px 16px 8px",
-      background: "var(--card)",
-      borderRadius: 14,
-      width: SHARE_LIST_WIDTH + 32,
-      boxSizing: "border-box"
-    }
-  }, renderShareTaskList(buildBulkShareList(selectedIds), bulkShareOptions)));
+  }));
 }
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(/*#__PURE__*/React.createElement(App, null));
