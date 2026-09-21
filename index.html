@@ -233,7 +233,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "6.1";
+const APP_VERSION = "10.3";
 
 const {
   useState,
@@ -243,7 +243,6 @@ const {
 
 //  TRANSLATIONS 
 const LANG_KEY = "taskflow_lang";
-const PALETTE_KEY = "taskflow_palette"; // "vivid" (Bold, the default) | "boldest"
 const T = {
   en: {
     // Nav & views
@@ -952,7 +951,9 @@ const isSelectLocked = tk => !!(tk && (tk.googleShared || tk._projected));
 // before touching a selected task.
 const isBulkEditLocked = tk => !!(tk && (tk.hebcal || tk.intl || tk.type === "calendar" || isSelectLocked(tk)));
 // ── Storage helpers (localStorage-only) ──────────────────────────────────────
-// _rawSave kept for legacy archive promote only (unused path now)
+// _rawSave: used directly by the "Load JSON" import/restore flow (bypasses
+// the tasks/archive React state setters, since it needs to write both keys
+// before the merged data round-trips back through onLoad).
 const _rawLoad = key => {
   try {
     return JSON.parse(localStorage.getItem(key) || "[]");
@@ -966,7 +967,10 @@ const _rawSave = (key, arr) => {
       duration,
       ...t
     }) => t)));
-  } catch {}
+    window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: true } }));
+  } catch (e) {
+    window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: false } }));
+  }
 };
 const _applyMigrations = arr => arr.map(migrateTask).filter(t => !isExcludedHebcalTask(t)).map(t => !t.date && (t.done || t.cancelled) ? {
   ...t,
@@ -979,12 +983,22 @@ const loadArchiveTasks = () => _rawLoad(ARCHIVE_KEY);
 const _cacheTasksToLocal = arr => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
-  } catch {}
+    window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: true } }));
+  } catch (e) {
+    // Quota exceeded, private-browsing restrictions, storage disabled, etc.
+    // The change still lives in React state for this session, but nothing
+    // was actually written to disk -- reported so the sync pill can warn
+    // about it instead of this failing in total silence.
+    window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: false } }));
+  }
 };
 const _cacheArchiveToLocal = arr => {
   try {
     localStorage.setItem(ARCHIVE_KEY, JSON.stringify(arr));
-  } catch {}
+    window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: true } }));
+  } catch (e) {
+    window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: false } }));
+  }
 };
 const persistTasks = (tasks, setArchiveTasks) => {
   _cacheTasksToLocal(tasks);
@@ -1005,7 +1019,6 @@ const persistTasks = (tasks, setArchiveTasks) => {
   }
   return tasks;
 };
-const restoreFromArchive = taskId => null;
 
 // Clear any legacy seed data on first load of published version
 const PUBLISHED_FLAG = "taskflow_published_v5";
@@ -1418,6 +1431,20 @@ const fmtDate = ds => {
   });
 };
 const localDs = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Plain `new Date(y, m+1, day)` silently overflows into a later month when
+// `day` doesn't exist there (Jan 31 + 1 month lands on Mar 2/3, not Feb 28/29
+// -- JS just keeps counting days past the end of February). That drift then
+// compounds every cycle after. These clamp to the target month/year's actual
+// last valid day instead, same as every mainstream calendar app does for a
+// recurrence anchored on the 29th-31st (or Feb 29 for yearly).
+const addMonthsClamped = (d, n) => {
+  const day = d.getDate();
+  const first = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  first.setDate(Math.min(day, lastDay));
+  return first;
+};
+const addYearsClamped = (d, n) => addMonthsClamped(d, n * 12);
 
 // ── Shared by every "share as image" multi-column layout (By Type, Up Next) ──
 // A single long vertical list would make for an extremely tall photo once
@@ -1485,120 +1512,6 @@ const renderShareTaskRow = (task, options) => {
   }, metaParts.join(" · ")));
 };
 
-// ── Grouped-by-date columns for the bulk-select "Share" action ─────────────
-// Adapts the exact big/small bin-packing layout Up Next's wide capture uses
-// (see Dashboard's shareUpNextImage) to arbitrary date groups, so a photo of
-// an arbitrary set of selected tasks gets the same multi-column treatment
-// instead of one endlessly tall single strip.
-const renderShareGroupLabelRow = (g, key, width) => /*#__PURE__*/React.createElement("div", {
-  key,
-  style: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "8px 12px",
-    borderRadius: 9,
-    background: g.bg,
-    border: `1px solid ${g.border}`,
-    marginBottom: 8,
-    width
-  }
-}, /*#__PURE__*/React.createElement("div", {
-  style: {
-    width: 8,
-    height: 8,
-    borderRadius: "50%",
-    background: g.dot,
-    flexShrink: 0
-  }
-}), /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 13,
-    fontWeight: 700,
-    color: g.color
-  }
-}, g.label));
-const SHARE_GROUP_COL_WIDTH = 280;
-const SHARE_GROUP_COL_GAP = 16;
-const renderShareGroupedColumns = (groups, shareOptions) => {
-  const totalTasks = groups.reduce((sum, g) => sum + g.tasks.length, 0);
-  if (!groups.length || !totalTasks) return { content: null, width: SHARE_GROUP_COL_WIDTH };
-  const columns = shareColumnCount(totalTasks);
-  if (columns <= 1) {
-    return {
-      content: /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", flexDirection: "column", width: SHARE_GROUP_COL_WIDTH }
-      }, groups.map((g, gi) => /*#__PURE__*/React.createElement(React.Fragment, {
-        key: gi
-      }, renderShareGroupLabelRow(g, `h-${gi}`, undefined), g.tasks.map(task => renderShareTaskRow(task, shareOptions))))),
-      width: SHARE_GROUP_COL_WIDTH
-    };
-  }
-  const target = Math.max(1, Math.ceil(totalTasks / columns));
-  const bigGroups = [], smallGroups = [];
-  groups.forEach(g => (g.tasks.length > target ? bigGroups : smallGroups).push(g));
-  const segments = [];
-  bigGroups.forEach(g => {
-    const count = g.tasks.length;
-    const dedicatedCols = Math.max(1, Math.ceil(count / target));
-    const base = Math.floor(count / dedicatedCols);
-    const rem = count % dedicatedCols;
-    const subCols = [];
-    let cursor = 0;
-    for (let i = 0; i < dedicatedCols; i++) {
-      const size = base + (i < rem ? 1 : 0);
-      subCols.push(g.tasks.slice(cursor, cursor + size));
-      cursor += size;
-    }
-    segments.push({ kind: "big", group: g, subCols });
-  });
-  const bins = [];
-  [...smallGroups].sort((a, b) => b.tasks.length - a.tasks.length).forEach(g => {
-    const count = g.tasks.length;
-    let bin = bins.find(b => b.total + count <= target);
-    if (!bin) {
-      bin = { total: 0, groups: [] };
-      bins.push(bin);
-    }
-    bin.groups.push(g);
-    bin.total += count;
-  });
-  bins.forEach(bin => {
-    bin.groups.sort((a, z) => groups.indexOf(a) - groups.indexOf(z));
-    segments.push({ kind: "small", groups: bin.groups });
-  });
-  segments.sort((a, b) => {
-    const ag = a.kind === "big" ? a.group : a.groups[0];
-    const bg = b.kind === "big" ? b.group : b.groups[0];
-    return groups.indexOf(ag) - groups.indexOf(bg);
-  });
-  const finalColumnCount = segments.reduce((sum, seg) => sum + (seg.kind === "big" ? seg.subCols.length : 1), 0);
-  const width = finalColumnCount * SHARE_GROUP_COL_WIDTH + (finalColumnCount - 1) * SHARE_GROUP_COL_GAP;
-  const content = /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", flexDirection: "row", alignItems: "flex-start", gap: SHARE_GROUP_COL_GAP }
-  }, segments.map((seg, si) => {
-    if (seg.kind === "big") {
-      const segWidth = seg.subCols.length * SHARE_GROUP_COL_WIDTH + (seg.subCols.length - 1) * SHARE_GROUP_COL_GAP;
-      return /*#__PURE__*/React.createElement("div", {
-        key: si,
-        style: { display: "flex", flexDirection: "column", flex: `0 0 ${segWidth}px`, minWidth: 0 }
-      }, renderShareGroupLabelRow(seg.group, `h-${si}`, segWidth), /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", flexDirection: "row", gap: SHARE_GROUP_COL_GAP }
-      }, seg.subCols.map((subTasks, ci) => /*#__PURE__*/React.createElement("div", {
-        key: ci,
-        style: { display: "flex", flexDirection: "column", flex: `0 0 ${SHARE_GROUP_COL_WIDTH}px`, minWidth: 0 }
-      }, subTasks.map(task => renderShareTaskRow(task, shareOptions))))));
-    }
-    return /*#__PURE__*/React.createElement("div", {
-      key: si,
-      style: { display: "flex", flexDirection: "column", flex: `0 0 ${SHARE_GROUP_COL_WIDTH}px`, minWidth: 0 }
-    }, seg.groups.map((g, gi) => /*#__PURE__*/React.createElement(React.Fragment, {
-      key: gi
-    }, renderShareGroupLabelRow(g, `h-${si}-${gi}`, undefined), g.tasks.map(task => renderShareTaskRow(task, shareOptions)))));
-  }));
-  return { content, width };
-};
-
 // New simple model: each task is independent
 // recur = interval in days; when completed a new task is spawned with date+recur
 const isRecurring = t => !!(t.recur && (t.recur === "month" || t.recur === "year" || typeof t.recur === "number" && t.recur > 0 || typeof t.recur === "string" && parseInt(t.recur) > 0));
@@ -1606,23 +1519,75 @@ const isDone = t => !!t.done;
 const isCancelled = t => !!t.cancelled;
 const isPending = t => !t.done && !t.cancelled;
 
-// Legacy compat helpers (old tasks may still have completedDates/cancelledDates)
-const isDoneOn = (t, ds) => t.done || (t.completedDates || []).includes(ds || "__none");
-const isCancelledOn = (t, ds) => t.cancelled || (t.cancelledDates || []).includes(ds || "__none");
-const isGloballyDone = t => t.done || !t.date && (t.completedDates || []).length > 0;
-const isGloballyCancelled = t => t.cancelled || !t.date && (t.cancelledDates || []).length > 0;
-const isOverdueOn = (t, ds) => {
-  if (isDone(t) || isCancelled(t)) return false;
-  if (!t.date) return false;
-  if (t.time) return new Date(ds + "T" + t.time) < new Date();
-  // No time: overdue only if the date itself is in the past (not today)
-  return ds < todayStr();
+// Real end timestamp of a timed task, accounting for a length that pushes
+// past midnight (e.g. 23:00 + 120min ends 01:00 the NEXT calendar day, not
+// 01:00 today). Timeless tasks have no meaningful "end" this way -- they're
+// handled separately wherever this matters.
+const taskEndDateTime = t => {
+  if (!t.date || !t.time) return null;
+  const [h, m] = t.time.split(":").map(Number);
+  const startMins = h * 60 + m;
+  const totalMins = startMins + getTaskLength(t);
+  const dayOffset = Math.floor(totalMins / 1440);
+  const d = new Date(t.date + "T00:00:00");
+  d.setDate(d.getDate() + dayOffset);
+  const endMinsOfDay = ((totalMins % 1440) + 1440) % 1440;
+  d.setHours(Math.floor(endMinsOfDay / 60), endMinsOfDay % 60, 0, 0);
+  return d;
+};
+// True when a timed task's length carries it past midnight into the next
+// calendar day (e.g. starts 23:00, runs 90min -> ends 00:30 the next day).
+const taskSpansOvernight = t => {
+  if (!t.date || !t.time) return false;
+  const [h, m] = t.time.split(":").map(Number);
+  return h * 60 + m + getTaskLength(t) > 1440;
+};
+// The calendar date string a task's end actually falls on -- same as
+// t.date unless it spans overnight, in which case it's the next day (or
+// further, for a very long task).
+const taskEndDate = t => {
+  const end = taskEndDateTime(t);
+  return end ? localDs(end) : t.date;
+};
+// Which single day a task should be grouped/sorted under in a plain list
+// (Home, List, Search): the day it actually finishes on, not the day it
+// started -- an 11pm-to-1am task reads as "tomorrow's" task, not tonight's,
+// and a multi-day (finishDate) task reads as due on its last day, not the
+// day it started. Month shows it on every day it spans, and Week draws the
+// overnight case spanning the hours across both columns, so neither of
+// those uses this.
+const taskDisplayDate = t => isMultiDay(t) ? t.finishDate : taskSpansOvernight(t) ? taskEndDate(t) : t.date;
+// A task with an explicit finish date genuinely longer than one day (set in
+// the modal's "Finish date" field) -- distinct from taskSpansOvernight,
+// which is about a timed task's start+length crossing midnight by a few
+// hours. This is a real multi-day span, day-granular, independent of time.
+const isMultiDay = t => !!(t && t.date && t.finishDate && t.finishDate > t.date);
+// Every calendar date string a multi-day task covers, start through finish
+// inclusive. Capped generously so a bad/huge finishDate can't hang the tab.
+const taskDaySpan = t => {
+  if (!isMultiDay(t)) return t && t.date ? [t.date] : [];
+  const out = [];
+  const cur = new Date(t.date + "T00:00:00");
+  const end = new Date(t.finishDate + "T00:00:00");
+  let guard = 0;
+  while (cur <= end && guard < 730) {
+    out.push(localDs(cur));
+    cur.setDate(cur.getDate() + 1);
+    guard++;
+  }
+  return out;
 };
 const isOverdue = t => {
   if (isDone(t) || isCancelled(t)) return false;
   if (!t.date) return false;
-  if (t.time) return new Date(t.date + "T" + t.time) < new Date();
-  // No time: overdue only if the date is strictly before today
+  if (isMultiDay(t)) {
+    return t.finishDate < todayStr();
+  }
+  if (t.time) {
+    const end = taskEndDateTime(t);
+    return end < new Date();
+  }
+  // No time: overdue only if the date is strictly before today.
   return t.date < todayStr();
 };
 
@@ -1657,7 +1622,7 @@ const countPendingOccurrences = (task, winStart, winEnd) => {
           if (isPending(task)) count++;
         } else count++; // future occurrences always pending
       }
-      if (task.recur === "month") d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());else d = new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());
+      if (task.recur === "month") d = addMonthsClamped(d, 1);else d = addYearsClamped(d, 1);
       i++;
     }
   } else {
@@ -1701,7 +1666,7 @@ const occurrenceDatesInRange = (task, winStart, winEnd) => {
     let d = new Date(taskDate);
     while (d <= we && i < MAX) {
       if (d >= ws) dates.push(localDs(d));
-      if (task.recur === "month") d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());else d = new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());
+      if (task.recur === "month") d = addMonthsClamped(d, 1);else d = addYearsClamped(d, 1);
       i++;
     }
   } else {
@@ -1714,17 +1679,6 @@ const occurrenceDatesInRange = (task, winStart, winEnd) => {
     }
   }
   return dates;
-};
-const occursOnDate = (task, ds) => {
-  if (!task.date) return false;
-  return task.date === ds;
-};
-const shouldShowOnCalendar = (task, ds) => occursOnDate(task, ds);
-
-// For charts/lists: next occurrence of a recurring task is just the task itself if pending
-const getNextOccurrence = task => {
-  if (!isRecurring(task) || !isPending(task) || !task.date) return null;
-  return task.date;
 };
 const css = `
 /* Inter font: loaded async via JS to avoid blocking offline render */
@@ -4339,16 +4293,22 @@ const fmtRewindDuration = mins => {
 // to it -- the caller decides what's "in scope" (a search's current
 // filters, a whole list, whatever).
 const computeRewindStats = tasks => {
-  const withDate = tasks.filter(tk => tk.date);
-  const sorted = [...withDate].sort((a, b) => a.date === b.date ? (a.time || "").localeCompare(b.time || "") : a.date < b.date ? -1 : 1);
-  const first = sorted[0] || null;
-  const last = sorted.length > 1 ? sorted[sorted.length - 1] : null;
   const completed = tasks.filter(isDone);
   const cancelled = tasks.filter(isCancelled);
   const pending = tasks.filter(tk => !isDone(tk) && !isCancelled(tk));
   const total = tasks.length;
   const completionRate = total ? Math.round(completed.length / total * 100) : 0;
-  const timed = tasks.filter(tk => Number(tk.length) > 0);
+  // Everything below this point -- busiest day, streaks, the longest task,
+  // the monthly/weekday charts, the category breakdown, first/last -- is
+  // about what actually happened, so cancelled tasks are left out of all
+  // of it. They still count toward the overall total and the status split
+  // above, just not toward any "most/best/longest" stat.
+  const active = tasks.filter(tk => !isCancelled(tk));
+  const withDate = active.filter(tk => tk.date);
+  const sorted = [...withDate].sort((a, b) => a.date === b.date ? (a.time || "").localeCompare(b.time || "") : a.date < b.date ? -1 : 1);
+  const first = sorted[0] || null;
+  const last = sorted.length > 1 ? sorted[sorted.length - 1] : null;
+  const timed = active.filter(tk => Number(tk.length) > 0);
   const totalMinutes = timed.reduce((s, tk) => s + Number(tk.length), 0);
   const avgMinutes = timed.length ? Math.round(totalMinutes / timed.length) : 0;
   const longest = timed.length ? timed.reduce((a, b) => Number(b.length) > Number(a.length) ? b : a) : null;
@@ -4365,7 +4325,7 @@ const computeRewindStats = tasks => {
     }
   });
   const byType = {};
-  tasks.forEach(tk => {
+  active.forEach(tk => {
     const ty = tk.type || "general";
     byType[ty] = (byType[ty] || 0) + 1;
   });
@@ -4618,7 +4578,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     ctx.textBaseline = "alphabetic";
     ctx.font = `700 12px ${FONT}`;
     ctx.fillStyle = VIOLET;
-    ctx.fillText((isHe ? "ריווינד" : "Rewind").toUpperCase(), startX, y + 16);
+    ctx.fillText("REWIND", startX, y + 16);
     ctx.font = `750 44px ${FONT}`;
     const grad = ctx.createLinearGradient(isHe ? W : 0, 0, isHe ? 0 : W, 0);
     grad.addColorStop(0, "#4F46E5");
@@ -4627,7 +4587,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     ctx.fillStyle = grad;
     ctx.fillText(isHe ? "הסיפור שלך" : "Your story", startX, y + 60);
     // filter chip
-    const chipText = subtitle || (isHe ? "כל המשימות · כל הזמן" : "All tasks · All time");
+    const chipText = subtitle || (isHe ? "הכול · כל הזמן" : "Everything · All time");
     ctx.font = `600 12.5px ${FONT}`;
     const tw = Math.min(ctx.measureText(chipText).width, CW - 40);
     const chipW = tw + 26, chipH = 28;
@@ -4715,7 +4675,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     ctx.fillText(nf(stats.total), tx, y + 96);
     ctx.font = `700 15px ${FONT}`;
     ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.fillText(isHe ? "משימות בסך הכול" : stats.total === 1 ? "task, all in" : "tasks, all in", tx, y + 122);
+    ctx.fillText(isHe ? "בסך הכול" : "all in", tx, y + 122);
     ctx.font = `500 12px ${FONT}`;
     ctx.fillStyle = "rgba(255,255,255,0.7)";
     const sub = stats.totalMinutes > 0
@@ -4724,45 +4684,11 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     ctx.fillText(sub, tx, y + 142);
   });
 
-  // ══ 4. Quick stat tiles ══
-  const tiles = [
-    { v: nf(stats.completedCount), l: isHe ? "הושלמו" : "Completed", c: EMERALD, bg: "#ECFDF5" },
-    { v: nf(stats.activeDays), l: isHe ? "ימים פעילים" : "Active days", c: INDIGO, bg: "#EEF2FF" },
-    { v: nf(stats.longestStreak), l: isHe ? "רצף שיא" : "Best streak", c: AMBER, bg: "#FFFBEB" },
-    { v: nf(stats.typeEntries.length), l: isHe ? "סוגים" : "Categories", c: PINK, bg: "#FDF2F8" }
-  ];
-  push(112, (ctx, y) => {
-    const gap = 10, tw = (CW - gap * 3) / 4, th = 98;
-    tiles.forEach((tl, i) => {
-      const x = PAD + i * (tw + gap);
-      drawRoundedRectPath(ctx, x, y, tw, th, 16);
-      ctx.fillStyle = tl.bg;
-      ctx.fill();
-      // top accent bar
-      ctx.save();
-      drawRoundedRectPath(ctx, x, y, tw, th, 16);
-      ctx.clip();
-      ctx.fillStyle = tl.c;
-      ctx.fillRect(x, y, tw, 4);
-      ctx.restore();
-      ctx.direction = "ltr";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "alphabetic";
-      ctx.font = `750 30px ${FONT}`;
-      ctx.fillStyle = tl.c;
-      ctx.fillText(tl.v, x + tw / 2, y + 58);
-      ctx.font = `600 11px ${FONT}`;
-      ctx.fillStyle = INK2;
-      const lines = truncateCanvasLines(wrapCanvasText(ctx, tl.l, tw - 12), 1);
-      ctx.fillText(lines[0] || "", x + tw / 2, y + 78);
-    });
-  });
-
-  // ══ 5. Momentum — monthly line chart ══
+  // ══ 4. Momentum — monthly line chart ══
   if (stats.byMonth.length > 1) {
     const peak = stats.busiestMonth;
     const notice = peak
-      ? (isHe ? `השיא היה ${monthLabel(peak)} עם ${peak.count} משימות · ${stats.avgPerMonth} בממוצע לחודש`
+      ? (isHe ? `השיא היה ${monthLabel(peak)} עם ${peak.count} · ${stats.avgPerMonth} בממוצע לחודש`
               : `Peaked in ${monthLabel(peak)} with ${peak.count} · ${stats.avgPerMonth} per month on average`)
       : null;
     section(isHe ? "מומנטום" : "Momentum", isHe ? "איך זה התפתח" : "How it unfolded", notice, INDIGO);
@@ -4858,11 +4784,11 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     });
   }
 
-  // ══ 6. The split — donut ══
+  // ══ 5. The split — donut ══
   {
     const notice = stats.completedCount >= stats.cancelledCount
-      ? (isHe ? `${stats.completionRate}% מהמשימות הגיעו לקו הסיום` : `${stats.completionRate}% of everything made it to the finish line`)
-      : (isHe ? "רוב המשימות לא הושלמו — אולי הגיע הזמן לנקות" : "More was dropped than finished — worth a cleanup");
+      ? (isHe ? `${stats.completionRate}% מהכול הגיע לקו הסיום` : `${stats.completionRate}% of everything made it to the finish line`)
+      : (isHe ? "רוב הדברים לא הושלמו — אולי הגיע הזמן לנקות" : "More was dropped than finished — worth a cleanup");
     section(isHe ? "החלוקה" : "The split", isHe ? "איך זה נגמר" : "How it ended up", notice, EMERALD);
     push(212, (ctx, y) => {
       const ph = 198;
@@ -4936,15 +4862,22 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     });
   }
 
-  // ══ 7. Where it went — type bars ══
-  if (stats.typeEntries.length > 0) {
+  // ══ 6. Where it went — type bars ══
+  // Only worth showing when there's real spread across categories. If one
+  // type dominates, or the top two between them already cover almost
+  // everything, a "by category" chart has nothing interesting to say.
+  const typeTotal = stats.typeEntries.reduce((s, e) => s + e[1], 0) || 1;
+  const top1Share = stats.typeEntries.length ? stats.typeEntries[0][1] / typeTotal : 0;
+  const top2Share = stats.typeEntries.length ? (stats.typeEntries[0][1] + (stats.typeEntries[1] ? stats.typeEntries[1][1] : 0)) / typeTotal : 0;
+  const showTypeChart = stats.typeEntries.length >= 3 && top1Share < 0.6 && top2Share < 0.85;
+  if (showTypeChart) {
     const shown = stats.typeEntries.slice(0, 6);
     const maxT = shown[0][1] || 1;
     const rowH = 38;
     const ph = 26 + shown.length * rowH;
     const top = stats.typeEntries[0];
     const notice = isHe
-      ? `“${getTypeMeta(top[0]).label}” הוביל עם ${top[1]} משימות מתוך ${stats.typeEntries.length} סוגים`
+      ? `“${getTypeMeta(top[0]).label}” הוביל עם ${top[1]} מתוך ${stats.typeEntries.length} סוגים`
       : `"${getTypeMeta(top[0]).label}" led the way with ${top[1]} of ${stats.total}`;
     section(isHe ? "לאן זה הלך" : "Where it went", isHe ? "לפי סוג" : "By category", notice, AMBER);
     push(ph + 14, (ctx, y) => {
@@ -4986,7 +4919,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     });
   }
 
-  // ══ 8. Rhythm — weekday bars ══
+  // ══ 7. Rhythm — weekday bars ══
   if (stats.bestWeekday) {
     const notice = isHe
       ? `${weekdayNames[stats.bestWeekday.idx]} הוא היום החזק שלך${stats.quietWeekday ? `, ${weekdayNames[stats.quietWeekday.idx]} הכי שקט` : ""}`
@@ -5029,7 +4962,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     });
   }
 
-  // ══ 9. Milestones — first / last ══
+  // ══ 8. Milestones — first / last ══
   if (stats.first) {
     const rows = stats.last
       ? [{ tag: isHe ? "ההתחלה" : "It started", tk: stats.first, c: INDIGO },
@@ -5084,31 +5017,31 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     });
   }
 
-  // ══ 10. Records — highlight grid ══
+  // ══ 9. Records — highlight grid ══
   const records = [];
   if (stats.busiestDay) records.push({
     k: isHe ? "היום העמוס ביותר" : "Busiest day",
     v: fmtD(stats.busiestDay),
-    s: isHe ? `${stats.busiestDayCount} משימות ביום אחד` : `${stats.busiestDayCount} in a single day`,
-    c: INDIGO, bg: "#EEF2FF"
+    s: isHe ? `${stats.busiestDayCount} ביום אחד` : `${stats.busiestDayCount} in a single day`,
+    c1: "#3730A3", c2: "#4F46E5"
   });
   if (stats.longest) records.push({
-    k: isHe ? "המשימה הארוכה" : "Longest task",
+    k: isHe ? "הכי ארוך" : "Longest one",
     v: fmtRewindDuration(Number(stats.longest.length)),
     s: taskLabel(stats.longest),
-    c: VIOLET, bg: "#F5F3FF"
+    c1: "#6D28D9", c2: "#8B5CF6"
   });
   if (stats.totalMinutes > 0) records.push({
     k: isHe ? "זמן שהושקע" : "Time invested",
     v: fmtRewindDuration(stats.totalMinutes),
     s: isHe ? `${fmtRewindDuration(stats.avgMinutes)} בממוצע` : `${fmtRewindDuration(stats.avgMinutes)} on average`,
-    c: TEAL, bg: "#ECFEFF"
+    c1: "#0F766E", c2: "#14B8A6"
   });
   if (stats.longestStreak > 1) records.push({
     k: isHe ? "רצף הכי ארוך" : "Longest streak",
     v: isHe ? `${stats.longestStreak} ימים` : `${stats.longestStreak} days`,
-    s: isHe ? "ימים רצופים עם משימות" : "days back to back",
-    c: AMBER, bg: "#FFFBEB"
+    s: isHe ? "ימים ברצף אחד" : "days back to back",
+    c1: "#B45309", c2: "#F59E0B"
   });
   if (records.length) {
     section(isHe ? "שיאים" : "Records", isHe ? "הרגעים הבולטים" : "The standouts", null, VIOLET);
@@ -5120,27 +5053,35 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
         const col = i % 2, row = Math.floor(i / 2);
         const x = isHe ? PAD + (1 - col) * (cw2 + gap) : PAD + col * (cw2 + gap);
         const ry = y + row * (cardH + gap);
+        ctx.save();
+        ctx.shadowColor = "rgba(15,23,42,0.18)";
+        ctx.shadowBlur = 14;
+        ctx.shadowOffsetY = 5;
         drawRoundedRectPath(ctx, x, ry, cw2, cardH, 16);
-        ctx.fillStyle = r.bg;
+        const g2 = ctx.createLinearGradient(x, ry, x + cw2, ry + cardH);
+        g2.addColorStop(0, r.c2);
+        g2.addColorStop(1, r.c1);
+        ctx.fillStyle = g2;
         ctx.fill();
+        ctx.restore();
         ctx.direction = isHe ? "rtl" : "ltr";
         ctx.textAlign = isHe ? "right" : "left";
         ctx.textBaseline = "alphabetic";
         const tx2 = isHe ? x + cw2 - 16 : x + 16;
         ctx.font = `700 9.5px ${FONT}`;
-        ctx.fillStyle = r.c;
+        ctx.fillStyle = "rgba(255,255,255,0.78)";
         ctx.fillText(r.k.toUpperCase(), tx2, ry + 24);
         ctx.font = `750 19px ${FONT}`;
-        ctx.fillStyle = INK;
+        ctx.fillStyle = "#fff";
         ctx.fillText(truncateCanvasLines(wrapCanvasText(ctx, r.v, cw2 - 32), 1)[0] || "", tx2, ry + 52);
         ctx.font = `500 11px ${FONT}`;
-        ctx.fillStyle = INK3;
+        ctx.fillStyle = "rgba(255,255,255,0.82)";
         ctx.fillText(truncateCanvasLines(wrapCanvasText(ctx, r.s, cw2 - 32), 1)[0] || "", tx2, ry + 72);
       });
     });
   }
 
-  // ══ 11. Footer ══
+  // ══ 10. Footer ══
   push(74, (ctx, y) => {
     ctx.strokeStyle = LINE;
     ctx.lineWidth = 1;
@@ -5159,6 +5100,8 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     ctx.fillText("TaskIt · Just Task It.", W / 2, y + 40);
     ctx.font = `500 10.5px ${FONT}`;
     ctx.fillStyle = INK4;
+    ctx.direction = isHe ? "rtl" : "ltr";
+    ctx.textAlign = "center";
     ctx.fillText(new Date().toLocaleDateString(isHe ? "he-IL" : "en-US", { year: "numeric", month: "long", day: "numeric" }), W / 2, y + 58);
   });
 
@@ -5218,36 +5161,6 @@ const shareRewindImage = async (tasks, subtitle, filename) => {
     appToast(t("shareFailed"));
   }
 };
-// task modal, reused here for Up Next / Week / Month so all four share
-// entry points look identical.
-const ShareImageButton = ({
-  onClick,
-  busy,
-  title
-}) => /*#__PURE__*/React.createElement("button", {
-  type: "button",
-  onClick,
-  disabled: busy,
-  title,
-  "data-share-ignore": "true",
-  style: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    border: `1px solid ${C.border2}`,
-    background: C.card2,
-    cursor: busy ? "default" : "pointer",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    opacity: busy ? 0.6 : 1,
-    flexShrink: 0
-  }
-}, /*#__PURE__*/React.createElement(Icon, {
-  name: "share",
-  size: 14,
-  color: "#94A3B8"
-}));
 // Full-screen cover shown for the whole span of a share-image capture --
 // the wide layout switch, hidden today-highlight/now-line, and any capture-
 // only sizing all change the underlying screen for a couple of frames
@@ -5316,7 +5229,8 @@ const Modal = ({
     length: "",
     note: "",
     reminderMinutes: "",
-    recurUntil: ""
+    recurUntil: "",
+    finishDate: ""
   });
   const _modalWidth = useWindowWidth();
   const _modalHeight = useWindowHeight();
@@ -5348,7 +5262,8 @@ const Modal = ({
           length: editTask.length != null && editTask.length !== "" ? String(editTask.length) : "",
           note: editTask.note || "",
           reminderMinutes: editTask.reminderMinutes != null && editTask.reminderMinutes !== "" ? String(editTask.reminderMinutes) : "",
-          recurUntil: editTask.recurUntil || ""
+          recurUntil: editTask.recurUntil || "",
+          finishDate: editTask.finishDate || ""
         });
         setShowNote(!!(editTask.note && String(editTask.note).trim()));
       } else {
@@ -5361,7 +5276,8 @@ const Modal = ({
           length: "",
           note: "",
           reminderMinutes: "",
-          recurUntil: ""
+          recurUntil: "",
+          finishDate: ""
         });
         setShowNote(false);
       }
@@ -5526,6 +5442,9 @@ const Modal = ({
     // alongside an actual repeat, regardless of how a leftover value might
     // otherwise have hung around.
     const finalRecurUntil = finalRecur && form.recurUntil ? form.recurUntil : null;
+    // Same belt-and-suspenders: only ever saved for a genuinely multi-day,
+    // non-recurring task, and never before (or on) the start date itself.
+    const finalFinishDate = finalDate && !finalRecur && form.finishDate && form.finishDate > finalDate ? form.finishDate : null;
     onSave({
       ...form,
       type: finalType,
@@ -5535,7 +5454,8 @@ const Modal = ({
       length: finalLength,
       note: finalNote,
       reminderMinutes: finalReminderMinutes,
-      recurUntil: finalRecurUntil
+      recurUntil: finalRecurUntil,
+      finishDate: finalFinishDate
     });
   };
   const handleTimeFocus = e => {
@@ -6091,12 +6011,12 @@ const Modal = ({
       fontSize: 10,
       color: C.text4
     }
-  }, t.time), t.duration && /*#__PURE__*/React.createElement("span", {
+  }, t.time), Number(t.length) > 0 && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: C.text4
     }
-  }, fmtDur(t.duration)))))), /*#__PURE__*/React.createElement("div", {
+  }, fmtLengthShort(Number(t.length))))))), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: "1 1 0%",
       minWidth: 0,
@@ -6306,7 +6226,16 @@ const Modal = ({
     }),
     value: form.date,
     onChange: e => {
-      set("date", e.target.value);
+      const v = e.target.value;
+      if (form.finishDate && v && form.finishDate < v) {
+        setForm(f => ({
+          ...f,
+          date: v,
+          finishDate: ""
+        }));
+      } else {
+        set("date", v);
+      }
       setError("");
     },
     onClick: IS_IOS ? e => { try { e.target.showPicker(); } catch {} } : undefined
@@ -6316,13 +6245,14 @@ const Modal = ({
       e.stopPropagation();
       // Clearing the date makes this a timeless task again -- a time (and
       // any duration) with no date doesn't mean anything, so both are always
-      // dropped too rather than leaving orphaned state. No exceptions, even
-      // for a recurring task.
+      // dropped too rather than leaving orphaned state, along with any
+      // finish date. No exceptions, even for a recurring task.
       setForm(f => ({
         ...f,
         date: "",
         time: "",
-        length: ""
+        length: "",
+        finishDate: ""
       }));
       setError("");
     },
@@ -6608,7 +6538,43 @@ const Modal = ({
         textTransform: "uppercase",
         marginBottom: 10
       }
-    }, isHe ? "עוד הגדרות" : "More settings"), hasDate && /*#__PURE__*/React.createElement("div", {
+    }, isHe ? "עוד הגדרות" : "More settings"), hasDate && !hasRecur && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 16
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: lbl
+    }, isHe ? "תאריך סיום (משימה רב-יומית)" : "Finish date (multi-day task)"), /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      value: form.finishDate,
+      min: form.date || undefined,
+      onChange: e => set("finishDate", e.target.value),
+      style: inp({
+        cursor: "pointer"
+      }),
+      onFocus: e => e.target.style.borderColor = "#93C5FD",
+      onBlur: e => e.target.style.borderColor = "var(--border)"
+    }), form.finishDate && /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      onClick: () => set("finishDate", ""),
+      style: {
+        marginTop: 6,
+        border: "none",
+        background: "transparent",
+        color: C.text4,
+        fontSize: 11,
+        fontWeight: 600,
+        cursor: "pointer",
+        padding: 0
+      }
+    }, isHe ? "נקה תאריך" : "Clear date"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: C.text4,
+        marginTop: 6,
+        lineHeight: 1.4
+      }
+    }, isHe ? "למשימות שנמשכות יותר מיום אחד — תופיע בכל יום עד תאריך הסיום (בתצוגת שבוע היא תוצג למעלה, כמו משימה ללא שעה)." : "For tasks that run longer than one day — appears every day through the finish date (shows up top in Week view, like a timeless task).")), hasDate && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: hasRecur ? 16 : 0
       }
@@ -7233,7 +7199,7 @@ const MonthView = ({
   // currently on screen, regardless of which day cells happen to be
   // expanded right now -- selection isn't tied to what's actually rendered.
   const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
-  const monthQuickPool = React.useMemo(() => tasks.filter(tk => tk.date && tk.date.slice(0, 7) === monthKey && !(tk.type === "calendar" && !tk.hebcal && !tk.intl)), [tasks, monthKey]);
+  const monthQuickPool = React.useMemo(() => tasks.filter(tk => !(tk.type === "calendar" && !tk.hebcal && !tk.intl) && (tk.date && tk.date.slice(0, 7) === monthKey || taskSpansOvernight(tk) && taskEndDate(tk).slice(0, 7) === monthKey || isMultiDay(tk) && taskDaySpan(tk).some(ds => ds.slice(0, 7) === monthKey))), [tasks, monthKey]);
   useSelectQuickPicks(monthQuickPool, {
     selectMode,
     selectedIds,
@@ -7329,7 +7295,7 @@ const MonthView = ({
     const ds = localDs(date);
     const isT = date.toDateString() === realToday.toDateString();
     const isPast = isCurrentMonth && date < realToday;
-    const dayTasks = tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task)));
+    const dayTasks = tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task)) || taskSpansOvernight(task) && taskEndDate(task) === ds || isMultiDay(task) && taskDaySpan(task).includes(ds));
     gridCells.push({
       d,
       date,
@@ -7809,7 +7775,7 @@ const MonthView = ({
         const cur = new Date(_todaySun);
         while (cur <= prevMonthEnd) {
           const ds2 = localDs(cur);
-          const dayTasks = tasks.filter(tk => tk.date === ds2);
+          const dayTasks = tasks.filter(tk => tk.date === ds2 || taskSpansOvernight(tk) && taskEndDate(tk) === ds2 || isMultiDay(tk) && taskDaySpan(tk).includes(ds2));
           extraDays.push({
             d: cur.getDate(),
             cell: {
@@ -7834,7 +7800,7 @@ const MonthView = ({
         const cur = new Date(nextMonthStart);
         while (cur <= _todaySat) {
           const ds2 = localDs(cur);
-          const dayTasks = tasks.filter(tk => tk.date === ds2);
+          const dayTasks = tasks.filter(tk => tk.date === ds2 || taskSpansOvernight(tk) && taskEndDate(tk) === ds2 || isMultiDay(tk) && taskDaySpan(tk).includes(ds2));
           visibleDays.push({
             d: cur.getDate(),
             cell: {
@@ -7860,7 +7826,7 @@ const MonthView = ({
           const cur = new Date(startDate);
           while (cur < thisMonthStart) {
             const ds2 = localDs(cur);
-            const dayTasks = tasks.filter(tk => tk.date === ds2);
+            const dayTasks = tasks.filter(tk => tk.date === ds2 || taskSpansOvernight(tk) && taskEndDate(tk) === ds2 || isMultiDay(tk) && taskDaySpan(tk).includes(ds2));
             const isClicked = ds2 === offMonthStart;
             if (dayTasks.length > 0 || isClicked) {
               extraDays.push({
@@ -7889,7 +7855,7 @@ const MonthView = ({
           const cur = new Date(year, month + 1, 1);
           while (cur <= endDate) {
             const ds2 = localDs(cur);
-            const dayTasks = tasks.filter(tk => tk.date === ds2);
+            const dayTasks = tasks.filter(tk => tk.date === ds2 || taskSpansOvernight(tk) && taskEndDate(tk) === ds2 || isMultiDay(tk) && taskDaySpan(tk).includes(ds2));
             const isClicked = ds2 === offMonthEnd;
             if (dayTasks.length > 0 || isClicked) {
               visibleDays.push({
@@ -8231,7 +8197,7 @@ const MonthView = ({
     // A shared month image is meant to represent this month only -- tasks
     // peeking in from the tail end of the previous/next month just add
     // noise, so they're left off the grid entirely while capturing.
-    const dayTasks = cell.other && captureWide ? [] : sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task))).concat(mFutureByDate[ds] || []).filter(task => !mSelectedTypes || mSelectedTypes.has(task.type || "regular")).filter(task => mShowCompletedTasks || !(isDone(task) || isCancelled(task))));
+    const dayTasks = cell.other && captureWide ? [] : sortForByType(tasks.filter(task => task.date === ds || isT && !task.date && (isDone(task) || isCancelled(task)) || taskSpansOvernight(task) && taskEndDate(task) === ds || isMultiDay(task) && taskDaySpan(task).includes(ds)).concat(mFutureByDate[ds] || []).filter(task => !mSelectedTypes || mSelectedTypes.has(task.type || "regular")).filter(task => mShowCompletedTasks || !(isDone(task) || isCancelled(task))));
     const isDropDayW = dragDs === ds;
     const isRipple = rippleDs === ds;
     return /*#__PURE__*/React.createElement("div", {
@@ -8906,7 +8872,7 @@ const WeekView = ({
   // column into a 15-minute-snapped start time, keeping the grab offset so the
   // block doesn't jump under the finger.
   const DRAG_SNAP_MIN = 15;
-  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected);
+  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected || tk._continuation);
   const minsToTime = mins => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(Math.floor(mins % 60)).padStart(2, "0")}`;
   const timeToMins = s => {
     const [hh, mm] = (s || "0:0").split(":").map(Number);
@@ -9052,7 +9018,7 @@ const WeekView = ({
   // currently on screen.
   const weekStartDs = localDs(days[0]),
     weekEndDs = localDs(days[6]);
-  const weekQuickPool = React.useMemo(() => tasks.filter(tk => tk.date && tk.date >= weekStartDs && tk.date <= weekEndDs && !(tk.type === "calendar" && !tk.hebcal && !tk.intl)), [tasks, weekStartDs, weekEndDs]);
+  const weekQuickPool = React.useMemo(() => tasks.filter(tk => !(tk.type === "calendar" && !tk.hebcal && !tk.intl) && (tk.date && tk.date >= weekStartDs && tk.date <= weekEndDs || taskSpansOvernight(tk) && taskEndDate(tk) >= weekStartDs && taskEndDate(tk) <= weekEndDs || isMultiDay(tk) && taskDaySpan(tk).some(ds => ds >= weekStartDs && ds <= weekEndDs))), [tasks, weekStartDs, weekEndDs]);
   useSelectQuickPicks(weekQuickPool, {
     selectMode,
     selectedIds,
@@ -9151,9 +9117,37 @@ const WeekView = ({
     const dayData = days.map(day => {
       const ds = localDs(day);
       const isT = day.toDateString() === TODAY.toDateString();
-      const all = tasks.filter(tk => tk.date === ds || isT && !tk.date && (isDone(tk) || isCancelled(tk))).concat(wFutureByDate[ds] || []).filter(tk => !wSelectedTypes || wSelectedTypes.has(tk.type || "regular")).filter(tk => wShowCompletedTasks || !(isDone(tk) || isCancelled(tk)));
-      const untimed = sortForByType(all.filter(tk => !tk.time));
-      const timed = layoutDayTasks(all.filter(tk => !!tk.time));
+      const all = tasks.filter(tk => tk.date === ds || isT && !tk.date && (isDone(tk) || isCancelled(tk)) || isMultiDay(tk) && taskDaySpan(tk).includes(ds)).concat(wFutureByDate[ds] || []).filter(tk => !wSelectedTypes || wSelectedTypes.has(tk.type || "regular")).filter(tk => wShowCompletedTasks || !(isDone(tk) || isCancelled(tk)));
+      // A task that runs past midnight gets a "continuation" placed at the
+      // very start of the NEXT day's column, covering just the spilled-over
+      // minutes -- so it reads as one block running across both day
+      // columns instead of being clipped away at midnight with no trace.
+      // The real task (same id) still opens on tap; only the displayed
+      // time/length are the synthetic remainder. A multi-day (finishDate)
+      // task skips this entirely -- it already appears in the untimed tray
+      // on every day it spans, so it never enters the hour grid at all.
+      const prevDs = localDs(new Date(day.getTime() - 86400000));
+      const spillIn = tasks.filter(tk => tk.date === prevDs && !!tk.time && taskSpansOvernight(tk) && !isMultiDay(tk)).filter(tk => wShowCompletedTasks || !(isDone(tk) || isCancelled(tk))).filter(tk => !wSelectedTypes || wSelectedTypes.has(tk.type || "regular")).map(tk => {
+        const [hh, mm] = tk.time.split(":").map(Number);
+        const spillMins = Math.max(1, hh * 60 + mm + getTaskLength(tk) - 1440);
+        return {
+          ...tk,
+          // This block renders on the day AFTER the task's real start date --
+          // date has to move with it, or isOverdue computes the end time
+          // against the wrong day entirely (often a full day too early,
+          // which is exactly what made this show red before it should).
+          date: ds,
+          time: "00:00",
+          length: spillMins,
+          _continuation: true,
+          _original: tk
+        };
+      });
+      // Multi-day tasks read like all-day/timeless entries here regardless
+      // of whether they happen to have a clock time set -- a task spanning
+      // several days doesn't belong to one specific hour on any of them.
+      const untimed = sortForByType(all.filter(tk => !tk.time || isMultiDay(tk)));
+      const timed = layoutDayTasks([...spillIn, ...all.filter(tk => !!tk.time && !isMultiDay(tk))]);
       return {
         day,
         ds,
@@ -9438,6 +9432,14 @@ const WeekView = ({
         cancelOnDay = wShowCompletedMark && isCancelled(tk),
         over = wMarkOverdue && !donOnDay && !cancelOnDay && isOverdue(tk),
         m = getTypeMeta(tk.type);
+      // The two halves of a midnight-crossing task: this segment (still on
+      // its start day) is the "before midnight" half if the real task spans
+      // overnight and this isn't itself the synthetic continuation; the
+      // continuation (injected into the next day's column, see dayData
+      // above) is the "after midnight" half. Flattening the edge where they
+      // meet reads as one block split across the two columns.
+      const isSpillStart = !tk._continuation && taskSpansOvernight(tk);
+      const isSpillContinuation = !!tk._continuation;
       const top = (start - DAY_START * 60) * pxPerMin;
       const rawHeight = (end - start) * pxPerMin;
       // Shrink slightly so back-to-back tasks (one ending exactly when the next
@@ -9501,7 +9503,7 @@ const WeekView = ({
             return;
           }
           if (!locked && pointerOkRef.current) return;
-          onTaskClick(tk);
+          onTaskClick(isSpillContinuation ? tk._original : tk);
         },
         style: {
           position: "absolute",
@@ -9509,7 +9511,7 @@ const WeekView = ({
           height,
           insetInlineStart: `calc(${leftPct}% + 1.5px)`,
           width: `calc(${widthPct}% - 3px)`,
-          borderRadius: 6,
+          borderRadius: isSpillStart ? "6px 6px 2px 2px" : isSpillContinuation ? "2px 2px 6px 6px" : 6,
           padding: height < 30 ? "2px 5px" : "4px 6px",
           fontSize: 10.5,
           fontWeight: 500,
@@ -9521,6 +9523,7 @@ const WeekView = ({
           background: donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : m.bg,
           color: donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : m.color,
           borderInlineStart: `2px solid ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}`,
+          borderTop: isSpillContinuation ? `1.5px dashed ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}` : "none",
           // Inset so the ring can't drift a device pixel off from the real
           // border on these fractional-percentage-width blocks (see the
           // same fix on the wide TaskCard's selected ring).
@@ -9667,17 +9670,6 @@ const WeekView = ({
 };
 
 //  LIST VIEWS 
-
-// Sort tasks by time ascending, no-time last
-const sortTasksByTime = tasks => [...tasks].sort((a, b) => {
-  // No time = sorts first (before timed tasks)
-  const aHasTime = !!a.time,
-    bHasTime = !!b.time;
-  if (!aHasTime && !bHasTime) return 0;
-  if (!aHasTime) return -1; // no-time before timed
-  if (!bHasTime) return 1;
-  return a.time < b.time ? -1 : a.time > b.time ? 1 : 0;
-});
 
 // Sort for By Type view: date asc (no-date last), then time asc within same date, then name asc
 const sortForByType = tasks => [...tasks].sort((a, b) => {
@@ -9872,8 +9864,9 @@ const ListByDate = ({
   }, [visibleCount, tasks.length]);
   const groups = {};
   tasks.filter(t => isPending(t) && t.date).forEach(t => {
-    if (!groups[t.date]) groups[t.date] = [];
-    groups[t.date].push(t);
+    const k = taskDisplayDate(t);
+    if (!groups[k]) groups[k] = [];
+    groups[k].push(t);
   });
   const keys = Object.keys(groups).sort((a, b) => a > b ? 1 : -1);
   if (!keys.length) return /*#__PURE__*/React.createElement(EmptyState, null);
@@ -11662,7 +11655,6 @@ const BarChart = ({
     barAnimRef.current = requestAnimationFrame(barTick);
     pendingAnim.current = false;
   };
-  const barVisTimerRef = useRef(null); // kept for cleanup safety
 
   // Always animate immediately on mount and data change — no visibility deferral
   useEffect(() => {
@@ -12025,7 +12017,7 @@ const LineChart = ({
         buckets[k].pending++;
         // stored occurrence inherits done/cancelled; future ones are always pending (just pending++)
       }
-      if (tk.recur === "month") d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());else if (tk.recur === "year") d = new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());else d = new Date(d.getTime() + interval);
+      if (tk.recur === "month") d = addMonthsClamped(d, 1);else if (tk.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
       itr++;
     }
   };
@@ -13657,55 +13649,6 @@ const GaugeChart = ({
     }
   }, dispSub)));
 };
-const StatTile = ({
-  value,
-  label,
-  color,
-  bg,
-  border,
-  icon,
-  delay = 0
-}) => /*#__PURE__*/React.createElement("div", {
-  style: {
-    padding: "18px 20px",
-    borderRadius: 14,
-    background: bg,
-    border: `1px solid ${border}`,
-    animation: `fadeIn 0.35s ease ${delay}s both`,
-    display: "flex",
-    alignItems: "center",
-    gap: 14
-  }
-}, /*#__PURE__*/React.createElement("div", {
-  style: {
-    width: 44,
-    height: 44,
-    borderRadius: 11,
-    background: color + "20",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0
-  }
-}, /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 20
-  }
-}, icon)), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-  style: {
-    fontSize: 28,
-    fontWeight: 700,
-    color,
-    lineHeight: 1
-  }
-}, value), /*#__PURE__*/React.createElement("div", {
-  style: {
-    fontSize: 12,
-    color: C.text3,
-    marginTop: 3,
-    fontWeight: 500
-  }
-}, label)));
 const RemoveChartButton = ({
   onConfirm
 }) => {
@@ -14214,7 +14157,7 @@ const FilteredPieCard = ({
               };
               buckets[key].pending++;
             }
-            if (tk.recur === "month") d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());else if (tk.recur === "year") d = new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());else d = new Date(d.getTime() + interval);
+            if (tk.recur === "month") d = addMonthsClamped(d, 1);else if (tk.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
             itr++;
           }
         } else {
@@ -14720,15 +14663,15 @@ const Dashboard = ({
     isToday: false,
     sentinelKey: "tomorrow"
   }];
-  const overdueTasks = tasks.filter(tk => isOverdue(tk) && tk.date < todayDsNow);
+  const overdueTasks = tasks.filter(tk => isOverdue(tk) && taskDisplayDate(tk) < todayDsNow);
   const anyUpNext = overdueTasks.length > 0 || days.some(({
     ds
-  }) => tasks.filter(tk => tk.date === ds && isPending(tk)).length > 0);
+  }) => tasks.filter(tk => taskDisplayDate(tk) === ds && isPending(tk)).length > 0);
   // Quick-pick pool: the same Up Next tasks already on screen -- overdue,
   // plus today's and tomorrow's pending tasks.
   const upNextQuickPool = React.useMemo(() => [...overdueTasks, ...days.flatMap(({
     ds
-  }) => tasks.filter(tk => tk.date === ds && isPending(tk)))], [tasks, todayDsNow, tomorrowDs]);
+  }) => tasks.filter(tk => taskDisplayDate(tk) === ds && isPending(tk)))], [tasks, todayDsNow, tomorrowDs]);
   useSelectQuickPicks(upNextQuickPool, {
     selectMode,
     selectedIds,
@@ -14764,7 +14707,7 @@ const Dashboard = ({
     })
   }] : []), ...days.map(day => ({
     day,
-    tasks: [...tasks.filter(tk => tk.date === day.ds && isPending(tk) && !(day.isToday && tk.date < todayDsNow))].sort((a, b) => {
+    tasks: [...tasks.filter(tk => taskDisplayDate(tk) === day.ds && isPending(tk) && !(day.isToday && taskDisplayDate(tk) < todayDsNow))].sort((a, b) => {
       const overA = isOverdue(a),
         overB = isOverdue(b);
       if (overA && !overB) return -1;
@@ -15344,7 +15287,7 @@ const Dashboard = ({
       isToday,
       sentinelKey
     }) => {
-      const dayTasks = [...tasks.filter(tk => tk.date === ds && isPending(tk) && !(isToday && tk.date < todayDsNow))].sort((a, b) => {
+      const dayTasks = [...tasks.filter(tk => taskDisplayDate(tk) === ds && isPending(tk) && !(isToday && taskDisplayDate(tk) < todayDsNow))].sort((a, b) => {
         const overA = isOverdue(a),
           overB = isOverdue(b);
         if (overA && !overB) return -1;
@@ -18589,6 +18532,10 @@ const SearchView = ({
   const viewWidth = useWindowWidth();
   const wideCharts = viewWidth >= 640;
   const [sharingSearch, setSharingSearch] = useState(false);
+  // Switches the results area below the filters between the normal task
+  // list (with its own pie/line charts) and a live preview of the same
+  // Rewind report the share button produces.
+  const [displayMode, setDisplayMode] = useState("tasks"); // "tasks" | "report"
   // Search's share button builds a generated "Rewind" stats card from
   // whatever the current filters turn up (see computeRewindStats /
   // drawRewindCanvas) rather than screenshotting the results screen --
@@ -18599,7 +18546,7 @@ const SearchView = ({
     if (sharingSearch) return;
     setSharingSearch(true);
     try {
-      await shareRewindImage(filtered, chartTitle, `${isHe ? "ריווינד" : "rewind"}.png`);
+      await shareRewindImage(filtered, chartTitle, "rewind.png");
     } finally {
       setSharingSearch(false);
     }
@@ -18776,7 +18723,7 @@ const SearchView = ({
   const NO_DATE = "__nodate__";
   const groups = {};
   filtered.forEach(tk => {
-    const k = tk.date || NO_DATE;
+    const k = tk.date ? taskDisplayDate(tk) : NO_DATE;
     if (!groups[k]) groups[k] = [];
     groups[k].push(tk);
   });
@@ -19005,6 +18952,48 @@ const SearchView = ({
     return parts.length ? parts.join(" · ") : null;
   })();
 
+  // Live preview of the Rewind report, redrawn straight to an on-screen
+  // canvas (not just when sharing) -- same stats/drawing code the share
+  // button uses, so what you see here is exactly what gets shared. Redraws
+  // whenever the filtered results actually change, with a brief opacity
+  // dip so a filter change reads as a soft pulse instead of an abrupt
+  // content swap.
+  const reportCanvasRef = useRef(null);
+  const [reportPulsing, setReportPulsing] = useState(false);
+  const reportPulseTimer = useRef(null);
+  // `filtered` is a fresh array every render (App hands SearchView a new
+  // [...tasks, ...archiveTasks] each time, and .filter() makes another new
+  // one on top of that), so using it directly as an effect dependency
+  // re-fired this on basically every render -- not just when the actual
+  // result set changed -- which kept the canvas stuck dimmed at 0.4
+  // opacity, looking like a permanent cover over the report. This is a
+  // cheap, stable signature of what the report actually depends on, so the
+  // effect only re-runs when something in it truly changed.
+  const reportSignature = filtered.map(tk => `${tk.id}:${tk.done ? 1 : 0}${tk.cancelled ? 1 : 0}:${tk.length || ""}:${tk.date || ""}`).join(",");
+  useEffect(() => {
+    const el = reportCanvasRef.current;
+    if (!el) return;
+    const redraw = () => {
+      const stats = computeRewindStats(filtered);
+      const pixelRatio = Math.max(2, Math.min(3, (window.devicePixelRatio || 1) * 2));
+      const src = drawRewindCanvas(stats, chartTitle, pixelRatio);
+      el.width = src.width;
+      el.height = src.height;
+      const ctx = el.getContext("2d");
+      ctx.clearRect(0, 0, el.width, el.height);
+      ctx.drawImage(src, 0, 0);
+    };
+    if (reportPulseTimer.current) clearTimeout(reportPulseTimer.current);
+    setReportPulsing(true);
+    reportPulseTimer.current = setTimeout(() => {
+      redraw();
+      setReportPulsing(false);
+    }, 160);
+    return () => {
+      if (reportPulseTimer.current) clearTimeout(reportPulseTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportSignature, chartTitle, displayMode]);
   // Pie chart data
   const pendingC = filtered.filter(tk => !isDone(tk) && !isCancelled(tk)).length;
   const completedC = filtered.filter(tk => isDone(tk)).length;
@@ -19397,97 +19386,52 @@ const SearchView = ({
     value: toDate,
     placeholder: isHe ? "עד תאריך" : "To",
     onChange: handleToChange
-  })))), filtered.length > 0 && /*#__PURE__*/React.createElement("div", {
-    ref: pieCardRef,
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
-      padding: "14px 16px",
-      borderRadius: 12,
+      display: "flex",
+      gap: 4,
+      padding: 4,
+      borderRadius: 13,
       background: C.card2,
       border: `1px solid ${C.border}`,
-      marginBottom: 16
+      marginTop: 18,
+      marginBottom: 18
     }
-  }, wideCharts
-    /* ── Wide: both charts side by side ── */
-    ? /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", gap: 20, alignItems: "center", justifyContent: "center" }
-      },
-      /*#__PURE__*/React.createElement("div", {
-        style: { flex: 1, minWidth: 0, display: "flex", justifyContent: "center" }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", alignItems: "center", gap: 14 }
-      }, /*#__PURE__*/React.createElement(PieChart, {
-        size: 130, sublabel: t("tasks"), segments: pieSegments, immediateAnim: true
-      }), /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", flexDirection: "column", gap: 8 }
-      }, pieSegments.map((s, i) => /*#__PURE__*/React.createElement("div", {
-        key: i, style: { display: "flex", alignItems: "center", gap: 8 }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: { width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }
-      }), /*#__PURE__*/React.createElement("span", {
-        style: { fontSize: 12, color: C.text2, minWidth: 60 }
-      }, s.label), /*#__PURE__*/React.createElement("span", {
-        style: { fontSize: 13, fontWeight: 700, color: s.color }
-      }, s.value))), /*#__PURE__*/React.createElement("div", {
-        style: { marginTop: 4, fontSize: 11, color: C.text4 }
-      }, t("total"), ": ", /*#__PURE__*/React.createElement("strong", { style: { color: C.text } }, filtered.length))))),
-      /*#__PURE__*/React.createElement("div", {
-        style: { width: 1, alignSelf: "stretch", background: C.border, flexShrink: 0 }
-      }),
-      /*#__PURE__*/React.createElement("div", {
-        style: { flex: 1, minWidth: 0 }
-      }, /*#__PURE__*/React.createElement(LineChart, {
-        tasks: filtered,
-        timeRange: datePreset === "today" ? "today" : datePreset === "week" ? "week" : datePreset === "month" ? "month" : datePreset === "year" ? "year" : datePreset === "alltime" ? "all" : "custom",
-        dateRange: datePreset === "custom" || fromDate || toDate ? { from: fromDate, to: toDate } : null,
-        height: 140, prefLookahead: false,
-        key: `search-line-${datePreset}-${fromDate}-${toDate}-${typeFilter}-${query}`
-      })))
-    /* ── Narrow: single chart with toggle ── */
-    : /*#__PURE__*/React.createElement(React.Fragment, null,
-      /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", alignItems: "center", marginBottom: chartTitle ? 12 : 0 }
-      }, chartTitle && /*#__PURE__*/React.createElement("div", {
-        style: { fontSize: 15, fontWeight: 700, color: C.text, flex: 1, textAlign: isHe ? "right" : "left", direction: isHe ? "rtl" : "ltr" }
-      }, chartTitle), !chartTitle && /*#__PURE__*/React.createElement("div", { style: { flex: 1 } }),
-      /*#__PURE__*/React.createElement("button", {
-        onClick: () => setChartMode(m => m === "pie" ? "line" : "pie"),
-        title: chartMode === "pie" ? isHe ? "עבור לגרף קווי" : "Switch to line chart" : isHe ? "עבור לעוגה" : "Switch to pie chart",
-        "data-share-ignore": "true",
-        style: {
-          width: 28, height: 28, borderRadius: 8, border: `1px solid ${C.border}`,
-          background: chartMode === "pie" ? C.blueBg : C.card, cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          flexShrink: 0, transition: "background 0.15s,border-color 0.15s"
-        }
-      }, /*#__PURE__*/React.createElement(Icon, { name: chartMode === "pie" ? "trending" : "pie-chart", size: 14, color: C.blue }))
-      ),
-      chartMode === "pie" && /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", justifyContent: "center" }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", alignItems: "center", gap: 16 }
-      }, /*#__PURE__*/React.createElement(PieChart, {
-        size: 150, sublabel: t("tasks"), segments: pieSegments, immediateAnim: true
-      }), /*#__PURE__*/React.createElement("div", {
-        style: { display: "flex", flexDirection: "column", gap: 10 }
-      }, pieSegments.map((s, i) => /*#__PURE__*/React.createElement("div", {
-        key: i, style: { display: "flex", alignItems: "center", gap: 8 }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: { width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }
-      }), /*#__PURE__*/React.createElement("span", {
-        style: { fontSize: 12, color: C.text2, minWidth: 68 }
-      }, s.label), /*#__PURE__*/React.createElement("span", {
-        style: { fontSize: 13, fontWeight: 700, color: s.color }
-      }, s.value))), /*#__PURE__*/React.createElement("div", {
-        style: { marginTop: 4, fontSize: 11, color: C.text4 }
-      }, t("total"), ": ", /*#__PURE__*/React.createElement("strong", { style: { color: C.text } }, filtered.length)))))  ,
-      chartMode === "line" && /*#__PURE__*/React.createElement(LineChart, {
-        tasks: filtered,
-        timeRange: datePreset === "today" ? "today" : datePreset === "week" ? "week" : datePreset === "month" ? "month" : datePreset === "year" ? "year" : datePreset === "alltime" ? "all" : "custom",
-        dateRange: datePreset === "custom" || fromDate || toDate ? { from: fromDate, to: toDate } : null,
-        height: 160, prefLookahead: false,
-        key: `search-line-${datePreset}-${fromDate}-${toDate}-${typeFilter}-${query}`
-      })
-    )), sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }, [{
+    id: "tasks",
+    icon: "list",
+    label: isHe ? "צפייה במשימות" : "View tasks"
+  }, {
+    id: "report",
+    icon: "trending",
+    label: isHe ? "צפייה בדוח" : "View report"
+  }].map(opt => /*#__PURE__*/React.createElement("button", {
+    key: opt.id,
+    onClick: () => setDisplayMode(opt.id),
+    style: {
+      flex: 1,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 7,
+      padding: "10px 10px",
+      borderRadius: 10,
+      border: "none",
+      cursor: "pointer",
+      background: displayMode === opt.id ? C.card : "transparent",
+      boxShadow: displayMode === opt.id ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
+      color: displayMode === opt.id ? C.text : C.text3,
+      fontSize: 13,
+      fontWeight: 700,
+      transition: "background 0.2s ease, box-shadow 0.2s ease, color 0.2s ease"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: opt.icon,
+    size: 15,
+    color: "currentColor"
+  }), opt.label))), displayMode === "tasks" && /*#__PURE__*/React.createElement(React.Fragment, {
+    key: "mode-tasks"
+  }, sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "40px 0",
@@ -19782,7 +19726,35 @@ const SearchView = ({
       opacity: 0.4,
       animation: "htmlDotBounce 1.1s ease 0.36s infinite"
     }
-  }))))), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
+  })))))), displayMode === "report" && /*#__PURE__*/React.createElement("div", {
+    key: "mode-report",
+    style: {
+      animation: "fadeIn 0.25s ease"
+    }
+  }, filtered.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: "48px 16px",
+      textAlign: "center",
+      color: C.text4,
+      fontSize: 13
+    }
+  }, isHe ? "אין מספיק נתונים לדוח" : "Not enough data for a report yet") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderRadius: 16,
+      overflow: "hidden",
+      border: `1px solid ${C.border}`,
+      boxShadow: "0 2px 10px rgba(0,0,0,0.06)"
+    }
+  }, /*#__PURE__*/React.createElement("canvas", {
+    ref: reportCanvasRef,
+    style: {
+      display: "block",
+      width: "100%",
+      height: "auto",
+      opacity: reportPulsing ? 0.4 : 1,
+      transition: "opacity 0.16s ease"
+    }
+  }))), /*#__PURE__*/React.createElement(ShareCaptureOverlay, {
     active: sharingSearch
   }));
 };
@@ -20351,6 +20323,28 @@ const GCal = (() => {
       body.end = { date: ANCHOR_END, dateTime: null, timeZone: null };
       return body;
     }
+    // A multi-day (finishDate) task spans from its start date through its
+    // finish date -- without this, it would push as a single-day event on
+    // Google, silently losing the span entirely.
+    if (isMultiDay(task)) {
+      const time = normTime(task.time);
+      if (time) {
+        const startLocal = `${task.date}T${time}:00`;
+        const mins = Number(task.length) > 0 ? Number(task.length) : DEFAULT_TASK_LENGTH;
+        // Measured from the FINISH date's own start time, not the start
+        // date's -- day 1's start clock time through day N's
+        // start-time-plus-length, not day 1's alone.
+        const end = new Date(new Date(`${task.finishDate}T${time}:00`).getTime() + mins * 60000);
+        body.start = { dateTime: startLocal, timeZone: tz, date: null };
+        body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz, date: null };
+      } else {
+        const endD = new Date(task.finishDate + "T00:00:00");
+        endD.setDate(endD.getDate() + 1); // Google's all-day end date is exclusive
+        body.start = { date: task.date, dateTime: null, timeZone: null };
+        body.end = { date: localDs(endD), dateTime: null, timeZone: null };
+      }
+      return body;
+    }
     const time = normTime(task.time);
     if (time) {
       // Previously this wrote the UTC clock time but labelled it with the local time
@@ -20778,6 +20772,29 @@ const GCal = (() => {
     body.description = task.note ? String(task.note).slice(0, 7000) : null;
     if (String(task.date || "").trim()) {
       const time = normTime(task.time);
+      // Same reasoning as taskToEventBody: a multi-day (finishDate) task
+      // spans from its start date through its finish date, checked before
+      // the imported-all-day-event handling below since a finish date the
+      // person set by hand always wins over whatever Google originally had.
+      if (isMultiDay(task)) {
+        if (time) {
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+          const startLocal = `${task.date}T${time}:00`;
+          const mins = Number(task.length) > 0 ? Number(task.length) : DEFAULT_TASK_LENGTH;
+          const end = new Date(new Date(`${task.finishDate}T${time}:00`).getTime() + mins * 60000);
+          body.start = { dateTime: startLocal, timeZone: tz, date: null };
+          body.end = { dateTime: `${localDs(end)}T${pad2(end.getHours())}:${pad2(end.getMinutes())}:00`, timeZone: tz, date: null };
+        } else {
+          const endD = new Date(task.finishDate + "T00:00:00");
+          endD.setDate(endD.getDate() + 1);
+          body.start = { date: task.date, dateTime: null, timeZone: null };
+          body.end = { date: localDs(endD), dateTime: null, timeZone: null };
+        }
+        await apiFetch(`/calendars/${enc(task.googleCalendarId)}/events/${enc(task.googleEventId)}`, {
+          method: "PATCH", body: JSON.stringify(body)
+        });
+        return;
+      }
       // An imported multi-day all-day event (00:00 start, whole-day length) that
       // hasn't been reshaped locally goes back to Google as the all-day event it
       // was, not as a 00:00 timed one.
@@ -21361,6 +21378,50 @@ function App() {
     try { loadTasks().forEach(t => initialLocalIds.current.add(t.id)); } catch {}
   }
   const [archiveTasks, setArchiveTasks] = useState([]); // loaded in background after first paint
+  // TODAY is a module-level Date, computed once when the script first loads,
+  // that dozens of places across the app (week/month "is today"
+  // highlighting, chart date ranges, search's Today/This week/month/year
+  // presets) read directly. Left alone, it would silently go stale the
+  // moment midnight passes for anyone who just leaves the app open --
+  // completely normal for an installed PWA -- until the page happens to
+  // reload. Rather than touch every one of those call sites, this mutates
+  // the SAME Date object in place (every existing `TODAY.getX()` /
+  // `new Date(TODAY)` keeps working unchanged) and bumps a tick to force a
+  // re-render whenever the day actually rolls over.
+  const [, setDayTick] = useState(0);
+  useEffect(() => {
+    let timer = null;
+    const rollIfNeeded = () => {
+      const now = new Date();
+      if (now.toDateString() !== TODAY.toDateString()) {
+        TODAY.setFullYear(now.getFullYear(), now.getMonth(), now.getDate());
+        TODAY.setHours(0, 0, 0, 0);
+        setDayTick(n => n + 1);
+      }
+    };
+    const scheduleNext = () => {
+      const now = new Date();
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      // setTimeout is throttled/paused in a backgrounded tab and can drift on
+      // a device that sleeps, so this is a best-effort primary trigger, not
+      // the only one -- the visibility/focus listeners below are what
+      // actually catch the common case of a laptop or phone waking up well
+      // after midnight has already passed.
+      timer = setTimeout(() => {
+        rollIfNeeded();
+        scheduleNext();
+      }, Math.max(1000, nextMidnight.getTime() - now.getTime()));
+    };
+    scheduleNext();
+    document.addEventListener("visibilitychange", rollIfNeeded);
+    window.addEventListener("focus", rollIfNeeded);
+    rollIfNeeded(); // in case the day already turned over before this mounted
+    return () => {
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", rollIfNeeded);
+      window.removeEventListener("focus", rollIfNeeded);
+    };
+  }, []);
   const [view, setView] = useState("home");
   // ── Bulk selection (multi-select + batch actions) ─────────────────────────
   const [selectMode, setSelectMode] = useState(false);
@@ -21687,7 +21748,14 @@ function App() {
   }, [tasks]);
   const resetMonthViewRef = useRef(null); // set by MonthView; called when tapping active month tab
   const [pullDist, setPullDist] = useState(0);
-  const [filteredCharts, setFilteredCharts] = useState(() => DEFAULT_CHARTS.map(c => ({...c})));
+  const [filteredCharts, setFilteredCharts] = useState(loadCharts);
+  // Auto-save whenever the person adds/removes/reorders a chart, or changes
+  // one's filter/time range/type/title/lock -- previously nothing wrote
+  // these changes back to storage at all outside of a JSON restore, so
+  // every customization silently reset to the default set on reload.
+  useEffect(() => {
+    persistCharts(filteredCharts);
+  }, [filteredCharts]);
   const [cleanDelaysMsg, setCleanDelaysMsg] = useState("");
   const [newlyAddedIds, setNewlyAddedIds] = useState(() => new Set());
   const [prefIL, setPrefIL] = useState(() => getPref(PREF_IL));
@@ -21953,12 +22021,40 @@ function App() {
           if (!names.length) return false;
           return ts.some(t => t.date === patch.date && (t.hebcal || t.intl || t.type === "calendar") && (names.includes(normHolidayName(t.name)) || names.includes(normHolidayName(t.nameEn))));
         };
+        // The local task id for a foreign event is a deterministic hash of
+        // its calendarId+eventId (see foreignTaskId), so re-pulling the same
+        // event should always resolve back to the same existing task. But if
+        // that ever doesn't hold -- the event briefly shows up under a
+        // different owning calendar between pulls, or a pre-existing local
+        // task (native or a stale foreign import) already carries this exact
+        // googleEventId/googleCalendarId under a different id -- blindly
+        // trusting the id match would create a second local task pointing at
+        // the very same one Google event. This catches that regardless of id,
+        // checking both the active list and the archive, so a task already
+        // marked done/cancelled there doesn't get a fresh pending duplicate
+        // pushed alongside it.
+        const alreadyLinkedElsewhere = patch => {
+          if (!patch.googleEventId || !patch.googleCalendarId) return false;
+          // A native task's own event id is deterministic (see eventIdForTask) --
+          // if this "foreign" event's id matches what some native task's event id
+          // would be, it's actually ours: the taskitId exclusion in pullForeign
+          // normally catches this, but a freshly-created event can momentarily
+          // read back without its extendedProperties visible yet, which is
+          // exactly how this class of duplicate slips through.
+          const wantEventId = GCal.eventIdForTask ? patch.googleEventId : null;
+          if (wantEventId && [...ts, ...archiveTasks].some(t => t.source !== "google" && GCal.eventIdForTask(t.id) === patch.googleEventId)) return true;
+          // Otherwise: this exact event (by calendarId+eventId) is already
+          // represented locally under a different task id -- the event briefly
+          // showed up via a different owning calendar between pulls, or a stale
+          // foreign import from before ids were deterministic.
+          return ts.some(t => t.id !== patch.id && t.googleEventId === patch.googleEventId && t.googleCalendarId === patch.googleCalendarId) || archiveTasks.some(t => t.googleEventId === patch.googleEventId && t.googleCalendarId === patch.googleCalendarId);
+        };
         let next = ts;
         for (const [id, patch] of Object.entries(byId)) {
           if (archivedIds.has(id)) continue;
           const existing = next.find(t => t.id === id);
           if (!existing) {
-            if (isForeignHolidayDupe(patch)) continue;
+            if (isForeignHolidayDupe(patch) || alreadyLinkedElsewhere(patch)) continue;
             next = next === ts ? [...ts] : next;
             // Never resurrect done/cancelled state from Google — that's local-only
             // for foreign events (see the note on patchForeignEvent). New imports
@@ -22112,14 +22208,28 @@ function App() {
       const keepRank = item => isHolidayish(item.tk) ? 0 : isLinked(item) ? 1 : 2;
       Object.values(groups).forEach(items => {
         if (items.length < 2) return;
-        const sorted = [...items].sort((a, b) => {
+        // Same name + same date alone is NOT enough to call two tasks
+        // duplicates -- a recurring task's freshly-spawned next occurrence
+        // can easily share both with an already-completed earlier one
+        // without being the same thing at all. Require matching
+        // done/cancelled state and type too.
+        const sameShape = (a, b) => !!a.tk.done === !!b.tk.done && !!a.tk.cancelled === !!b.tk.cancelled && (a.tk.type || "regular") === (b.tk.type || "regular");
+        // And never delete anything from this group at all unless at least
+        // one member is a CONFIRMED, currently-synced copy (or an
+        // app-generated holiday, which is safely regenerable either way) --
+        // i.e. there's an actual Google Calendar event backing up the claim
+        // that these are duplicates of one real thing, not just a
+        // same-name-same-date coincidence between two genuinely separate
+        // tasks.
+        if (!items.some(it => isLinked(it) || isHolidayish(it.tk))) return;
+        const anchor = [...items].sort((a, b) => {
           const ra = keepRank(a), rb = keepRank(b);
           if (ra !== rb) return ra - rb;
           const ca = a.tk.created || 0, cb = b.tk.created || 0;
           if (ca !== cb) return ca - cb;
           return (a.tk.time ? 0 : 1) - (b.tk.time ? 0 : 1);
-        });
-        sorted.slice(1).forEach(item => toDeleteIds.add(item.tk.id));
+        })[0];
+        items.filter(it => it !== anchor && sameShape(it, anchor)).forEach(item => toDeleteIds.add(item.tk.id));
       });
       // Pass 2: a foreign-imported task (from a subscribed Google holiday
       // calendar, say) that names the same holiday, on the same date, as a
@@ -22161,6 +22271,44 @@ function App() {
         });
         sorted.slice(1).forEach(item => { toDeleteIds.add(item.tk.id); localOnlyIds.add(item.tk.id); });
       });
+      // Pass 4: a "google"-sourced task whose googleEventId/googleCalendarId
+      // is already claimed by some OTHER task (a native task already pushed
+      // and linked to that same event, or a different foreign-imported copy
+      // of it) is a duplicate of that one real Google event, not a second
+      // real appointment -- e.g. a foreign import that got created for an
+      // event this app had already pushed itself, right before its taskitId
+      // marker became visible to the next pull. Keep whichever copy is
+      // native (the authoritative one, if there is one) or otherwise
+      // whichever has been around the longest; the extra copy is removed
+      // locally only, since there's still just one real event on Google.
+      const byGoogleEvent = {};
+      eligible.filter(item => item.tk.googleEventId && item.tk.googleCalendarId && !toDeleteIds.has(item.tk.id)).forEach(item => {
+        const k = item.tk.googleCalendarId + "::" + item.tk.googleEventId;
+        (byGoogleEvent[k] = byGoogleEvent[k] || []).push(item);
+      });
+      Object.values(byGoogleEvent).forEach(items => {
+        if (items.length < 2) return;
+        const sorted = [...items].sort((a, b) => {
+          const na = a.tk.source === "google" ? 1 : 0, nb = b.tk.source === "google" ? 1 : 0;
+          if (na !== nb) return na - nb;
+          return (a.tk.created || 0) - (b.tk.created || 0);
+        });
+        sorted.slice(1).forEach(item => { toDeleteIds.add(item.tk.id); localOnlyIds.add(item.tk.id); });
+      });
+      // Pass 5: a foreign-imported "google" task whose event id matches what
+      // some native task's own event id deterministically would be
+      // (eventIdForTask) is that native task's event slipping back in as an
+      // apparent foreign duplicate -- normally excluded by its taskitId
+      // marker, but a freshly-created event can momentarily read back
+      // without that marker visible yet. The native task (the authoritative
+      // copy -- its own done/cancelled state is the real one) is kept; the
+      // foreign import is removed locally only.
+      if (GCal.eventIdForTask) {
+        eligible.filter(item => item.tk.source === "google" && item.tk.googleEventId && !toDeleteIds.has(item.tk.id)).forEach(item => {
+          const nativeMatch = eligible.find(other => other.tk.source !== "google" && !toDeleteIds.has(other.tk.id) && GCal.eventIdForTask(other.tk.id) === item.tk.googleEventId);
+          if (nativeMatch) { toDeleteIds.add(item.tk.id); localOnlyIds.add(item.tk.id); }
+        });
+      }
       const toDeleteById = new Map(combined.filter(item => toDeleteIds.has(item.tk.id)).map(item => [item.tk.id, item.tk]));
       const localDeleted = toDeleteIds.size;
       if (localDeleted) {
@@ -22401,6 +22549,17 @@ function App() {
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
+  }, []);
+  // Whether the last attempt to save tasks/archive to local storage actually
+  // succeeded -- see _cacheTasksToLocal/_cacheArchiveToLocal. Flips back to
+  // true the moment a save succeeds again (e.g. some space freed up), so
+  // this reflects the current state rather than latching red forever after
+  // one failure.
+  const [storageOk, setStorageOk] = useState(true);
+  useEffect(() => {
+    const onStorageStatus = e => setStorageOk(!!e.detail?.ok);
+    window.addEventListener("taskflow-storage-status", onStorageStatus);
+    return () => window.removeEventListener("taskflow-storage-status", onStorageStatus);
   }, []);
 
   // Load archive in background — never blocks first paint, independent of the
@@ -23286,7 +23445,7 @@ function App() {
         const interval = t.recur === "month" || t.recur === "year" ? null : (parseInt(t.recur) || 1) * 864e5;
         let d = new Date(t.date + "T00:00:00");
         // Advance past the stored occurrence (already counted above or overdue)
-        if (t.recur === "month") d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());else if (t.recur === "year") d = new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());else d = new Date(d.getTime() + interval);
+        if (t.recur === "month") d = addMonthsClamped(d, 1);else if (t.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
         let itr = 0;
         while (d <= weekEnd && itr < 500) {
           if (d >= TODAY) {
@@ -23296,7 +23455,7 @@ function App() {
             const alreadyStored = tasks.some(st => (st.seriesId === sid || st.id === sid) && st.date === ds);
             if (!alreadyStored) count++;
           }
-          if (t.recur === "month") d = new Date(d.getFullYear(), d.getMonth() + 1, d.getDate());else if (t.recur === "year") d = new Date(d.getFullYear() + 1, d.getMonth(), d.getDate());else d = new Date(d.getTime() + interval);
+          if (t.recur === "month") d = addMonthsClamped(d, 1);else if (t.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
           itr++;
         }
       }
@@ -23331,8 +23490,10 @@ function App() {
   const calNavIsHe = getLang() === "he";
   const calNavOnNav = view === "week" ? handleWeekNav : handleMonthNav;
   const calNavStep = view === "week" ? 7 : 1;
-  // ── Header sync-status pill: offline > failed > loading > saving > online ──
-  const syncPillState = !online
+  // ── Header sync-status pill: storage failure > offline > failed > loading > saving > online ──
+  const syncPillState = !storageOk
+    ? "storageError"
+    : !online
     ? "offline"
     : gcalConnected && gcalStats.failed > 0
       ? "failed"
@@ -23345,6 +23506,13 @@ function App() {
             : "online";
   const getSyncPillInfo = isHePill => {
     const map = {
+      storageError: {
+        bg: "var(--red-bg)", border: "var(--red-border)", color: "var(--red)",
+        label: isHePill ? "שמירה נכשלה" : "Save failed", pulse: true,
+        title: isHePill
+          ? "לא ניתן לשמור שינויים במכשיר הזה (יתכן שהאחסון מלא או חסום). השינויים שלך עדיין מוצגים אבל לא נשמרים — פנה מקום פנוי או ייצא את הנתונים שלך."
+          : "Changes aren't being saved on this device (storage may be full or blocked). What you see is still here, but it isn't being written to disk — free up space or export your data."
+      },
       offline: {
         bg: "var(--red-bg)", border: "var(--red-border)", color: "var(--red)",
         label: isHePill ? "לא מחובר" : "Offline", pulse: false
@@ -24581,6 +24749,7 @@ function App() {
     return /*#__PURE__*/React.createElement("div", {
       key: syncPillState,
       onClick: () => { if (gcalConnected) gcalPullNow(); },
+      title: pillInfoW.title || undefined,
       className: syncPillState === "saved" ? "sync-saved-shimmer" : undefined,
       style: {
         display: "flex",
