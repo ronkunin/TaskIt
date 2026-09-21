@@ -233,7 +233,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "4.6";
+const APP_VERSION = "6.1";
 
 const {
   useState,
@@ -4241,6 +4241,34 @@ const withForcedShareTheme = async (bright, fn) => {
     if (window.__appForceRender) window.__appForceRender();
   }
 };
+// Shared tail of every image-share flow: try the clipboard first, fall back
+// to a direct download, and always end in a toast either way. Used both by
+// the DOM-capture path below (shareElementAsImage) and by anything that
+// draws straight to a canvas instead of capturing the screen (the Rewind
+// card).
+const finishShareCanvas = async (canvas, filename) => {
+  try {
+    if (!(navigator.clipboard && window.ClipboardItem)) throw new Error("no-clipboard-api");
+    const blobPromise = new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({
+      "image/png": blobPromise
+    })]);
+    appToast(t("shareCopied"));
+  } catch (err) {
+    try {
+      const url = canvas.toDataURL("image/png");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e2) {
+      // ignore -- toast below still informs the user either way
+    }
+    appToast(t("shareFailed"));
+  }
+};
 const shareElementAsImage = async (el, filename, frameOptions) => {
   if (!el) return;
   const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error("share-image-timeout")), ms))]);
@@ -4281,34 +4309,915 @@ const shareElementAsImage = async (el, filename, frameOptions) => {
     // Frame the raw capture with padding, a light/dark background and the
     // TaskIt branding strip before it ever reaches the clipboard or disk.
     const canvas = composeShareFrame(rawCanvas, captureScale, frameOptions);
-    try {
-      if (!(navigator.clipboard && window.ClipboardItem)) throw new Error("no-clipboard-api");
-      const blobPromise = new Promise(resolve => canvas.toBlob(resolve, "image/png"));
-      await navigator.clipboard.write([new ClipboardItem({
-        "image/png": blobPromise
-      })]);
-      appToast(t("shareCopied"));
-    } catch (err) {
-      try {
-        const url = canvas.toDataURL("image/png");
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      } catch (e2) {
-        // ignore -- toast below still informs the user either way
-      }
-      appToast(t("shareFailed"));
-    }
+    await finishShareCanvas(canvas, filename);
   } catch (captureErr) {
     // html2canvas failed to load, hung, or threw on this element's CSS.
     console.error("shareElementAsImage failed:", captureErr);
     appToast(t("shareFailed"));
   }
 };
-// Small square icon button matching the existing share-task button in the
+// ── "Rewind" share card: a generated stats poster (not a screenshot) ──────
+// Built entirely with Canvas 2D instead of capturing DOM, since the layout
+// needs to read as one clean vertical card regardless of what the on-screen
+// search results actually look like right now.
+const fmtRewindDuration = mins => {
+  const he = getLang() === "he";
+  const totalMins = Math.round(mins);
+  const d = Math.floor(totalMins / 1440);
+  const h = Math.floor((totalMins % 1440) / 60);
+  const m = totalMins % 60;
+  const parts = [];
+  if (d > 0) parts.push(he ? `${d} ${d === 1 ? "יום" : "ימים"}` : `${d}d`);
+  if (h > 0) parts.push(he ? `${h} ${h === 1 ? "שעה" : "שעות"}` : `${h}h`);
+  if (m > 0 && d === 0) parts.push(he ? `${m} דק'` : `${m}m`);
+  if (!parts.length) parts.push(he ? "0 דק'" : "0m");
+  return parts.slice(0, 2).join(" ");
+};
+// Pulls every number worth bragging (or being honest) about out of a task
+// list: totals, status split, first/last by date, time invested, and a
+// couple of "most/least" superlatives. Pure function of the tasks handed
+// to it -- the caller decides what's "in scope" (a search's current
+// filters, a whole list, whatever).
+const computeRewindStats = tasks => {
+  const withDate = tasks.filter(tk => tk.date);
+  const sorted = [...withDate].sort((a, b) => a.date === b.date ? (a.time || "").localeCompare(b.time || "") : a.date < b.date ? -1 : 1);
+  const first = sorted[0] || null;
+  const last = sorted.length > 1 ? sorted[sorted.length - 1] : null;
+  const completed = tasks.filter(isDone);
+  const cancelled = tasks.filter(isCancelled);
+  const pending = tasks.filter(tk => !isDone(tk) && !isCancelled(tk));
+  const total = tasks.length;
+  const completionRate = total ? Math.round(completed.length / total * 100) : 0;
+  const timed = tasks.filter(tk => Number(tk.length) > 0);
+  const totalMinutes = timed.reduce((s, tk) => s + Number(tk.length), 0);
+  const avgMinutes = timed.length ? Math.round(totalMinutes / timed.length) : 0;
+  const longest = timed.length ? timed.reduce((a, b) => Number(b.length) > Number(a.length) ? b : a) : null;
+  const byDay = {};
+  withDate.forEach(tk => {
+    byDay[tk.date] = (byDay[tk.date] || 0) + 1;
+  });
+  let busiestDay = null,
+    busiestDayCount = 0;
+  Object.entries(byDay).forEach(([ds, c]) => {
+    if (c > busiestDayCount) {
+      busiestDay = ds;
+      busiestDayCount = c;
+    }
+  });
+  const byType = {};
+  tasks.forEach(tk => {
+    const ty = tk.type || "general";
+    byType[ty] = (byType[ty] || 0) + 1;
+  });
+  const typeEntries = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+  // Monthly buckets for the line chart -- every calendar month from the
+  // earliest to the latest dated task in range, so gaps show as zero
+  // instead of just vanishing from the axis.
+  let byMonth = [];
+  if (withDate.length) {
+    const monthKey = ds => ds.slice(0, 7);
+    const counts = {};
+    withDate.forEach(tk => {
+      const k = monthKey(tk.date);
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    const firstK = monthKey(sorted[0].date),
+      lastK = monthKey(sorted[sorted.length - 1].date);
+    let [fy, fm] = firstK.split("-").map(Number);
+    const [ly, lm] = lastK.split("-").map(Number);
+    while (fy < ly || fy === ly && fm <= lm) {
+      const k = `${fy}-${String(fm).padStart(2, "0")}`;
+      byMonth.push({
+        key: k,
+        y: fy,
+        m: fm,
+        count: counts[k] || 0
+      });
+      fm++;
+      if (fm > 12) {
+        fm = 1;
+        fy++;
+      }
+    }
+    // A single month has nothing to draw a line across -- cap it at a
+    // sane number of points either way so a multi-year range doesn't
+    // produce an unreadably dense axis (bucket down to quarters instead).
+    if (byMonth.length > 24) {
+      const quarters = {};
+      byMonth.forEach(({
+        y,
+        m,
+        count
+      }) => {
+        const q = `${y}-Q${Math.ceil(m / 3)}`;
+        quarters[q] = (quarters[q] || 0) + count;
+      });
+      byMonth = Object.entries(quarters).map(([key, count]) => ({
+        key,
+        count
+      }));
+    }
+  }
+  const byWeekday = [0, 0, 0, 0, 0, 0, 0];
+  withDate.forEach(tk => {
+    const d = new Date(tk.date + "T00:00:00");
+    if (!isNaN(d.getTime())) byWeekday[d.getDay()]++;
+  });
+  let bestWeekday = null,
+    quietWeekday = null;
+  if (withDate.length) {
+    let maxI = 0,
+      minI = 0;
+    byWeekday.forEach((c, i) => {
+      if (c > byWeekday[maxI]) maxI = i;
+      if (c > 0 && (byWeekday[minI] === 0 || c < byWeekday[minI])) minI = i;
+    });
+    bestWeekday = {
+      idx: maxI,
+      count: byWeekday[maxI]
+    };
+    if (byWeekday[minI] > 0 && minI !== maxI) quietWeekday = {
+      idx: minI,
+      count: byWeekday[minI]
+    };
+  }
+  // Consistency: how many distinct days had anything on them, the longest
+  // run of back-to-back days, and how wide the whole range is.
+  const dayKeys = Object.keys(byDay).sort();
+  const activeDays = dayKeys.length;
+  let longestStreak = 0,
+    run = 0,
+    prevT = null;
+  dayKeys.forEach(ds => {
+    const tms = new Date(ds + "T00:00:00").getTime();
+    run = prevT !== null && Math.round((tms - prevT) / 86400000) === 1 ? run + 1 : 1;
+    if (run > longestStreak) longestStreak = run;
+    prevT = tms;
+  });
+  const spanDays = dayKeys.length ? Math.round((new Date(dayKeys[dayKeys.length - 1] + "T00:00:00").getTime() - new Date(dayKeys[0] + "T00:00:00").getTime()) / 86400000) + 1 : 0;
+  let busiestMonth = null;
+  byMonth.forEach(m => {
+    if (!busiestMonth || m.count > busiestMonth.count) busiestMonth = m;
+  });
+  const avgPerMonth = byMonth.length ? Math.round(withDate.length / byMonth.length * 10) / 10 : 0;
+  return {
+    total,
+    completedCount: completed.length,
+    cancelledCount: cancelled.length,
+    pendingCount: pending.length,
+    completionRate,
+    first,
+    last,
+    totalMinutes,
+    avgMinutes,
+    longest,
+    busiestDay,
+    busiestDayCount,
+    typeEntries,
+    byMonth,
+    byWeekday,
+    activeDays,
+    longestStreak,
+    busiestMonth,
+    avgPerMonth,
+    spanDays,
+    bestWeekday,
+    quietWeekday
+  };
+};
+const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
+  const isHe = getLang() === "he";
+  const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+  const W = 760;
+  const PAD = 36;
+  const CW = W - PAD * 2;
+  // Always the same light palette regardless of the person's own theme, so
+  // the card reads identically wherever it ends up. Font weight never goes
+  // above 750 anywhere in here.
+  const INK = "#0B1220",
+    INK2 = "#334155",
+    INK3 = "#64748B",
+    INK4 = "#94A3B8";
+  const CARD = "#FFFFFF",
+    LINE = "#E6EBF5";
+  const VIOLET = "#7C3AED",
+    INDIGO = "#4F46E5",
+    BLUE = "#2563EB",
+    SKY = "#0EA5E9",
+    TEAL = "#0D9488",
+    EMERALD = "#059669",
+    AMBER = "#D97706",
+    ROSE = "#E11D48",
+    PINK = "#DB2777";
+  const TYPE_PALETTE = [INDIGO, EMERALD, AMBER, PINK, SKY, VIOLET, TEAL, ROSE];
+  const weekdayShort = isHe ? ["א", "ב", "ג", "ד", "ה", "ו", "ש"] : ["S", "M", "T", "W", "T", "F", "S"];
+  const weekdayNames = isHe ? ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"] : ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const monthAbbr = isHe ? ["ינו", "פבר", "מרץ", "אפר", "מאי", "יונ", "יול", "אוג", "ספט", "אוק", "נוב", "דצמ"] : ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const monthLabel = e => e && e.m ? monthAbbr[e.m - 1] : e ? (() => {
+    const [yy, q] = e.key.split("-");
+    return `${q}'${yy.slice(2)}`;
+  })() : "";
+  const fmtD = ds => {
+    if (!ds) return "";
+    const [y, m, d] = ds.split("-");
+    return `${d}/${m}/${y}`;
+  };
+  const taskLabel = tk => taskDisplayName(tk) || (isHe ? "ללא שם" : "Untitled");
+  const nf = n => String(n);
+
+  // ── layout engine: blocks stack vertically, each draws itself at its y ──
+  const blocks = [];
+  let h = 0;
+  const push = (blockH, draw) => {
+    blocks.push({ h: blockH, draw });
+    h += blockH;
+  };
+  const startX = isHe ? W - PAD : PAD;
+  const alignStart = isHe ? "right" : "left";
+  const alignEnd = isHe ? "left" : "right";
+  const endX = isHe ? PAD : W - PAD;
+  const setDir = ctx => {
+    ctx.direction = isHe ? "rtl" : "ltr";
+    ctx.textAlign = alignStart;
+  };
+  // Panel = white rounded card with a hairline border and soft shadow.
+  const panel = (ctx, x, y, w, ph, r = 18) => {
+    ctx.save();
+    ctx.shadowColor = "rgba(15,23,42,0.07)";
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 5;
+    drawRoundedRectPath(ctx, x, y, w, ph, r);
+    ctx.fillStyle = CARD;
+    ctx.fill();
+    ctx.restore();
+    drawRoundedRectPath(ctx, x, y, w, ph, r);
+    ctx.strokeStyle = LINE;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  };
+  // Section heading: colored eyebrow rule + title + one-line "notice"
+  const section = (eyebrow, title, notice, accent) => {
+    push(notice ? 78 : 62, (ctx, y) => {
+      setDir(ctx);
+      ctx.textBaseline = "alphabetic";
+      // accent rule
+      const rw = 26;
+      const rx = isHe ? startX - rw : startX;
+      ctx.fillStyle = accent;
+      drawRoundedRectPath(ctx, rx, y + 14, rw, 4, 2);
+      ctx.fill();
+      ctx.font = `700 10.5px ${FONT}`;
+      ctx.fillStyle = accent;
+      ctx.fillText(eyebrow.toUpperCase(), isHe ? startX - rw - 10 : startX + rw + 10, y + 20);
+      ctx.font = `750 21px ${FONT}`;
+      ctx.fillStyle = INK;
+      ctx.fillText(title, startX, y + 46);
+      if (notice) {
+        ctx.font = `500 12.5px ${FONT}`;
+        ctx.fillStyle = INK3;
+        const lines = truncateCanvasLines(wrapCanvasText(ctx, notice, CW), 1);
+        ctx.fillText(lines[0] || "", startX, y + 66);
+      }
+    });
+  };
+
+  // ══ 1. Brand strip ══
+  push(66, (ctx, y) => {
+    const B = 36, lx = PAD, cy = y + 4;
+    const g = ctx.createLinearGradient(lx, cy, lx + B, cy + B);
+    g.addColorStop(0, "#6366F1");
+    g.addColorStop(1, "#2563EB");
+    drawRoundedRectPath(ctx, lx, cy, B, B, 11);
+    ctx.fillStyle = g;
+    ctx.fill();
+    const k = B * 0.5 / 24, ox = lx + B * 0.25, oy = cy + B * 0.25;
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 2.8;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(ox + 20 * k, oy + 6 * k);
+    ctx.lineTo(ox + 9 * k, oy + 17 * k);
+    ctx.lineTo(ox + 4 * k, oy + 12 * k);
+    ctx.stroke();
+    ctx.direction = "ltr";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.font = `750 21px ${FONT}`;
+    ctx.fillStyle = INK;
+    ctx.fillText("TaskIt", lx + B + 12, cy + B / 2 + 1);
+    ctx.textAlign = "right";
+    ctx.font = `500 12px ${FONT}`;
+    ctx.fillStyle = INK4;
+    ctx.fillText("Just Task It.", W - PAD, cy + B / 2 + 1);
+  });
+
+  // ══ 2. Hero headline ══
+  push(126, (ctx, y) => {
+    setDir(ctx);
+    ctx.textBaseline = "alphabetic";
+    ctx.font = `700 12px ${FONT}`;
+    ctx.fillStyle = VIOLET;
+    ctx.fillText((isHe ? "ריווינד" : "Rewind").toUpperCase(), startX, y + 16);
+    ctx.font = `750 44px ${FONT}`;
+    const grad = ctx.createLinearGradient(isHe ? W : 0, 0, isHe ? 0 : W, 0);
+    grad.addColorStop(0, "#4F46E5");
+    grad.addColorStop(0.55, "#7C3AED");
+    grad.addColorStop(1, "#DB2777");
+    ctx.fillStyle = grad;
+    ctx.fillText(isHe ? "הסיפור שלך" : "Your story", startX, y + 60);
+    // filter chip
+    const chipText = subtitle || (isHe ? "כל המשימות · כל הזמן" : "All tasks · All time");
+    ctx.font = `600 12.5px ${FONT}`;
+    const tw = Math.min(ctx.measureText(chipText).width, CW - 40);
+    const chipW = tw + 26, chipH = 28;
+    const chipX = isHe ? startX - chipW : startX;
+    drawRoundedRectPath(ctx, chipX, y + 74, chipW, chipH, 14);
+    ctx.fillStyle = "#EEF2FF";
+    ctx.fill();
+    ctx.strokeStyle = "#C7D2FE";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = INDIGO;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "center";
+    ctx.fillText(chipText, chipX + chipW / 2, y + 74 + chipH / 2 + 1);
+    // span note
+    ctx.textBaseline = "alphabetic";
+    setDir(ctx);
+    ctx.font = `500 11.5px ${FONT}`;
+    ctx.fillStyle = INK4;
+    const span = stats.spanDays > 1
+      ? (isHe ? `${stats.spanDays} ימים · ${stats.activeDays} ימים פעילים` : `${stats.spanDays} days · ${stats.activeDays} active days`)
+      : new Date().toLocaleDateString(isHe ? "he-IL" : "en-US", { year: "numeric", month: "short", day: "numeric" });
+    ctx.fillText(span, startX, y + 120);
+  });
+
+  // ══ 3. Hero total + completion ring ══
+  push(184, (ctx, y) => {
+    const ch = 168;
+    ctx.save();
+    ctx.shadowColor = "rgba(79,70,229,0.32)";
+    ctx.shadowBlur = 26;
+    ctx.shadowOffsetY = 10;
+    drawRoundedRectPath(ctx, PAD, y, CW, ch, 24);
+    const g = ctx.createLinearGradient(PAD, y, PAD + CW, y + ch);
+    g.addColorStop(0, "#4F46E5");
+    g.addColorStop(0.5, "#6D28D9");
+    g.addColorStop(1, "#2563EB");
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.restore();
+    // decorative translucent circles
+    ctx.save();
+    drawRoundedRectPath(ctx, PAD, y, CW, ch, 24);
+    ctx.clip();
+    ctx.fillStyle = "rgba(255,255,255,0.07)";
+    ctx.beginPath();
+    ctx.arc(PAD + CW * 0.14, y + ch * 0.85, 96, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(PAD + CW * 0.88, y + 8, 70, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // ring on the trailing side
+    const R = 56, RW = 12;
+    const rx = isHe ? PAD + 96 : PAD + CW - 96, ry = y + ch / 2;
+    ctx.beginPath();
+    ctx.arc(rx, ry, R, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = RW;
+    ctx.stroke();
+    const pct = Math.max(0, Math.min(100, stats.completionRate));
+    if (pct > 0) {
+      ctx.beginPath();
+      ctx.arc(rx, ry, R, -Math.PI / 2, -Math.PI / 2 + pct / 100 * Math.PI * 2);
+      ctx.strokeStyle = "#A7F3D0";
+      ctx.lineWidth = RW;
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+    ctx.direction = "ltr";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = `750 24px ${FONT}`;
+    ctx.fillStyle = "#fff";
+    ctx.fillText(pct + "%", rx, ry - 4);
+    ctx.font = `600 10px ${FONT}`;
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText((isHe ? "הושלם" : "done").toUpperCase(), rx, ry + 16);
+    // big number
+    setDir(ctx);
+    ctx.textBaseline = "alphabetic";
+    const tx = isHe ? W - PAD - 30 : PAD + 30;
+    ctx.font = `750 74px ${FONT}`;
+    ctx.fillStyle = "#fff";
+    ctx.fillText(nf(stats.total), tx, y + 96);
+    ctx.font = `700 15px ${FONT}`;
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.fillText(isHe ? "משימות בסך הכול" : stats.total === 1 ? "task, all in" : "tasks, all in", tx, y + 122);
+    ctx.font = `500 12px ${FONT}`;
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    const sub = stats.totalMinutes > 0
+      ? (isHe ? `${fmtRewindDuration(stats.totalMinutes)} של זמן מתוכנן` : `${fmtRewindDuration(stats.totalMinutes)} of planned time`)
+      : (isHe ? `${stats.activeDays} ימים פעילים` : `across ${stats.activeDays} active days`);
+    ctx.fillText(sub, tx, y + 142);
+  });
+
+  // ══ 4. Quick stat tiles ══
+  const tiles = [
+    { v: nf(stats.completedCount), l: isHe ? "הושלמו" : "Completed", c: EMERALD, bg: "#ECFDF5" },
+    { v: nf(stats.activeDays), l: isHe ? "ימים פעילים" : "Active days", c: INDIGO, bg: "#EEF2FF" },
+    { v: nf(stats.longestStreak), l: isHe ? "רצף שיא" : "Best streak", c: AMBER, bg: "#FFFBEB" },
+    { v: nf(stats.typeEntries.length), l: isHe ? "סוגים" : "Categories", c: PINK, bg: "#FDF2F8" }
+  ];
+  push(112, (ctx, y) => {
+    const gap = 10, tw = (CW - gap * 3) / 4, th = 98;
+    tiles.forEach((tl, i) => {
+      const x = PAD + i * (tw + gap);
+      drawRoundedRectPath(ctx, x, y, tw, th, 16);
+      ctx.fillStyle = tl.bg;
+      ctx.fill();
+      // top accent bar
+      ctx.save();
+      drawRoundedRectPath(ctx, x, y, tw, th, 16);
+      ctx.clip();
+      ctx.fillStyle = tl.c;
+      ctx.fillRect(x, y, tw, 4);
+      ctx.restore();
+      ctx.direction = "ltr";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.font = `750 30px ${FONT}`;
+      ctx.fillStyle = tl.c;
+      ctx.fillText(tl.v, x + tw / 2, y + 58);
+      ctx.font = `600 11px ${FONT}`;
+      ctx.fillStyle = INK2;
+      const lines = truncateCanvasLines(wrapCanvasText(ctx, tl.l, tw - 12), 1);
+      ctx.fillText(lines[0] || "", x + tw / 2, y + 78);
+    });
+  });
+
+  // ══ 5. Momentum — monthly line chart ══
+  if (stats.byMonth.length > 1) {
+    const peak = stats.busiestMonth;
+    const notice = peak
+      ? (isHe ? `השיא היה ${monthLabel(peak)} עם ${peak.count} משימות · ${stats.avgPerMonth} בממוצע לחודש`
+              : `Peaked in ${monthLabel(peak)} with ${peak.count} · ${stats.avgPerMonth} per month on average`)
+      : null;
+    section(isHe ? "מומנטום" : "Momentum", isHe ? "איך זה התפתח" : "How it unfolded", notice, INDIGO);
+    push(250, (ctx, y) => {
+      const ph = 236;
+      panel(ctx, PAD, y, CW, ph, 20);
+      const ip = 22;
+      const plotX = PAD + ip, plotW = CW - ip * 2;
+      const plotTop = y + 30, plotH = 150;
+      const counts = stats.byMonth.map(m => m.count);
+      const maxC = Math.max(...counts, 1);
+      const n = counts.length;
+      const px = i => plotX + (n === 1 ? plotW / 2 : i / (n - 1) * plotW);
+      const py = c => plotTop + plotH - c / maxC * plotH;
+      // horizontal gridlines + y labels
+      ctx.direction = "ltr";
+      ctx.textBaseline = "middle";
+      for (let g = 0; g <= 2; g++) {
+        const gy = plotTop + plotH - g / 2 * plotH;
+        ctx.strokeStyle = g === 0 ? LINE : "#F1F5F9";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(plotX, gy);
+        ctx.lineTo(plotX + plotW, gy);
+        ctx.stroke();
+        ctx.font = `600 9.5px ${FONT}`;
+        ctx.fillStyle = INK4;
+        ctx.textAlign = isHe ? "left" : "right";
+        ctx.fillText(nf(Math.round(maxC * g / 2)), isHe ? plotX + plotW + 16 : plotX - 8, gy);
+      }
+      // area
+      ctx.beginPath();
+      ctx.moveTo(px(0), py(counts[0]));
+      counts.forEach((c, i) => { if (i > 0) ctx.lineTo(px(i), py(c)); });
+      ctx.lineTo(px(n - 1), plotTop + plotH);
+      ctx.lineTo(px(0), plotTop + plotH);
+      ctx.closePath();
+      const ag = ctx.createLinearGradient(0, plotTop, 0, plotTop + plotH);
+      ag.addColorStop(0, "rgba(99,102,241,0.34)");
+      ag.addColorStop(1, "rgba(99,102,241,0.02)");
+      ctx.fillStyle = ag;
+      ctx.fill();
+      // line
+      ctx.beginPath();
+      counts.forEach((c, i) => { i === 0 ? ctx.moveTo(px(i), py(c)) : ctx.lineTo(px(i), py(c)); });
+      const lg = ctx.createLinearGradient(plotX, 0, plotX + plotW, 0);
+      lg.addColorStop(0, "#4F46E5");
+      lg.addColorStop(1, "#DB2777");
+      ctx.strokeStyle = lg;
+      ctx.lineWidth = 3;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+      // dots + peak callout
+      const peakI = counts.indexOf(maxC);
+      counts.forEach((c, i) => {
+        const isPk = i === peakI;
+        ctx.beginPath();
+        ctx.arc(px(i), py(c), isPk ? 5.5 : 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = isPk ? "#DB2777" : "#fff";
+        ctx.fill();
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = isPk ? "#DB2777" : INDIGO;
+        ctx.stroke();
+      });
+      if (maxC > 0) {
+        const bx = px(peakI), by = py(maxC) - 26;
+        ctx.font = `700 11px ${FONT}`;
+        const lw = ctx.measureText(nf(maxC)).width + 18;
+        const bxc = Math.max(plotX, Math.min(bx - lw / 2, plotX + plotW - lw));
+        drawRoundedRectPath(ctx, bxc, by, lw, 20, 10);
+        ctx.fillStyle = "#DB2777";
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(nf(maxC), bxc + lw / 2, by + 11);
+      }
+      // x labels
+      ctx.font = `600 10px ${FONT}`;
+      ctx.fillStyle = INK4;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      const step = Math.max(1, Math.ceil(36 * (n - 1) / Math.max(plotW, 1)));
+      for (let i = 0; i < n; i += step) ctx.fillText(monthLabel(stats.byMonth[i]), px(i), plotTop + plotH + 20);
+      if ((n - 1) % step !== 0) ctx.fillText(monthLabel(stats.byMonth[n - 1]), px(n - 1), plotTop + plotH + 20);
+      // footer strip inside panel
+      ctx.textAlign = isHe ? "right" : "left";
+      ctx.direction = isHe ? "rtl" : "ltr";
+      ctx.font = `600 11px ${FONT}`;
+      ctx.fillStyle = INK3;
+      ctx.fillText(isHe ? `${stats.byMonth.length} תקופות` : `${stats.byMonth.length} periods tracked`, isHe ? PAD + CW - ip : PAD + ip, y + ph - 14);
+    });
+  }
+
+  // ══ 6. The split — donut ══
+  {
+    const notice = stats.completedCount >= stats.cancelledCount
+      ? (isHe ? `${stats.completionRate}% מהמשימות הגיעו לקו הסיום` : `${stats.completionRate}% of everything made it to the finish line`)
+      : (isHe ? "רוב המשימות לא הושלמו — אולי הגיע הזמן לנקות" : "More was dropped than finished — worth a cleanup");
+    section(isHe ? "החלוקה" : "The split", isHe ? "איך זה נגמר" : "How it ended up", notice, EMERALD);
+    push(212, (ctx, y) => {
+      const ph = 198;
+      panel(ctx, PAD, y, CW, ph, 20);
+      const segs = [
+        { label: isHe ? "ממתין" : "Pending", value: stats.pendingCount, c: BLUE },
+        { label: isHe ? "הושלם" : "Completed", value: stats.completedCount, c: EMERALD },
+        { label: isHe ? "בוטל" : "Cancelled", value: stats.cancelledCount, c: ROSE }
+      ].filter(s => s.value > 0);
+      const total = segs.reduce((s, x) => s + x.value, 0) || 1;
+      const R = 66, RI = 42;
+      const cx = isHe ? PAD + CW - 26 - R : PAD + 26 + R, cyc = y + ph / 2;
+      ctx.direction = "ltr";
+      let cum = -Math.PI / 2;
+      if (segs.length === 1) {
+        ctx.beginPath();
+        ctx.arc(cx, cyc, (R + RI) / 2, 0, Math.PI * 2);
+        ctx.strokeStyle = segs[0].c;
+        ctx.lineWidth = R - RI;
+        ctx.stroke();
+      } else {
+        segs.forEach(s => {
+          const a = s.value / total * Math.PI * 2;
+          ctx.beginPath();
+          ctx.arc(cx, cyc, R, cum, cum + a);
+          ctx.arc(cx, cyc, RI, cum + a, cum, true);
+          ctx.closePath();
+          ctx.fillStyle = s.c;
+          ctx.fill();
+          // thin white separator
+          ctx.strokeStyle = "#fff";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          cum += a;
+        });
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `750 26px ${FONT}`;
+      ctx.fillStyle = INK;
+      ctx.fillText(nf(stats.total), cx, cyc - 6);
+      ctx.font = `600 10px ${FONT}`;
+      ctx.fillStyle = INK4;
+      ctx.fillText((isHe ? "סה״כ" : "total").toUpperCase(), cx, cyc + 14);
+      // legend rows
+      const legW = CW - R * 2 - 92;
+      const legX = isHe ? PAD + 26 : PAD + CW - 26 - legW;
+      ctx.textBaseline = "alphabetic";
+      segs.forEach((s, i) => {
+        const ly = y + 56 + i * 44;
+        const rowY = ly - 12;
+        drawRoundedRectPath(ctx, legX, rowY, legW, 34, 10);
+        ctx.fillStyle = "#F8FAFC";
+        ctx.fill();
+        const dotX = isHe ? legX + legW - 16 : legX + 16;
+        ctx.beginPath();
+        ctx.arc(dotX, rowY + 17, 5, 0, Math.PI * 2);
+        ctx.fillStyle = s.c;
+        ctx.fill();
+        ctx.direction = isHe ? "rtl" : "ltr";
+        ctx.textAlign = isHe ? "right" : "left";
+        ctx.font = `600 12.5px ${FONT}`;
+        ctx.fillStyle = INK;
+        ctx.fillText(s.label, isHe ? dotX - 12 : dotX + 12, rowY + 22);
+        ctx.direction = "ltr";
+        ctx.textAlign = isHe ? "left" : "right";
+        ctx.font = `700 12.5px ${FONT}`;
+        ctx.fillStyle = s.c;
+        ctx.fillText(`${s.value} · ${Math.round(s.value / total * 100)}%`, isHe ? legX + 14 : legX + legW - 14, rowY + 22);
+      });
+    });
+  }
+
+  // ══ 7. Where it went — type bars ══
+  if (stats.typeEntries.length > 0) {
+    const shown = stats.typeEntries.slice(0, 6);
+    const maxT = shown[0][1] || 1;
+    const rowH = 38;
+    const ph = 26 + shown.length * rowH;
+    const top = stats.typeEntries[0];
+    const notice = isHe
+      ? `“${getTypeMeta(top[0]).label}” הוביל עם ${top[1]} משימות מתוך ${stats.typeEntries.length} סוגים`
+      : `"${getTypeMeta(top[0]).label}" led the way with ${top[1]} of ${stats.total}`;
+    section(isHe ? "לאן זה הלך" : "Where it went", isHe ? "לפי סוג" : "By category", notice, AMBER);
+    push(ph + 14, (ctx, y) => {
+      panel(ctx, PAD, y, CW, ph, 20);
+      const ip = 22;
+      const labelW = 118;
+      const barX = isHe ? PAD + ip : PAD + ip + labelW;
+      const barMaxW = CW - ip * 2 - labelW - 54;
+      shown.forEach((e, i) => {
+        const [ty, count] = e;
+        const ry = y + 22 + i * rowH;
+        const c = TYPE_PALETTE[i % TYPE_PALETTE.length];
+        ctx.direction = isHe ? "rtl" : "ltr";
+        ctx.textAlign = isHe ? "right" : "left";
+        ctx.textBaseline = "middle";
+        ctx.font = `600 12.5px ${FONT}`;
+        ctx.fillStyle = INK;
+        const lbl = truncateCanvasLines(wrapCanvasText(ctx, getTypeMeta(ty).label, labelW - 12), 1)[0] || "";
+        ctx.fillText(lbl, isHe ? PAD + CW - ip : PAD + ip, ry + 10);
+        // track
+        const bw = Math.max(4, count / maxT * barMaxW);
+        const bx = isHe ? PAD + CW - ip - labelW - barMaxW : barX;
+        drawRoundedRectPath(ctx, bx, ry + 2, barMaxW, 16, 8);
+        ctx.fillStyle = "#F1F5F9";
+        ctx.fill();
+        const fx = isHe ? bx + barMaxW - bw : bx;
+        drawRoundedRectPath(ctx, fx, ry + 2, bw, 16, 8);
+        const bg2 = ctx.createLinearGradient(fx, 0, fx + bw, 0);
+        bg2.addColorStop(0, c);
+        bg2.addColorStop(1, c + "BB");
+        ctx.fillStyle = bg2;
+        ctx.fill();
+        ctx.direction = "ltr";
+        ctx.textAlign = isHe ? "left" : "right";
+        ctx.font = `700 12px ${FONT}`;
+        ctx.fillStyle = c;
+        ctx.fillText(nf(count), isHe ? PAD + ip : PAD + CW - ip, ry + 10);
+      });
+    });
+  }
+
+  // ══ 8. Rhythm — weekday bars ══
+  if (stats.bestWeekday) {
+    const notice = isHe
+      ? `${weekdayNames[stats.bestWeekday.idx]} הוא היום החזק שלך${stats.quietWeekday ? `, ${weekdayNames[stats.quietWeekday.idx]} הכי שקט` : ""}`
+      : `${weekdayNames[stats.bestWeekday.idx]} is your strongest day${stats.quietWeekday ? `, ${weekdayNames[stats.quietWeekday.idx]} your quietest` : ""}`;
+    section(isHe ? "קצב" : "Rhythm", isHe ? "לפי יום בשבוע" : "By day of the week", notice, SKY);
+    push(186, (ctx, y) => {
+      const ph = 172;
+      panel(ctx, PAD, y, CW, ph, 20);
+      const ip = 26;
+      const maxW2 = Math.max(...stats.byWeekday, 1);
+      const cols = 7;
+      const gap = 12;
+      const colW = (CW - ip * 2 - gap * (cols - 1)) / cols;
+      const baseY = y + ph - 42;
+      const maxBarH = 96;
+      stats.byWeekday.forEach((c, i) => {
+        const idx = isHe ? 6 - i : i;
+        const x = PAD + ip + idx * (colW + gap);
+        const bh = c > 0 ? Math.max(6, c / maxW2 * maxBarH) : 3;
+        const isTop = c === maxW2 && c > 0;
+        drawRoundedRectPath(ctx, x, baseY - maxBarH, colW, maxBarH, 8);
+        ctx.fillStyle = "#F8FAFC";
+        ctx.fill();
+        drawRoundedRectPath(ctx, x, baseY - bh, colW, bh, 8);
+        const g2 = ctx.createLinearGradient(0, baseY - bh, 0, baseY);
+        g2.addColorStop(0, isTop ? "#0EA5E9" : "#93C5FD");
+        g2.addColorStop(1, isTop ? "#0284C7" : "#BFDBFE");
+        ctx.fillStyle = g2;
+        ctx.fill();
+        ctx.direction = "ltr";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.font = `700 11px ${FONT}`;
+        ctx.fillStyle = isTop ? "#0284C7" : INK3;
+        ctx.fillText(nf(c), x + colW / 2, baseY - bh - 8);
+        ctx.font = `600 11px ${FONT}`;
+        ctx.fillStyle = isTop ? "#0284C7" : INK4;
+        ctx.fillText(weekdayShort[i], x + colW / 2, baseY + 20);
+      });
+    });
+  }
+
+  // ══ 9. Milestones — first / last ══
+  if (stats.first) {
+    const rows = stats.last
+      ? [{ tag: isHe ? "ההתחלה" : "It started", tk: stats.first, c: INDIGO },
+         { tag: isHe ? "האחרונה" : "Most recent", tk: stats.last, c: PINK }]
+      : [{ tag: isHe ? "הכול התחיל כאן" : "It all started here", tk: stats.first, c: INDIGO }];
+    const rowH = 62;
+    const ph = 22 + rows.length * rowH;
+    section(isHe ? "ציוני דרך" : "Milestones", isHe ? "מהראשונה עד האחרונה" : "First to latest", null, PINK);
+    push(ph + 14, (ctx, y) => {
+      panel(ctx, PAD, y, CW, ph, 20);
+      const ip = 24;
+      rows.forEach((r, i) => {
+        const ry = y + 22 + i * rowH;
+        const dotX = isHe ? PAD + CW - ip - 4 : PAD + ip + 4;
+        if (rows.length > 1 && i === 0) {
+          ctx.strokeStyle = "#E2E8F0";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(dotX, ry + 12);
+          ctx.lineTo(dotX, ry + rowH - 4);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(dotX, ry + 6, 6, 0, Math.PI * 2);
+        ctx.fillStyle = r.c;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(dotX, ry + 6, 10, 0, Math.PI * 2);
+        ctx.strokeStyle = r.c + "44";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.direction = isHe ? "rtl" : "ltr";
+        ctx.textAlign = isHe ? "right" : "left";
+        ctx.textBaseline = "alphabetic";
+        const tx2 = isHe ? dotX - 20 : dotX + 20;
+        ctx.font = `700 10px ${FONT}`;
+        ctx.fillStyle = r.c;
+        ctx.fillText(r.tag.toUpperCase(), tx2, ry + 2);
+        ctx.font = `700 14.5px ${FONT}`;
+        ctx.fillStyle = INK;
+        const maxW3 = CW - ip * 2 - 130;
+        ctx.fillText(truncateCanvasLines(wrapCanvasText(ctx, taskLabel(r.tk), maxW3), 1)[0] || "", tx2, ry + 22);
+        ctx.font = `500 11.5px ${FONT}`;
+        ctx.fillStyle = INK4;
+        ctx.fillText(getTypeMeta(r.tk.type).label, tx2, ry + 38);
+        ctx.direction = "ltr";
+        ctx.textAlign = isHe ? "left" : "right";
+        ctx.font = `700 12.5px ${FONT}`;
+        ctx.fillStyle = INK2;
+        ctx.fillText(fmtD(r.tk.date), isHe ? PAD + ip : PAD + CW - ip, ry + 16);
+      });
+    });
+  }
+
+  // ══ 10. Records — highlight grid ══
+  const records = [];
+  if (stats.busiestDay) records.push({
+    k: isHe ? "היום העמוס ביותר" : "Busiest day",
+    v: fmtD(stats.busiestDay),
+    s: isHe ? `${stats.busiestDayCount} משימות ביום אחד` : `${stats.busiestDayCount} in a single day`,
+    c: INDIGO, bg: "#EEF2FF"
+  });
+  if (stats.longest) records.push({
+    k: isHe ? "המשימה הארוכה" : "Longest task",
+    v: fmtRewindDuration(Number(stats.longest.length)),
+    s: taskLabel(stats.longest),
+    c: VIOLET, bg: "#F5F3FF"
+  });
+  if (stats.totalMinutes > 0) records.push({
+    k: isHe ? "זמן שהושקע" : "Time invested",
+    v: fmtRewindDuration(stats.totalMinutes),
+    s: isHe ? `${fmtRewindDuration(stats.avgMinutes)} בממוצע` : `${fmtRewindDuration(stats.avgMinutes)} on average`,
+    c: TEAL, bg: "#ECFEFF"
+  });
+  if (stats.longestStreak > 1) records.push({
+    k: isHe ? "רצף הכי ארוך" : "Longest streak",
+    v: isHe ? `${stats.longestStreak} ימים` : `${stats.longestStreak} days`,
+    s: isHe ? "ימים רצופים עם משימות" : "days back to back",
+    c: AMBER, bg: "#FFFBEB"
+  });
+  if (records.length) {
+    section(isHe ? "שיאים" : "Records", isHe ? "הרגעים הבולטים" : "The standouts", null, VIOLET);
+    const rows = Math.ceil(records.length / 2);
+    const cardH = 96, gap = 10;
+    push(rows * (cardH + gap), (ctx, y) => {
+      const cw2 = (CW - gap) / 2;
+      records.forEach((r, i) => {
+        const col = i % 2, row = Math.floor(i / 2);
+        const x = isHe ? PAD + (1 - col) * (cw2 + gap) : PAD + col * (cw2 + gap);
+        const ry = y + row * (cardH + gap);
+        drawRoundedRectPath(ctx, x, ry, cw2, cardH, 16);
+        ctx.fillStyle = r.bg;
+        ctx.fill();
+        ctx.direction = isHe ? "rtl" : "ltr";
+        ctx.textAlign = isHe ? "right" : "left";
+        ctx.textBaseline = "alphabetic";
+        const tx2 = isHe ? x + cw2 - 16 : x + 16;
+        ctx.font = `700 9.5px ${FONT}`;
+        ctx.fillStyle = r.c;
+        ctx.fillText(r.k.toUpperCase(), tx2, ry + 24);
+        ctx.font = `750 19px ${FONT}`;
+        ctx.fillStyle = INK;
+        ctx.fillText(truncateCanvasLines(wrapCanvasText(ctx, r.v, cw2 - 32), 1)[0] || "", tx2, ry + 52);
+        ctx.font = `500 11px ${FONT}`;
+        ctx.fillStyle = INK3;
+        ctx.fillText(truncateCanvasLines(wrapCanvasText(ctx, r.s, cw2 - 32), 1)[0] || "", tx2, ry + 72);
+      });
+    });
+  }
+
+  // ══ 11. Footer ══
+  push(74, (ctx, y) => {
+    ctx.strokeStyle = LINE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(PAD, y + 10);
+    ctx.lineTo(W - PAD, y + 10);
+    ctx.stroke();
+    ctx.direction = "ltr";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.font = `700 13px ${FONT}`;
+    const g = ctx.createLinearGradient(W / 2 - 90, 0, W / 2 + 90, 0);
+    g.addColorStop(0, "#4F46E5");
+    g.addColorStop(1, "#DB2777");
+    ctx.fillStyle = g;
+    ctx.fillText("TaskIt · Just Task It.", W / 2, y + 40);
+    ctx.font = `500 10.5px ${FONT}`;
+    ctx.fillStyle = INK4;
+    ctx.fillText(new Date().toLocaleDateString(isHe ? "he-IL" : "en-US", { year: "numeric", month: "long", day: "numeric" }), W / 2, y + 58);
+  });
+
+  // ── compose ──
+  const naturalH = PAD + h + PAD;
+  const minH = Math.round(W * 16 / 9);
+  const H = Math.max(naturalH, minH);
+  const topExtra = Math.round(Math.max(0, H - naturalH) * 0.35);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(W * pixelRatio);
+  canvas.height = Math.round(H * pixelRatio);
+  const ctx = canvas.getContext("2d");
+  ctx.scale(pixelRatio, pixelRatio);
+  // backdrop: soft tinted gradient + two blurred brand-colored blobs
+  const bgGrad = ctx.createLinearGradient(0, 0, W * 0.4, H);
+  bgGrad.addColorStop(0, "#F7F8FF");
+  bgGrad.addColorStop(0.5, "#EEF2FF");
+  bgGrad.addColorStop(1, "#FDF2F8");
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.globalAlpha = 0.32;
+  const blob1 = ctx.createRadialGradient(W * 0.86, H * 0.07, 10, W * 0.86, H * 0.07, 260);
+  blob1.addColorStop(0, "#C7D2FE");
+  blob1.addColorStop(1, "rgba(199,210,254,0)");
+  ctx.fillStyle = blob1;
+  ctx.fillRect(0, 0, W, H * 0.4);
+  const blob2 = ctx.createRadialGradient(W * 0.1, H * 0.92, 10, W * 0.1, H * 0.92, 300);
+  blob2.addColorStop(0, "#FBCFE8");
+  blob2.addColorStop(1, "rgba(251,207,232,0)");
+  ctx.fillStyle = blob2;
+  ctx.fillRect(0, H * 0.6, W, H * 0.4);
+  ctx.restore();
+  let cy = PAD + topExtra;
+  blocks.forEach(b => {
+    b.draw(ctx, cy);
+    cy += b.h;
+  });
+  return canvas;
+};
+// Builds and shares a Rewind card for whatever task list the caller passes
+// in (e.g. a search's current filtered results) -- always rendered in light
+// mode regardless of the person's actual theme, since it's meant to read
+// the same wherever it ends up.
+const shareRewindImage = async (tasks, subtitle, filename) => {
+  try {
+    appToast(t("sharePreparing"));
+    await withForcedShareTheme(true, async () => {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const stats = computeRewindStats(tasks || []);
+      const pixelRatio = Math.max(2, Math.min(3, (window.devicePixelRatio || 1) * 2));
+      const canvas = drawRewindCanvas(stats, subtitle, pixelRatio);
+      await finishShareCanvas(canvas, filename);
+    });
+  } catch (err) {
+    console.error("shareRewindImage failed:", err);
+    appToast(t("shareFailed"));
+  }
+};
 // task modal, reused here for Up Next / Week / Month so all four share
 // entry points look identical.
 const ShareImageButton = ({
@@ -6152,6 +7061,77 @@ const DayChip = ({
     }
   }, selectDot, nameChip);
 };
+// ── Shared bulk-select "quick pick" registration ──────────────────────────
+// Used by every screen that supports bulk selection (Home, Month, Week,
+// List, Search): given the pool of tasks that screen currently considers
+// "in view", builds the All/Pending/Overdue/Completed/Cancelled/No date
+// chips + Invert, and hands them to the bulk-select bar at the bottom of
+// the screen via onQuickPicksReady (see registerBulkQuickPicks in App).
+// Each screen owns this call while mounted; switching screens unmounts the
+// old one (running its cleanup, which clears the bar's picks) before the
+// new screen's own effect registers its own.
+const useSelectQuickPicks = (pool, {
+  selectMode,
+  selectedIds,
+  onSetSelected,
+  onQuickPicksReady
+}) => {
+  const bulkOn = !!(selectMode && onSetSelected);
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
+  const bulkPool = bulkOn ? pool.filter(tk => !isBulkEditLocked(tk)) : [];
+  const isPendingTk = tk => !isDone(tk) && !isCancelled(tk);
+  const quickPicks = bulkOn ? [{
+    key: "all",
+    label: t("selectAll"),
+    list: bulkPool
+  }, {
+    key: "pending",
+    label: t("pendingL"),
+    list: bulkPool.filter(isPendingTk)
+  }, {
+    key: "overdue",
+    label: t("overdue"),
+    list: bulkPool.filter(isOverdue)
+  }, {
+    key: "done",
+    label: t("completedL"),
+    list: bulkPool.filter(isDone)
+  }, {
+    key: "cancelled",
+    label: t("cancelledL"),
+    list: bulkPool.filter(isCancelled)
+  }, {
+    key: "nodate",
+    label: t("noDate"),
+    list: bulkPool.filter(tk => !tk.date)
+  }].filter(p => p.key === "all" || p.list.length > 0) : [];
+  const invertSelection = () => {
+    const on = [],
+      off = [];
+    bulkPool.forEach(tk => (isSel(tk.id) ? off : on).push(tk.id));
+    if (on.length) onSetSelected(on, true);
+    if (off.length) onSetSelected(off, false);
+  };
+  useEffect(() => {
+    if (!onQuickPicksReady) return;
+    if (bulkOn && quickPicks.length) {
+      onQuickPicksReady({
+        picks: quickPicks.map(p => ({
+          key: p.key,
+          label: p.label,
+          ids: p.list.map(tk => tk.id)
+        })),
+        isSel,
+        onToggle: onSetSelected,
+        invert: bulkPool.length > 0 ? invertSelection : null
+      });
+    } else {
+      onQuickPicksReady(null);
+    }
+    return () => onQuickPicksReady(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkOn, pool, selectedIds]);
+};
 const MonthView = ({
   tasks,
   curDate,
@@ -6165,6 +7145,8 @@ const MonthView = ({
   selectMode = false,
   selectedIds = null,
   onToggleSelect = null,
+  onSetSelected = null,
+  onQuickPicksReady = null,
   prefLookahead = true
 }) => {
   // Drop ripple: ds of the last cell that received a drop (cleared after animation).
@@ -6247,6 +7229,17 @@ const MonthView = ({
   const year = curDate.getFullYear(),
     month = curDate.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
+  // Quick-pick pool: every non-calendar task dated somewhere in the month
+  // currently on screen, regardless of which day cells happen to be
+  // expanded right now -- selection isn't tied to what's actually rendered.
+  const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+  const monthQuickPool = React.useMemo(() => tasks.filter(tk => tk.date && tk.date.slice(0, 7) === monthKey && !(tk.type === "calendar" && !tk.hebcal && !tk.intl)), [tasks, monthKey]);
+  useSelectQuickPicks(monthQuickPool, {
+    selectMode,
+    selectedIds,
+    onSetSelected,
+    onQuickPicksReady
+  });
   const isHe = getLang() === "he";
   const daysShort = getDaysShort();
 
@@ -7844,6 +8837,8 @@ const WeekView = ({
   selectMode = false,
   selectedIds = null,
   onToggleSelect = null,
+  onSetSelected = null,
+  onQuickPicksReady = null,
   prefLookahead = true
 }) => {
   const width = useWindowWidth();
@@ -8052,6 +9047,17 @@ const WeekView = ({
     const d = new Date(ws);
     d.setDate(d.getDate() + i);
     return d;
+  });
+  // Quick-pick pool: every non-calendar task dated within the 7 days
+  // currently on screen.
+  const weekStartDs = localDs(days[0]),
+    weekEndDs = localDs(days[6]);
+  const weekQuickPool = React.useMemo(() => tasks.filter(tk => tk.date && tk.date >= weekStartDs && tk.date <= weekEndDs && !(tk.type === "calendar" && !tk.hebcal && !tk.intl)), [tasks, weekStartDs, weekEndDs]);
+  useSelectQuickPicks(weekQuickPool, {
+    selectMode,
+    selectedIds,
+    onSetSelected,
+    onQuickPicksReady
   });
   // Wide screens: prev/today/next now live as circular buttons at the bottom-left
   // of the app (see App's calNavFab); narrow screens keep them in this header.
@@ -10714,16 +11720,34 @@ const BarChart = ({
         setTipPos(null);
       }
     }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        width: "100%",
+        height,
+        display: "flex",
+        alignItems: "flex-end"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        inset: 0,
+        borderRadius: "7px 7px 3px 3px",
+        background: C.bg3
+      }
+    }), /*#__PURE__*/React.createElement("div", {
       ref: el => barRefs.current[i] = el,
       style: {
+        position: "relative",
         width: "100%",
-        borderRadius: "4px 4px 0 0",
+        borderRadius: "7px 7px 3px 3px",
         height: `0px`,
         overflow: "hidden",
         display: "flex",
         flexDirection: "column-reverse",
         opacity: hovered === null || hovered === i ? 1 : 0.6,
-        transition: "opacity 0.2s"
+        boxShadow: hovered === i ? "0 4px 12px rgba(0,0,0,0.18)" : "0 2px 6px rgba(0,0,0,0.10)",
+        transform: hovered === i ? "translateY(-2px)" : "translateY(0)",
+        transition: "opacity 0.2s, box-shadow 0.2s ease, transform 0.2s cubic-bezier(0.34,1.56,0.64,1)"
       }
     }, Array.isArray(d.segments) ? d.segments.filter(sg => sg.value > 0).map((sg, si) => /*#__PURE__*/React.createElement("div", {
       key: si,
@@ -10739,7 +11763,14 @@ const BarChart = ({
         background: hovered === i ? color : color + "99",
         height: "100%"
       }
-    })), /*#__PURE__*/React.createElement("div", {
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        inset: 0,
+        background: "linear-gradient(180deg, rgba(255,255,255,0.32), rgba(255,255,255,0) 45%)",
+        pointerEvents: "none"
+      }
+    }))), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 9,
         fontWeight: d.isToday ? 700 : 400,
@@ -11726,6 +12757,9 @@ const TreeMap = ({
   const [tipPos, setTipPos] = useState(null);
   const containerRef = useRef(null);
   const [width, setWidth] = useState(300);
+  // Unique per instance so multiple treemaps on one page never collide over
+  // the same <defs> ids (same reasoning as PieChart's chartId).
+  const chartId = useRef("tmap" + Math.random().toString(36).slice(2, 9)).current;
   useEffect(() => {
     if (!containerRef.current) return;
     const obs = new ResizeObserver(entries => {
@@ -11880,7 +12914,37 @@ const TreeMap = ({
       setHovered(null);
       setTipPos(null);
     }
-  }, layout.map((item, i) => {
+  }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
+    id: `${chartId}-gloss`,
+    x1: "0%",
+    y1: "0%",
+    x2: "0%",
+    y2: "100%"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0%",
+    stopColor: "#fff",
+    stopOpacity: "0.32"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "55%",
+    stopColor: "#fff",
+    stopOpacity: "0.04"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "100%",
+    stopColor: "#000",
+    stopOpacity: "0.06"
+  })), /*#__PURE__*/React.createElement("filter", {
+    id: `${chartId}-shadow`,
+    x: "-40%",
+    y: "-40%",
+    width: "180%",
+    height: "180%"
+  }, /*#__PURE__*/React.createElement("feDropShadow", {
+    dx: "0",
+    dy: "1.5",
+    stdDeviation: "2.2",
+    floodColor: "#000",
+    floodOpacity: "0.22"
+  }))), layout.map((item, i) => {
     const isHov = hovered === i;
     const bx = item.x + GAP / 2,
       by = item.y + GAP / 2;
@@ -11923,18 +12987,38 @@ const TreeMap = ({
         setHovered(null);
         setTipPos(null);
       }
+    }, /*#__PURE__*/React.createElement("g", {
+      style: {
+        transformBox: "fill-box",
+        transformOrigin: "center",
+        transform: isHov ? "scale(1.035)" : "scale(1)",
+        transition: "transform 0.18s cubic-bezier(0.34,1.56,0.64,1)",
+        filter: `url(#${chartId}-shadow)`
+      }
     }, /*#__PURE__*/React.createElement("rect", {
       x: bx,
       y: by,
       width: bw,
       height: bh,
-      rx: 4,
+      rx: 6,
       fill: color,
-      opacity: isHov ? 1 : 0.75,
+      stroke: "rgba(0,0,0,0.10)",
+      strokeWidth: 1,
+      opacity: isHov ? 1 : 0.85,
       style: {
         transition: "opacity 0.15s"
       }
-    }), showLabel && /*#__PURE__*/React.createElement("text", {
+    }), /*#__PURE__*/React.createElement("rect", {
+      x: bx,
+      y: by,
+      width: bw,
+      height: bh,
+      rx: 6,
+      fill: `url(#${chartId}-gloss)`,
+      style: {
+        pointerEvents: "none"
+      }
+    })), showLabel && /*#__PURE__*/React.createElement("text", {
       x: bx + bw / 2,
       y: by + bh / 2 - (showCount ? 6 : 0),
       textAnchor: "middle",
@@ -13471,7 +14555,9 @@ const Dashboard = ({
   onShareReady,
   selectMode = false,
   selectedIds = null,
-  onToggleSelect = null
+  onToggleSelect = null,
+  onSetSelected = null,
+  onQuickPicksReady = null
 }) => {
   // Up Next drag: move a task between the Today and Tomorrow sections (and out
   // of Overdue into either). Overdue itself is a drag source only — "overdue"
@@ -13638,6 +14724,17 @@ const Dashboard = ({
   const anyUpNext = overdueTasks.length > 0 || days.some(({
     ds
   }) => tasks.filter(tk => tk.date === ds && isPending(tk)).length > 0);
+  // Quick-pick pool: the same Up Next tasks already on screen -- overdue,
+  // plus today's and tomorrow's pending tasks.
+  const upNextQuickPool = React.useMemo(() => [...overdueTasks, ...days.flatMap(({
+    ds
+  }) => tasks.filter(tk => tk.date === ds && isPending(tk)))], [tasks, todayDsNow, tomorrowDs]);
+  useSelectQuickPicks(upNextQuickPool, {
+    selectMode,
+    selectedIds,
+    onSetSelected,
+    onQuickPicksReady
+  });
 
   // -- Dynamic multi-column layout for the share-image capture --------
   // Same algorithm as the By Type share image: Overdue / Today / Tomorrow
@@ -15348,12 +16445,49 @@ const WelcomeModal = ({
   const isHe = getLang() === "he";
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
-  const [step, setStep] = useState("choice"); // "choice" | "google"
+  const [step, setStep] = useState("intro"); // "intro" | "choice" | "google"
+  const [slideIdx, setSlideIdx] = useState(0);
+  const [slideDir, setSlideDir] = useState("next"); // drives which way the slide animates in
+  // The feature showcase a brand-new person sees before being asked to
+  // connect Google or go offline -- each slide is one thing TaskIt does,
+  // ending on the Google-sync one since that's the decision the next step
+  // asks them to make.
+  const FEATURE_SLIDES = [{
+    icon: "🗂️",
+    gradient: "linear-gradient(135deg,#3B82F6,#2563EB)",
+    title: isHe ? "המשימות שלך, בדרך שלך" : "Your tasks, your way",
+    desc: isHe
+      ? "עקבו לפי תאריך או לפי סוג, ועברו בין בית, שבוע, חודש ורשימה — מה שמתאים לרגע."
+      : "Track by date or by type, and move between Home, Week, Month and List — whichever fits the moment."
+  }, {
+    icon: "📊",
+    gradient: "linear-gradient(135deg,#8B5CF6,#6D28D9)",
+    title: isHe ? "גרפים שלא משקרים" : "Charts that keep you honest",
+    desc: isHe
+      ? "עוגה, עמודות, מד וטריי-מאפ — ממתין, הושלם ובוטל במבט אחד, לכל טווח תאריכים או סוג."
+      : "Pie, bar, gauge and treemap charts — pending, completed and cancelled at a glance, for any date range or type."
+  }, {
+    icon: "🔗",
+    gradient: "linear-gradient(135deg,#10B981,#059669)",
+    title: isHe ? "שוטף עם Google Calendar" : "Fluent with Google Calendar",
+    desc: isHe
+      ? "כל סוג משימה הופך ללוח שנה צבעוני משלו ב-Google, מסונכרן בשני הכיוונים — ערכו בכל צד, זה נשאר מסונכרן."
+      : "Every task type becomes its own color-coded Google calendar, synced both ways — edit on either side and it just stays in sync."
+  }, {
+    icon: "📴",
+    gradient: "linear-gradient(135deg,#F59E0B,#D97706)",
+    title: isHe ? "עובד מצוין גם אופליין" : "Works great offline too",
+    desc: isHe
+      ? "שום דבר כאן לא דורש חשבון. הכול נשמר על המכשיר שלכם, ואפשר להתחבר ל-Google מאוחר יותר מההגדרות."
+      : "Nothing here needs an account. Everything saves right on your device — connect Google later, any time, from Settings."
+  }];
   useEffect(() => {
     if (open) {
       setVisible(true);
       setClosing(false);
-      setStep(initialStep || "choice");
+      setStep(initialStep || "intro");
+      setSlideIdx(0);
+      setSlideDir("next");
     } else if (visible) {
       setClosing(true);
       setTimeout(() => {
@@ -15372,6 +16506,21 @@ const WelcomeModal = ({
     }
   }, [step, gcalConnected]);
   if (!visible) return null;
+  const goNext = () => {
+    if (slideIdx < FEATURE_SLIDES.length - 1) {
+      setSlideDir("next");
+      setSlideIdx(i => i + 1);
+    } else {
+      setStep("choice");
+    }
+  };
+  const goPrev = () => {
+    if (slideIdx > 0) {
+      setSlideDir("prev");
+      setSlideIdx(i => i - 1);
+    }
+  };
+  const isLastSlide = slideIdx === FEATURE_SLIDES.length - 1;
   return /*#__PURE__*/React.createElement("div", {
     style: {
       position: "fixed",
@@ -15399,15 +16548,154 @@ const WelcomeModal = ({
       borderRadius: 22,
       padding: 26,
       width: "100%",
-      maxWidth: 420,
+      maxWidth: 440,
       maxHeight: "88vh",
       overflowY: "auto",
+      overflowX: "hidden",
       boxShadow: "0 24px 64px rgba(0,0,0,0.3)",
       border: `1px solid ${C.border}`,
       transform: closing ? "scale(0.96)" : "scale(1)",
       transition: "transform 0.2s ease"
     }
-  }, step === "choice" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, step === "intro" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    key: slideIdx,
+    style: {
+      animation: `${slideDir === "next" ? "slideInFromRight" : "slideInFromLeft"} 0.28s cubic-bezier(0.4,0,0.2,1) both`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 60,
+      height: 60,
+      borderRadius: 16,
+      background: FEATURE_SLIDES[slideIdx].gradient,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 18,
+      fontSize: 28,
+      boxShadow: "0 8px 20px rgba(0,0,0,0.18)"
+    }
+  }, FEATURE_SLIDES[slideIdx].icon), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 750,
+      color: C.text,
+      marginBottom: 8,
+      lineHeight: 1.25
+    }
+  }, FEATURE_SLIDES[slideIdx].title), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13.5,
+      color: C.text3,
+      lineHeight: 1.6,
+      marginBottom: 24,
+      minHeight: 60
+    }
+  }, FEATURE_SLIDES[slideIdx].desc)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      marginBottom: 20
+    }
+  }, FEATURE_SLIDES.map((_, i) => /*#__PURE__*/React.createElement("button", {
+    key: i,
+    onClick: () => {
+      setSlideDir(i > slideIdx ? "next" : "prev");
+      setSlideIdx(i);
+    },
+    "aria-label": `${i + 1}`,
+    style: {
+      width: i === slideIdx ? 20 : 6,
+      height: 6,
+      borderRadius: 3,
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      background: i === slideIdx ? "#3B82F6" : C.border2,
+      transition: "width 0.2s ease, background 0.2s ease"
+    }
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, slideIdx > 0 && /*#__PURE__*/React.createElement("button", {
+    onClick: goPrev,
+    "aria-label": isHe ? "הקודם" : "Previous",
+    style: {
+      width: 44,
+      height: 44,
+      flexShrink: 0,
+      borderRadius: 12,
+      border: `1.5px solid ${C.border2}`,
+      background: "transparent",
+      color: C.text3,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: isHe ? "chevRight" : "chevLeft",
+    size: 16,
+    color: "currentColor"
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setStep("choice"),
+    style: {
+      padding: "12px 14px",
+      borderRadius: 12,
+      border: "none",
+      background: "transparent",
+      color: C.text4,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, isHe ? "דלג" : "Skip"), /*#__PURE__*/React.createElement("button", {
+    onClick: goNext,
+    style: {
+      flex: 1,
+      padding: "13px 16px",
+      borderRadius: 14,
+      border: "none",
+      background: "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: "#fff",
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8
+    }
+  }, isLastSlide ? (isHe ? "בואו נתחיל" : "Let's go") : (isHe ? "הבא" : "Next"), /*#__PURE__*/React.createElement(Icon, {
+    name: isHe ? "chevLeft" : "chevRight",
+    size: 15,
+    color: "#fff"
+  })))) : step === "choice" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setSlideDir("prev");
+      setSlideIdx(FEATURE_SLIDES.length - 1);
+      setStep("intro");
+    },
+    style: {
+      border: "none",
+      background: "transparent",
+      cursor: "pointer",
+      display: "flex",
+      padding: 2,
+      marginBottom: 10,
+      color: C.text3
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: isHe ? "chevRight" : "chevLeft",
+    size: 18,
+    color: "currentColor"
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       width: 52,
       height: 52,
@@ -16293,24 +17581,7 @@ const SettingsModal = ({
       textTransform: "uppercase",
       margin: "20px 0 4px"
     }
-  }, isHe ? "אפליקציה" : "App"), /*#__PURE__*/React.createElement(Row, {
-    icon: "🔄",
-    label: (isHe ? "עדכן אפליקציה" : "Update App") + " (" + APP_VERSION + ")",
-    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload — keeps all your data"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: handleUpdate,
-    style: {
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: `1.5px solid ${C.blueBorder}`,
-      background: C.blueBg,
-      color: C.blue,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      flexShrink: 0
-    }
-  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement(Row, {
+  }, isHe ? "יומן Google" : "Google Calendar"), /*#__PURE__*/React.createElement(Row, {
     icon: "📆",
     label: isHe ? "Google Calendar" : "Google Calendar",
     sub: gcalError
@@ -16405,16 +17676,7 @@ const SettingsModal = ({
         : pr.reason === "badtime" ? (isHe ? "שעה לא תקינה" : "invalid time")
         : pr.reason === "noname" ? (isHe ? "אין שם" : "no title")
         : (pr.detail || (isHe ? "שגיאה" : "error"))
-      )))), (gcalConnected || prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: C.text4,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      margin: "20px 0 4px"
-    }
-  }, isHe ? "לוחות שנה" : "Calendars"), gcalConnected && /*#__PURE__*/React.createElement(Row, {
+      )))), gcalConnected && /*#__PURE__*/React.createElement(Row, {
     icon: "🗓️",
     label: isHe ? "אירועי יומן גוגל" : "Google Calendar events",
     sub: isHe
@@ -16428,7 +17690,16 @@ const SettingsModal = ({
     on: prefGcalForeign,
     onToggle: onToggleGcalForeign,
     color: GOOGLE_TYPE_COLOR
-  })), prefIL !== null && /*#__PURE__*/React.createElement(Row, {
+  })), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.text4,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      margin: "20px 0 4px"
+    }
+  }, isHe ? "חגים" : "Holidays"), prefIL !== null && /*#__PURE__*/React.createElement(Row, {
     icon: "✡️",
     label: isHe ? "חגים ישראליים" : "Israeli Holidays",
     sub: isHe ? prefIL === "yes" ? "מוצג" : "מוסתר" : prefIL === "yes" ? "Shown" : "Hidden"
@@ -16460,7 +17731,7 @@ const SettingsModal = ({
       ? (isHe ? "בחר אילו סוגים לכלול" : "Choose which types to include")
       : (isHe ? "ייצא משימות ללוח — אפשר לבחור סוגים" : "Export tasks to clipboard — pick which types")
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => copyPickerOpen ? setCopyPickerOpen(false) : openCopyPicker(),
+    onClick: e => deferAfterBlur(e, () => copyPickerOpen ? setCopyPickerOpen(false) : openCopyPicker()),
     style: {
       display: "flex",
       alignItems: "center",
@@ -16562,7 +17833,7 @@ const SettingsModal = ({
     label: isHe ? "טען JSON" : "Load JSON",
     sub: isHe ? "מוסיף משימות בלי למחוק קיימות — כפילויות ידולגו" : "Adds tasks without deleting existing ones — duplicates are skipped"
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setLoadOpen(v => !v),
+    onClick: e => deferAfterBlur(e, () => setLoadOpen(v => !v)),
     style: {
       padding: "7px 16px",
       borderRadius: 20,
@@ -16840,6 +18111,32 @@ const SettingsModal = ({
       textTransform: "uppercase",
       margin: "20px 0 4px"
     }
+  }, isHe ? "אפליקציה" : "App"), /*#__PURE__*/React.createElement(Row, {
+    icon: "🔄",
+    label: (isHe ? "עדכן אפליקציה" : "Update App") + " (" + APP_VERSION + ")",
+    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload — keeps all your data"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: handleUpdate,
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.text4,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      margin: "20px 0 4px"
+    }
   }, isHe ? "אזור מסוכן" : "Danger Zone"), /*#__PURE__*/React.createElement(Row, {
     icon: "🧹",
     label: isHe ? "נקה איחורים" : "Clean Delays",
@@ -17055,10 +18352,27 @@ const AllTasksView = ({
   selectMode = false,
   selectedIds = null,
   onToggleSelect = null,
+  onSetSelected = null,
+  onQuickPicksReady = null,
   singleColumnLists = false
 }) => {
   const isHe = getLang() === "he";
   const byDate = activeTab === "date";
+  // Quick-pick pool: has to match what the active tab actually displays, not
+  // just "every task" -- By Type only ever renders pending tasks (done and
+  // cancelled ones are excluded there entirely, same filter ListByType gets
+  // below), so offering Completed/Cancelled chips on that tab would let you
+  // "select" tasks you can't see or do anything with on screen.
+  const allTasksQuickPool = React.useMemo(() => {
+    const base = tasks.filter(tk => !(tk.type === "calendar" && !tk.hebcal && !tk.intl));
+    return byDate ? base : base.filter(tk => !isDone(tk) && !isCancelled(tk));
+  }, [tasks, byDate]);
+  useSelectQuickPicks(allTasksQuickPool, {
+    selectMode,
+    selectedIds,
+    onSetSelected,
+    onQuickPicksReady
+  });
   const [anyTypeOpen, setAnyTypeOpen] = useState(false);
   const [collapseBounce, setCollapseBounce] = useState(false);
   const handleCollapseAllClick = () => {
@@ -17268,26 +18582,24 @@ const SearchView = ({
   selectMode = false,
   selectedIds = null,
   onToggleSelect = null,
-  onSetSelected = null
+  onSetSelected = null,
+  onQuickPicksReady = null
 }) => {
   const isHe = getLang() === "he";
   const viewWidth = useWindowWidth();
-  const searchCaptureRef = useRef(null);
+  const wideCharts = viewWidth >= 640;
   const [sharingSearch, setSharingSearch] = useState(false);
-  // The share image is meant to read as a single vertical card -- the
-  // side-by-side wide layout (both charts at once) doesn't fit that, so
-  // capturing always uses the single "chosen chart" layout with its
-  // pie/line toggle, exactly as a narrow screen would show it.
-  const wideCharts = sharingSearch ? false : viewWidth >= 640;
+  // Search's share button builds a generated "Rewind" stats card from
+  // whatever the current filters turn up (see computeRewindStats /
+  // drawRewindCanvas) rather than screenshotting the results screen --
+  // chartTitle already describes the active filters in one line, reused
+  // here as the card's subtitle. The brief busy flag just masks the
+  // forced-light-mode flip shareRewindImage does while it renders.
   const shareSearchImage = async () => {
     if (sharingSearch) return;
     setSharingSearch(true);
     try {
-      appToast(t("sharePreparing"));
-      await new Promise(resolve => {
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
-      });
-      await shareElementAsImage(searchCaptureRef.current, `${getLang() === "he" ? "חיפוש" : "search"}.png`);
+      await shareRewindImage(filtered, chartTitle, `${isHe ? "ריווינד" : "rewind"}.png`);
     } finally {
       setSharingSearch(false);
     }
@@ -17527,12 +18839,22 @@ const SearchView = ({
     return `${d}/${m}/${y}`;
   };
 
-  // A date-picker cell matching the modal style, same height as selects
+  // A date-picker cell matching the modal style, same height as selects.
+  // iOS: a real native <input type="date"> works fine when tapped directly,
+  // but its own rendering looks inconsistent across iOS versions, so it's
+  // kept fully transparent under a custom label that matches the rest of
+  // the app -- the tap still lands on (and opens) the real input beneath.
+  // Desktop: several browsers were not reliably honoring a JS-triggered
+  // showPicker() call on that same invisible-input trick (no error, no
+  // picker, nothing) -- rather than keep chasing browser-specific gesture
+  // quirks, desktop gets a genuinely visible native date input with its
+  // own built-in calendar icon, so clicking it always works the same way
+  // it would on any other site, with zero dependency on showPicker().
   const DatePicker = ({
     value,
     onChange,
     placeholder
-  }) => /*#__PURE__*/React.createElement("div", {
+  }) => IS_IOS ? /*#__PURE__*/React.createElement("div", {
     style: {
       position: "relative",
       flex: 1,
@@ -17557,18 +18879,10 @@ const SearchView = ({
     }
   }, value ? fmtDisplay(value) : placeholder), /*#__PURE__*/React.createElement("input", {
     type: "date",
-    className: IS_IOS ? "date-ios" : "date-desktop",
+    className: "date-ios",
     value: value,
     onChange: onChange,
-    // Our visible label sits on top of a fully transparent native input, so
-    // there's no native calendar icon left for the user to click. Desktop
-    // browsers (Chrome/Edge/Firefox/Safari) only open the picker when that
-    // icon is clicked -- not from a click anywhere else in the field -- so
-    // without this, a tap on the label opened nothing on computer even
-    // though the same trick happens to work via a direct tap on iOS.
-    // showPicker() opens it programmatically on any browser that supports
-    // it; the try/catch is a no-op fallback for the few that don't.
-    onClick: e => { try { e.target.showPicker(); } catch(err) {} },
+    onClick: e => { try { e.currentTarget.showPicker(); } catch(err) {} },
     style: {
       position: "absolute",
       inset: 0,
@@ -17610,7 +18924,71 @@ const SearchView = ({
     size: 9,
     color: "#fff",
     strokeWidth: 3
-  })));
+  }))) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0,
+      display: "flex",
+      flexDirection: "column",
+      gap: 3
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      color: C.text4,
+      textAlign: "center",
+      userSelect: "none"
+    }
+  }, placeholder), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      height: 34
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    className: "date-desktop",
+    value: value,
+    onChange: onChange,
+    style: {
+      ...filterSel,
+      width: "100%",
+      height: "100%",
+      paddingRight: value ? "26px" : "6px"
+    }
+  }), value && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: e => {
+      e.stopPropagation();
+      onChange({
+        target: {
+          value: ""
+        }
+      });
+    },
+    style: {
+      position: "absolute",
+      right: 5,
+      top: "50%",
+      transform: "translateY(-50%)",
+      width: 18,
+      height: 18,
+      borderRadius: 9,
+      border: "none",
+      background: C.text5,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 0,
+      zIndex: 3
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "x",
+    size: 9,
+    color: "#fff",
+    strokeWidth: 3
+  }))));
 
   // ── Chart title (shared between card and sticky header) ─────────────────
   const chartTitle = (() => {
@@ -17687,58 +19065,31 @@ const SearchView = ({
     if (on.length) onSetSelected(on, true);
     if (off.length) onSetSelected(off, false);
   };
-  const bulkChipStyle = active => ({
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-    padding: "5px 11px",
-    borderRadius: 16,
-    fontSize: 12,
-    fontWeight: 600,
-    fontFamily: "inherit",
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    border: `1px solid ${active ? C.blueBorder : C.border2}`,
-    background: active ? C.blueBg : C.card2,
-    color: active ? C.blue : C.text3
-  });
-  const selectToolbar = bulkOn && filtered.length > 0 ? /*#__PURE__*/React.createElement("div", {
-    "data-share-ignore": "true",
-    style: {
-      display: "flex",
-      flexWrap: "wrap",
-      alignItems: "center",
-      justifyContent: "center",
-      width: "100%",
-      animation: "fadeIn 0.25s ease",
-      gap: 6,
-      margin: "0 0 12px",
-      padding: "8px 0",
-      borderTop: `1px solid ${C.border}`
+  // The quick-pick chips (All / Pending / Overdue / Completed / Cancelled /
+  // No date + Invert) used to render inline here, taking up space in the
+  // search results themselves. They now live in the bulk-select action bar
+  // at the bottom of the screen instead -- this just hands that bar the
+  // current picks (as plain id lists, so it doesn't need to know anything
+  // about search or tasks) and re-registers them whenever the underlying
+  // results or selection change.
+  useEffect(() => {
+    if (!onQuickPicksReady) return;
+    if (bulkOn && quickPicks.length) {
+      onQuickPicksReady({
+        picks: quickPicks.map(p => ({
+          key: p.key,
+          label: p.label,
+          ids: p.list.map(tk => tk.id)
+        })),
+        isSel,
+        onToggle: onSetSelected,
+        invert: bulkPool.length > 0 ? invertSelection : null
+      });
+    } else {
+      onQuickPicksReady(null);
     }
-  }, quickPicks.map(p => {
-    const ids = p.list.map(tk => tk.id);
-    const active = ids.length > 0 && ids.every(isSel);
-    return /*#__PURE__*/React.createElement("button", {
-      key: p.key,
-      type: "button",
-      disabled: ids.length === 0,
-      onClick: () => onSetSelected(ids, !active),
-      style: {
-        ...bulkChipStyle(active),
-        opacity: ids.length === 0 ? 0.4 : 1
-      }
-    }, p.key === "all" && active ? t("deselectAll") : p.label, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontWeight: 700,
-        opacity: 0.6
-      }
-    }, ids.length));
-  }), bulkPool.length > 0 && /*#__PURE__*/React.createElement("button", {
-    type: "button",
-    onClick: invertSelection,
-    style: bulkChipStyle(false)
-  }, isHe ? "הפוך בחירה" : "Invert")) : null;
+    return () => onQuickPicksReady(null);
+  }, [bulkOn, filtered, selectedIds]);
   // A checkbox at the end of a date header that selects / clears that whole
   // day's results in one tap (empty / partial / full states).
   const groupSelectBtn = list => {
@@ -17864,18 +19215,10 @@ const SearchView = ({
       }
     }, t("today").toUpperCase()));
   })())), /*#__PURE__*/React.createElement("div", {
-    ref: searchCaptureRef,
     style: {
-      // Only while a share-image capture is in flight: gives the card a
-      // real background with breathing room, and a narrow fixed width so
-      // the exported PNG reads as a vertical card regardless of the
-      // device's actual (possibly wide) viewport -- matching the Up Next
-      // share image's look.
-      padding: sharingSearch ? "18px 16px" : 0,
-      background: sharingSearch ? "var(--card)" : "transparent",
-      borderRadius: sharingSearch ? 14 : 0,
-      width: sharingSearch ? 420 : undefined,
-      maxWidth: sharingSearch ? "none" : undefined
+      padding: 0,
+      background: "transparent",
+      borderRadius: 0
     }
   }, /*#__PURE__*/React.createElement("div", {
     "data-share-ignore": "true",
@@ -18144,7 +19487,7 @@ const SearchView = ({
         height: 160, prefLookahead: false,
         key: `search-line-${datePreset}-${fromDate}-${toDate}-${typeFilter}-${query}`
       })
-    )), selectToolbar, sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    )), sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "40px 0",
@@ -19536,7 +20879,8 @@ const BulkActionBar = ({
   pickerTasks = [],
   onPickerApply,
   onPickerBack,
-  closing = false
+  closing = false,
+  quickPicks = null
 }) => {
   const isHe = getLang() === "he";
   const disabled = count === 0 || busy;
@@ -19560,7 +20904,7 @@ const BulkActionBar = ({
     clear: t("bulkClearDetails"),
     delete: t("bulkDelete")
   };
-  const pickerTitle = pickerKind === "date" ? t("bulkPickDate") : pickerKind === "time" ? t("bulkPickTime") : pickerKind === "type" ? t("bulkPickType") : "";
+  const pickerTitle = pickerKind === "date" ? t("bulkPickDate") : pickerKind === "time" ? t("bulkPickTime") : pickerKind === "type" ? t("bulkPickType") : pickerKind === "quickselect" ? (isHe ? "בחירה מהירה" : "Quick select") : "";
   const headline = pickerKind ? pickerTitle : notice ? notice : armed ? t("bulkTapAgain", labelOf[armed.kind] || "", armed.valueLabel || "") : t("selectedCount", count);
   const headColor = pickerKind ? C.blue : notice ? C.green : armed ? armed.kind === "delete" ? C.red : C.blue : C.text;
   const btn = (icon, label, action, danger) => /*#__PURE__*/React.createElement("button", {
@@ -19668,7 +21012,63 @@ const BulkActionBar = ({
     name: isHe ? "chevRight" : "chevLeft",
     size: 16
   }));
-  const actions = [btn("calendar", t("bulkSetDate"), "date"), btn("clock", t("bulkSetTime"), "time"), btn("tag", t("bulkSetType"), "type"), btn("share", t("bulkShare"), "share"), btn("noteIcon", t("bulkClearDetails"), "clear"), btn("trash", t("bulkDelete"), "delete", true)];
+  // Only shown when the current screen (currently just Search) has handed
+  // over quick-pick data -- see registerBulkQuickPicks/onQuickPicksReady.
+  // Built by hand rather than through btn(): that helper disables on
+  // count===0, but this button is exactly how you'd build a selection up
+  // from zero, so it needs to stay tappable then.
+  const quickSelectBtn = quickPicks ? /*#__PURE__*/React.createElement("button", {
+    key: "quickselect",
+    onClick: () => onAction("quickselect"),
+    disabled: busy,
+    title: isHe ? "בחירה מהירה" : "Quick select",
+    "aria-label": isHe ? "בחירה מהירה" : "Quick select",
+    "aria-pressed": isArmed("quickselect"),
+    style: {
+      ...(narrow ? {
+        flex: "1 1 0",
+        minWidth: 0,
+        height: 50,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 3,
+        background: "transparent",
+        border: "none",
+        borderRadius: 12,
+        cursor: busy ? "default" : "pointer",
+        opacity: busy ? 0.35 : 1,
+        color: C.text3,
+        padding: "0 1px",
+        fontSize: 10,
+        fontWeight: 600,
+        lineHeight: 1.1,
+        textAlign: "center",
+        overflowWrap: "anywhere",
+        touchAction: "manipulation"
+      } : {
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 3,
+        background: "transparent",
+        border: "none",
+        cursor: busy ? "default" : "pointer",
+        opacity: busy ? 0.35 : 1,
+        color: C.text3,
+        padding: "4px 9px",
+        fontSize: 10,
+        fontWeight: 600,
+        flexShrink: 0
+      })
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "filter",
+    size: 18,
+    color: "currentColor"
+  }), isHe ? "בחירה" : "Quick pick") : null;
+  const actions = [quickSelectBtn, btn("calendar", t("bulkSetDate"), "date"), btn("clock", t("bulkSetTime"), "time"), btn("tag", t("bulkSetType"), "type"), btn("share", t("bulkShare"), "share"), btn("noteIcon", t("bulkClearDetails"), "clear"), btn("trash", t("bulkDelete"), "delete", true)].filter(Boolean);
   // Inline replacement for the action-icon row while a picker is active --
   // this lives in the exact same bar, so picking a date/time/type never
   // opens a separate screen. Choosing a value only stages it here; a "Set"
@@ -19745,9 +21145,9 @@ const BulkActionBar = ({
       style: {
         display: "flex",
         gap: 6,
-        overflowX: "auto",
+        overflowX: narrow ? "auto" : "visible",
         flex: 1,
-        minWidth: 0,
+        minWidth: narrow ? 0 : "max-content",
         padding: "2px 0"
       }
     }, typeChoices.map(tp => {
@@ -19777,6 +21177,64 @@ const BulkActionBar = ({
       disabled: !stagedType,
       style: setBtnStyle(!stagedType)
     }, t("set")));
+  } else if (pickerKind === "quickselect" && quickPicks) {
+    pickerRow = /*#__PURE__*/React.createElement(React.Fragment, {
+      key: "picker-quickselect"
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        overflowX: narrow ? "auto" : "visible",
+        flex: 1,
+        minWidth: narrow ? 0 : "max-content",
+        padding: "2px 0"
+      }
+    }, quickPicks.picks.map(p => {
+      const active = p.ids.length > 0 && p.ids.every(quickPicks.isSel);
+      return /*#__PURE__*/React.createElement("button", {
+        key: p.key,
+        type: "button",
+        disabled: p.ids.length === 0,
+        onClick: () => quickPicks.onToggle(p.ids, !active),
+        style: {
+          flexShrink: 0,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "7px 14px",
+          borderRadius: 999,
+          border: `1px solid ${active ? C.blueBorder : C.border2}`,
+          background: active ? C.blueBg : C.card2,
+          color: active ? C.blue : C.text3,
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: p.ids.length === 0 ? "default" : "pointer",
+          opacity: p.ids.length === 0 ? 0.4 : 1,
+          whiteSpace: "nowrap"
+        }
+      }, p.key === "all" && active ? t("deselectAll") : p.label, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontWeight: 700,
+          opacity: 0.6
+        }
+      }, p.ids.length));
+    }), quickPicks.invert && /*#__PURE__*/React.createElement("button", {
+      key: "invert",
+      type: "button",
+      onClick: quickPicks.invert,
+      style: {
+        flexShrink: 0,
+        padding: "7px 14px",
+        borderRadius: 999,
+        border: `1px solid ${C.border2}`,
+        background: C.card2,
+        color: C.text3,
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: "pointer",
+        whiteSpace: "nowrap"
+      }
+    }, isHe ? "הפוך בחירה" : "Invert")));
   }
   const shellStyle = {
     position: "fixed",
@@ -19848,7 +21306,8 @@ const BulkActionBar = ({
       gap: 2,
       padding: "8px 8px",
       maxWidth: "calc(100vw - 20px)",
-      overflowX: pickerKind ? "visible" : "auto"
+      width: "max-content",
+      overflowX: "visible"
     }
   }, pickerKind ? backBtn : cancelBtn, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -19875,7 +21334,14 @@ const BulkActionBar = ({
       flex: 1,
       minWidth: 220
     }
-  }, pickerRow) : actions);
+  }, pickerRow) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 2,
+      flexShrink: 0
+    }
+  }, actions));
 };
 
 function App() {
@@ -19903,7 +21369,14 @@ function App() {
   // vanishing the instant selectMode flips off.
   const [bulkBarClosing, setBulkBarClosing] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
-  const [bulkPickerKind, setBulkPickerKind] = useState(null); // null | "date" | "time" | "type" | "clear" | "delete"
+  const [bulkPickerKind, setBulkPickerKind] = useState(null); // null | "date" | "time" | "type" | "quickselect" | "clear" | "delete"
+  // Handed to the bulk-select bar by whichever bulk-selectable screen is
+  // currently mounted (Home, Month, Week, List, Search) -- see
+  // useSelectQuickPicks, called from each of those screens.
+  const [bulkQuickPicks, setBulkQuickPicks] = useState(null);
+  const registerBulkQuickPicks = React.useCallback(data => {
+    setBulkQuickPicks(data);
+  }, []);
   const toggleSelectMode = () => {
     if (selectMode) {
       exitSelectMode();
@@ -21307,7 +22780,7 @@ function App() {
       applyBulkPicker(value === undefined ? true : value, kind);
       return;
     }
-    if (kind === "date" || kind === "time" || kind === "type") {
+    if (kind === "date" || kind === "time" || kind === "type" || kind === "quickselect") {
       setArmedBulk(null);
       setBulkPickerKind(kind);
       return;
@@ -22322,8 +23795,8 @@ function App() {
     title: t("selectMode"),
     "aria-label": t("selectMode"),
     style: {
+      width: 34,
       height: 34,
-      padding: "0 12px",
       borderRadius: 10,
       border: `1px solid ${selectMode ? C.blueBorder : C.border2}`,
       background: selectMode ? C.blueBg : C.card2,
@@ -22332,12 +23805,23 @@ function App() {
       alignItems: "center",
       justifyContent: "center",
       flexShrink: 0,
-      transition: "all 0.15s",
-      fontSize: 13,
-      fontWeight: 600,
-      color: selectMode ? C.blue : C.text3
+      transition: "all 0.15s"
+    },
+    onMouseEnter: e => {
+      if (selectMode) return;
+      e.currentTarget.style.background = "var(--blue-bg)";
+      e.currentTarget.style.borderColor = "var(--blue-border)";
+    },
+    onMouseLeave: e => {
+      if (selectMode) return;
+      e.currentTarget.style.background = "var(--card2)";
+      e.currentTarget.style.borderColor = "var(--border2)";
     }
-  }, t("selectMode")), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "check",
+    size: 16,
+    color: selectMode ? C.blue : C.text3
+  })), /*#__PURE__*/React.createElement("button", {
     onClick: () => navigateTo("search"),
     title: getLang() === "he" ? "חיפוש" : "Search",
     "aria-label": getLang() === "he" ? "חיפוש" : "Search",
@@ -22474,18 +23958,28 @@ function App() {
       border: "none",
       background: "linear-gradient(135deg,#3B82F6,#2563EB)",
       color: "#fff",
-      cursor: "pointer",
+      // Hidden (rather than unmounted) while the bulk-select bar is showing,
+      // so it can fade/scale back in the same way it fades out instead of
+      // just popping back the instant selection mode ends. bulkBarClosing
+      // keeps it hidden through the bar's own exit animation too, so the
+      // two never overlap or swap places mid-animation.
+      cursor: (selectMode || bulkBarClosing) ? "default" : "pointer",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
       boxShadow: "0 6px 20px rgba(59,130,246,0.45)",
-      transition: "transform 0.15s ease, box-shadow 0.15s ease"
+      opacity: (selectMode || bulkBarClosing) ? 0 : 1,
+      transform: (selectMode || bulkBarClosing) ? "scale(0.4)" : "scale(1)",
+      pointerEvents: (selectMode || bulkBarClosing) ? "none" : "auto",
+      transition: "transform 0.22s cubic-bezier(0.34,1.56,0.64,1), opacity 0.18s ease, box-shadow 0.15s ease"
     },
     onMouseEnter: e => {
+      if (selectMode || bulkBarClosing) return;
       e.currentTarget.style.transform = "scale(1.07)";
       e.currentTarget.style.boxShadow = "0 8px 26px rgba(59,130,246,0.55)";
     },
     onMouseLeave: e => {
+      if (selectMode || bulkBarClosing) return;
       e.currentTarget.style.transform = "none";
       e.currentTarget.style.boxShadow = "0 6px 20px rgba(59,130,246,0.45)";
     }
@@ -22670,6 +24164,8 @@ function App() {
     color: shareReady ? C.text3 : C.text5
   })), /*#__PURE__*/React.createElement("button", {
     onClick: () => setDataModalOpen(true),
+    title: getLang() === "he" ? "הגדרות" : "Settings",
+    "aria-label": getLang() === "he" ? "הגדרות" : "Settings",
     style: {
       width: 32,
       height: 32,
@@ -23231,7 +24727,9 @@ function App() {
     onShareReady: registerShareAction,
     selectMode: selectMode,
     selectedIds: selectedIds,
-    onToggleSelect: toggleTaskSelected
+    onToggleSelect: toggleTaskSelected,
+    onSetSelected: setTasksSelected,
+    onQuickPicksReady: registerBulkQuickPicks
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
     tasks: [...tasks, ...archiveTasks],
     curDate: calDate,
@@ -23248,6 +24746,8 @@ function App() {
     selectMode: selectMode,
     selectedIds: selectedIds,
     onToggleSelect: toggleTaskSelected,
+    onSetSelected: setTasksSelected,
+    onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
     tasks: [...tasks, ...archiveTasks],
@@ -23260,6 +24760,8 @@ function App() {
     selectMode: selectMode,
     selectedIds: selectedIds,
     onToggleSelect: toggleTaskSelected,
+    onSetSelected: setTasksSelected,
+    onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
     tasks: [...tasks, ...archiveTasks],
@@ -23276,6 +24778,8 @@ function App() {
     selectMode: selectMode,
     selectedIds: selectedIds,
     onToggleSelect: toggleTaskSelected,
+    onSetSelected: setTasksSelected,
+    onQuickPicksReady: registerBulkQuickPicks,
     onQuickAddDate: ({
       name,
       date
@@ -23346,7 +24850,8 @@ function App() {
     selectMode: selectMode,
     selectedIds: selectedIds,
     onToggleSelect: toggleTaskSelected,
-    onSetSelected: setTasksSelected
+    onSetSelected: setTasksSelected,
+    onQuickPicksReady: registerBulkQuickPicks
   })))), /*#__PURE__*/React.createElement(Modal, {
     open: modalOpen,
     onClose: () => {
@@ -23493,7 +24998,8 @@ function App() {
     pickerTasks: tasks,
     onPickerApply: applyFromPicker,
     onPickerBack: () => setBulkPickerKind(null),
-    closing: bulkBarClosing
+    closing: bulkBarClosing,
+    quickPicks: bulkQuickPicks
   }), /*#__PURE__*/React.createElement(ShareOptionsDialog, {
     open: bulkShareDialogOpen,
     onClose: () => setBulkShareDialogOpen(false),
