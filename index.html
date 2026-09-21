@@ -942,7 +942,7 @@ const isExcludedHebcalTask = task => {
 // through the edit modal and drag handlers, so they stay selectable -- this
 // is intentionally a narrower check than the drag-lock used for reschedule
 // gestures.
-const isSelectLocked = tk => !!(tk && tk.googleShared);
+const isSelectLocked = tk => !!(tk && (tk.googleShared || tk._projected));
 // Hebrew/international holidays and the synthetic "calendar" type used for
 // auto-generated holiday entries CAN be selected in bulk-select mode (e.g. to
 // share them alongside other tasks), but can never be modified through the
@@ -1963,6 +1963,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
 html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:4px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes selDotIn{from{opacity:0;transform:translateY(-50%) scale(0.4)}to{opacity:1;transform:translateY(-50%) scale(1)}}
 @keyframes slideInLeft{from{opacity:0;transform:translateX(52px)}to{opacity:1;transform:translateX(0)}}
 @keyframes slideInRight{from{opacity:0;transform:translateX(-52px)}to{opacity:1;transform:translateX(0)}}
 /* Date-group accordion entrance (by-date / search result groups) */
@@ -2851,7 +2852,14 @@ const TaskCard = ({
       position: "relative",
       background: selected ? C.blueBg : cancelled || cancelling ? C.roseBg : completing ? C.greenBg : delaying ? C.amberBg : over ? C.redBg : justSynced || isNew ? "var(--blue-bg)" : C.card,
       border: `1px solid ${selected ? C.blue : renaming ? C.blue : cancelled || cancelling ? C.roseBorder : completing ? C.greenBorder : delaying ? C.amberBorder : over ? C.redBorder : justSynced || isNew ? C.blueBorder : hovered ? C.border2 : C.border3}`,
-      boxShadow: selected ? `0 0 0 2px ${C.blue}` : completing || cancelling || delaying ? undefined : hovered ? "0 4px 16px rgba(59,130,246,0.08)" : "0 1px 4px rgba(0,0,0,0.04)",
+      // Outward, non-inset box-shadows (esp. combined with the 1px real
+      // border above) can end up misaligned by a device pixel on fractional-
+      // width flex items -- e.g. two selected cards side by side in the
+      // by-type wrapped grid, where the flex-computed widths aren't whole
+      // pixels. An inset ring is painted flush against the same border-box
+      // edges the border itself uses, so it can't drift independently and
+      // always renders the same width on every side.
+      boxShadow: selected ? `inset 0 0 0 2px ${C.blue}` : completing || cancelling || delaying ? undefined : hovered ? "0 4px 16px rgba(59,130,246,0.08)" : "0 1px 4px rgba(0,0,0,0.04)",
       transition: completing || cancelling || delaying || justSynced || isNew ? "none" : "all 0.2s ease",
       opacity: selectMode && locked ? 0.45 : done ? 0.55 : cancelled ? 0.6 : 1,
       animation: completing || cancelling || delaying || isNew ? undefined : justSynced ? undefined : `fadeIn 0.3s ease ${delay}s forwards`,
@@ -6024,6 +6032,9 @@ const DayChip = ({
         paddingLeft: "6px",
         paddingRight: "4px"
       }),
+      ...(selectMode && !locked ? {
+        [isHe ? "paddingLeft" : "paddingRight"]: 24
+      } : null),
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
@@ -6075,18 +6086,27 @@ const DayChip = ({
       textOverflow: "ellipsis"
     }
   }, taskDisplayName(t)));
+  // The tick box floats over the free end of the bar (right in LTR, left in RTL)
+  // instead of sitting in the row, so turning select mode on never pushes the
+  // task names sideways -- it just fades/pops in.
   const selectDot = selectMode && !locked && /*#__PURE__*/React.createElement("div", {
     style: {
+      position: "absolute",
+      top: "50%",
+      [isHe ? "left" : "right"]: 8,
       width: 12,
       height: 12,
       minWidth: 12,
       borderRadius: 4,
       border: selected ? "none" : `1.5px solid ${C.border2}`,
-      background: selected ? C.blue : "transparent",
+      background: selected ? C.blue : C.card,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      flexShrink: 0
+      flexShrink: 0,
+      animation: "selDotIn 0.22s ease both",
+      pointerEvents: "none",
+      zIndex: 1
     }
   }, selected && /*#__PURE__*/React.createElement("svg", {
     width: "7",
@@ -6113,6 +6133,7 @@ const DayChip = ({
       onTaskClick(t);
     },
     style: {
+      position: "relative",
       display: "flex",
       alignItems: "center",
       gap: 4,
@@ -6143,7 +6164,8 @@ const MonthView = ({
   onShareReady,
   selectMode = false,
   selectedIds = null,
-  onToggleSelect = null
+  onToggleSelect = null,
+  prefLookahead = true
 }) => {
   // Drop ripple: ds of the last cell that received a drop (cleared after animation).
   // Declared BEFORE useTaskDragEngine so the commit closure has no TDZ risk.
@@ -6158,7 +6180,7 @@ const MonthView = ({
     registerZone,
     dragPill
   } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected),
     resolve: ds => ds ? ({ ds }) : null,
     commit: (id, p) => {
       onDropDate && onDropDate(id, p.ds);
@@ -7180,7 +7202,7 @@ const MonthView = ({
     // already shows), projecting future recurring occurrences is purely
     // additive -- it must default to OFF outside of an actual capture, not
     // fall back to "on" the way markOverdue/showCompleted*/markToday do.
-    const mShowFutureRepeats = !!(sharingMonth && shareOptions && shareOptions.showFutureRepeats !== false);
+    const mShowFutureRepeats = !!(sharingMonth && shareOptions && shareOptions.showFutureRepeats !== false) || (!sharingMonth && prefLookahead);
     const mMarkToday = !sharingMonth || !shareOptions || shareOptions.markToday !== false;
     const mSelectedTypes = sharingMonth && shareOptions ? shareOptions.selectedTypes : null;
     // Every pending recurring task's projected occurrence dates across the
@@ -7821,7 +7843,8 @@ const WeekView = ({
   onShareReady,
   selectMode = false,
   selectedIds = null,
-  onToggleSelect = null
+  onToggleSelect = null,
+  prefLookahead = true
 }) => {
   const width = useWindowWidth();
   const height = useWindowHeight();
@@ -7888,7 +7911,7 @@ const WeekView = ({
   // column into a 15-minute-snapped start time, keeping the grab offset so the
   // block doesn't jump under the finger.
   const DRAG_SNAP_MIN = 15;
-  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google");
+  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected);
   const minsToTime = mins => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(Math.floor(mins % 60)).padStart(2, "0")}`;
   const timeToMins = s => {
     const [hh, mm] = (s || "0:0").split(":").map(Number);
@@ -8098,7 +8121,7 @@ const WeekView = ({
     // already shows), projecting future recurring occurrences is purely
     // additive -- it must default to OFF outside of an actual capture, not
     // fall back to "on" the way markOverdue/showCompleted*/markToday do.
-    const wShowFutureRepeats = !!(sharingWeek && shareOptions && shareOptions.showFutureRepeats !== false);
+    const wShowFutureRepeats = !!(sharingWeek && shareOptions && shareOptions.showFutureRepeats !== false) || (!sharingWeek && prefLookahead);
     const wMarkToday = !sharingWeek || !shareOptions || shareOptions.markToday !== false;
     const wSelectedTypes = sharingWeek && shareOptions ? shareOptions.selectedTypes : null;
     // Every pending recurring task's projected occurrence dates across the
@@ -8492,7 +8515,10 @@ const WeekView = ({
           background: donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : m.bg,
           color: donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : m.color,
           borderInlineStart: `2px solid ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}`,
-          boxShadow: isSel ? `0 0 0 2px ${C.blue}` : beingDragged ? "0 8px 22px rgba(0,0,0,0.26)" : "0 1px 3px rgba(0,0,0,0.08)",
+          // Inset so the ring can't drift a device pixel off from the real
+          // border on these fractional-percentage-width blocks (see the
+          // same fix on the wide TaskCard's selected ring).
+          boxShadow: isSel ? `inset 0 0 0 2px ${C.blue}` : beingDragged ? "0 8px 22px rgba(0,0,0,0.26)" : "0 1px 3px rgba(0,0,0,0.08)",
           opacity: beingDragged ? 0.35 : selectMode && selLocked ? 0.4 : donOnDay ? 0.8 : cancelOnDay ? 0.7 : 1,
           textDecoration: cancelOnDay ? "line-through" : "none",
           zIndex: beingDragged ? 8 : 2,
@@ -10850,78 +10876,97 @@ const LineChart = ({
   dateRange = null
 }) => {
   const [hovered, setHovered] = useState(null);
+  const [hovSeries, setHovSeries] = useState(null); // legend hover -> highlight one series
+  const [W, setW] = useState(340); // measured plot width (kept 1:1 with the screen)
+  // Unique per instance so multiple charts on one page never share <defs> ids
+  const chartId = useRef("line" + Math.random().toString(36).slice(2, 9)).current;
 
-  // ── 1. Decide bucket granularity based on date range ──────────────────────
-  // Collect all dated tasks
+  // ── 1. Decide bucket granularity from the span the results cover ──────────
+  // Buckets are relative to the time window of the results: a few days stay
+  // daily, a couple of months become weeks, a year or so becomes months, and
+  // longer spans roll up into quarters / years. Empty buckets are filled in so
+  // the x-axis is evenly spaced instead of only showing days that have tasks.
   const datedTasks = tasks.filter(tk => tk.date);
-
-  // Build sorted unique dates
   const allDates = [...new Set(datedTasks.map(tk => tk.date))].sort();
   const n = allDates.length;
+  const parseD = ds => new Date(ds + "T00:00:00");
 
-  // For custom dateRange: compute span in days to pick granularity
-  const customSpanDays = dateRange ? (() => {
-    const a = dateRange.from ? new Date(dateRange.from + "T00:00:00") : allDates[0] ? new Date(allDates[0] + "T00:00:00") : TODAY;
-    const b = dateRange.to ? new Date(dateRange.to + "T00:00:00") : allDates[allDates.length - 1] ? new Date(allDates[allDates.length - 1] + "T00:00:00") : TODAY;
-    return Math.max(1, Math.round((b - a) / 864e5) + 1);
-  })() : null;
+  // Span: explicit range edges win; "this year" is the whole calendar year;
+  // otherwise use the first/last date present in the results.
+  const spanStart = dateRange && dateRange.from ? parseD(dateRange.from) : timeRange === "year" ? new Date(TODAY.getFullYear(), 0, 1) : allDates[0] ? parseD(allDates[0]) : new Date(TODAY);
+  let spanEnd = dateRange && dateRange.to ? parseD(dateRange.to) : timeRange === "year" ? new Date(TODAY.getFullYear(), 11, 31) : allDates[n - 1] ? parseD(allDates[n - 1]) : new Date(TODAY);
+  if (spanEnd < spanStart) spanEnd = new Date(spanStart);
+  const spanDays = Math.max(1, Math.round((spanEnd - spanStart) / 864e5) + 1);
+  const spanMultiYear = spanStart.getFullYear() !== spanEnd.getFullYear();
 
-  // Granularity: day / week / month
+  // Calendar-aligned presets stay daily; everything else adapts to the span.
   let granularity = "day";
-  const isAllRange = timeRange === "all" || timeRange === "dates";
-  if (dateRange) {
-    // custom range: pick by span
-    if (customSpanDays > 180) granularity = "month";else if (customSpanDays > 31) granularity = "week";
-    // else day
-  } else if (timeRange === "year" || isAllRange && n > 30) granularity = "month";else if (isAllRange && n > 7) granularity = "week";
-  // month timeRange: always daily dots
+  if (timeRange === "today" || timeRange === "week" || timeRange === "month") granularity = "day";
+  else if (spanDays <= 21) granularity = "day";
+  else if (spanDays <= 112) granularity = "week"; // up to ~16 weeks
+  else if (spanDays <= 500) granularity = "month"; // up to ~16 months
+  else if (spanDays <= 1500) granularity = "quarter"; // up to ~16 quarters
+  else granularity = "year";
 
   // ── 2. Bucket key helpers ─────────────────────────────────────────────────
+  const pad2 = v => String(v).padStart(2, "0");
   const bucketKey = dateStr => {
     const d = new Date(dateStr + "T00:00:00");
-    if (granularity === "month") return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    if (granularity === "year") return `${d.getFullYear()}`;
+    if (granularity === "quarter") return `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3) + 1}`;
+    if (granularity === "month") return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
     if (granularity === "week") {
-      // US week: starts Sunday
+      // week starts Sunday
       const dt = new Date(d);
       dt.setHours(0, 0, 0, 0);
-      const day = dt.getDay(); // 0=Sun
-      dt.setDate(dt.getDate() - day); // back to Sunday
-      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+      dt.setDate(dt.getDate() - dt.getDay());
+      return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
     }
     return dateStr; // day
   };
+  const chartLocale = T[getLang()]?.dateLocale || "en-US";
   const bucketLabel = key => {
+    if (granularity === "year") return key;
+    if (granularity === "quarter") {
+      const [yr, q] = key.split("-");
+      return spanMultiYear ? `${q} ${yr.slice(2)}` : q;
+    }
     if (granularity === "month") {
       const [yr, mo] = key.split("-");
-      const months = getMonths();
-      const label = months[parseInt(mo) - 1]?.slice(0, 3) || mo;
-      // Show year suffix if tasks span multiple years
-      const years = [...new Set(datedTasks.map(tk => tk.date.slice(0, 4)))];
-      return years.length > 1 ? `${label} ${yr.slice(2)}` : label;
+      const label = getMonths()[parseInt(mo) - 1]?.slice(0, 3) || mo;
+      return spanMultiYear ? `${label} ${yr.slice(2)}` : label;
     }
     if (granularity === "week") {
-      const d = new Date(key + "T00:00:00");
-      if (timeRange === "week") return getDaysShort()[d.getDay()];
-      return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
-        month: "numeric",
-        day: "numeric"
-      });
+      // Label a week by the day it starts on (e.g. 4/3)
+      return `${parseInt(key.slice(8))}/${parseInt(key.slice(5, 7))}`;
     }
     // day
-    if (timeRange === "week") {
-      const d = new Date(key + "T00:00:00");
-      return getDaysShort()[d.getDay()];
-    }
-    if (timeRange === "month" || dateRange && granularity === "day") {
-      // Show day/month for clarity (e.g. 4/3)
-      const day = parseInt(key.slice(8));
-      const mo = parseInt(key.slice(5, 7));
-      return `${day}/${mo}`;
+    if (timeRange === "week") return getDaysShort()[new Date(key + "T00:00:00").getDay()];
+    return `${parseInt(key.slice(8))}/${parseInt(key.slice(5, 7))}`;
+  };
+  // Longer description used in the hover tooltip
+  const bucketTip = key => {
+    const isHeL = getLang() === "he";
+    if (granularity === "year") return key;
+    if (granularity === "quarter") return key.replace("-", " ");
+    if (granularity === "month") {
+      const [yr, mo] = key.split("-");
+      return `${getMonths()[parseInt(mo) - 1] || mo} ${yr}`;
     }
     const d = new Date(key + "T00:00:00");
-    return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
-      month: "numeric",
-      day: "numeric"
+    if (granularity === "week") {
+      const e = new Date(d);
+      e.setDate(e.getDate() + 6);
+      const fmt = x => x.toLocaleDateString(chartLocale, {
+        day: "numeric",
+        month: "short"
+      });
+      return `${fmt(d)} – ${fmt(e)}`;
+    }
+    return d.toLocaleDateString(chartLocale, {
+      weekday: "short",
+      day: "numeric",
+      month: "short"
     });
   };
 
@@ -11009,67 +11054,42 @@ const LineChart = ({
     }
   }
 
-  // Fill contiguous buckets for custom dateRange
-  if (dateRange) {
-    const a = dateRange.from ? new Date(dateRange.from + "T00:00:00") : allDates[0] ? new Date(allDates[0] + "T00:00:00") : TODAY;
-    const b = dateRange.to ? new Date(dateRange.to + "T00:00:00") : allDates[allDates.length - 1] ? new Date(allDates[allDates.length - 1] + "T00:00:00") : TODAY;
-    if (granularity === "day") {
-      const cur = new Date(a);
-      while (cur <= b) {
-        const k = localDs(cur);
-        if (!buckets[k]) buckets[k] = {
-          pending: 0,
-          completed: 0,
-          cancelled: 0
-        };
-        cur.setDate(cur.getDate() + 1);
-      }
-    } else if (granularity === "week") {
-      // Walk week-start Sundays
-      const cur = new Date(a);
-      cur.setDate(cur.getDate() - cur.getDay());
-      while (cur <= b) {
-        const k = localDs(cur);
-        if (!buckets[k]) buckets[k] = {
-          pending: 0,
-          completed: 0,
-          cancelled: 0
-        };
-        cur.setDate(cur.getDate() + 7);
-      }
-    } else {
-      // month
-      const cur = new Date(a.getFullYear(), a.getMonth(), 1);
-      while (cur <= b) {
-        const k = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}`;
-        if (!buckets[k]) buckets[k] = {
-          pending: 0,
-          completed: 0,
-          cancelled: 0
-        };
-        cur.setMonth(cur.getMonth() + 1);
-      }
+  // Fill every bucket across the whole span so the x-axis is evenly spaced
+  // (idempotent with the week/month fills above).
+  {
+    const cur = new Date(spanStart);
+    cur.setHours(0, 0, 0, 0);
+    if (granularity === "week") cur.setDate(cur.getDate() - cur.getDay());else if (granularity === "month") cur.setDate(1);else if (granularity === "quarter") {
+      cur.setDate(1);
+      cur.setMonth(Math.floor(cur.getMonth() / 3) * 3);
+    } else if (granularity === "year") {
+      cur.setDate(1);
+      cur.setMonth(0);
+    }
+    let guard = 0;
+    while (cur <= spanEnd && guard++ < 2000) {
+      const k = bucketKey(localDs(cur));
+      if (!buckets[k]) buckets[k] = {
+        pending: 0,
+        completed: 0,
+        cancelled: 0
+      };
+      if (granularity === "day") cur.setDate(cur.getDate() + 1);else if (granularity === "week") cur.setDate(cur.getDate() + 7);else if (granularity === "month") cur.setMonth(cur.getMonth() + 1);else if (granularity === "quarter") cur.setMonth(cur.getMonth() + 3);else cur.setFullYear(cur.getFullYear() + 1);
     }
   }
   const sortedKeys = Object.keys(buckets).sort();
 
   // ── 5. Keep all points for accurate lines, thin labels to max 12 ──────────
   // Never sample month/week — every day must appear on the line for correct counts.
-  const isDayDense = timeRange === "month" || timeRange === "week" || dateRange && granularity === "day";
-  const MAX_POINTS = isDayDense ? Infinity : 20;
-  let displayKeys = sortedKeys;
-  if (isFinite(MAX_POINTS) && sortedKeys.length > MAX_POINTS) {
-    const step = (sortedKeys.length - 1) / (MAX_POINTS - 1);
-    displayKeys = Array.from({
-      length: MAX_POINTS
-    }, (_, i) => sortedKeys[Math.round(i * step)]);
-  }
+  // Bucket counts are already bounded by the granularity choice above, so every
+  // bucket is kept (sampling would silently drop tasks from the line).
+  const displayKeys = sortedKeys;
 
   // Label stride: show at most 12 x-axis labels
   // For month timeRange or custom day range: show every 5th day + last
   const MAX_LABELS = 12;
   let labelIndices = null; // null = use stride, Set = explicit indices
-  const useMonthDayLabels = timeRange === "month" && granularity === "day" || dateRange && granularity === "day";
+  const useMonthDayLabels = granularity === "day" && timeRange !== "week" && timeRange !== "today" && spanDays > 10;
   if (useMonthDayLabels) {
     const indices = new Set();
     const lastIdx = displayKeys.length - 1;
@@ -11088,40 +11108,72 @@ const LineChart = ({
   const todayIdx = displayKeys.indexOf(todayKey);
   const pts = displayKeys.map(k => ({
     label: bucketLabel(k),
+    tip: bucketTip(k),
     pending: buckets[k].pending,
     completed: buckets[k].completed,
     cancelled: buckets[k].cancelled,
     isToday: k === todayKey
   }));
-  if (pts.length === 0) return null;
-
   // ── 6. Render SVG ─────────────────────────────────────────────────────────
+  const h = React.createElement;
+  const isHeL = getLang() === "he";
   const series = [{
     key: "pending",
-    label: getLang() === "he" ? "ממתין" : "Pending",
+    label: isHeL ? "ממתין" : "Pending",
     color: "var(--blue)"
   }, {
     key: "completed",
-    label: getLang() === "he" ? "הושלם" : "Completed",
+    label: isHeL ? "הושלם" : "Completed",
     color: "var(--green)"
   }, {
     key: "cancelled",
-    label: getLang() === "he" ? "בוטל" : "Cancelled",
+    label: isHeL ? "בוטל" : "Cancelled",
     color: "#FB7185"
   }];
-  const padL = 32,
-    padR = 12,
-    padT = 20,
-    padB = 36;
-  const W = 340,
-    H = height;
+  const granNames = isHeL ? {
+    day: "לפי יום",
+    week: "לפי שבוע",
+    month: "לפי חודש",
+    quarter: "לפי רבעון",
+    year: "לפי שנה"
+  } : {
+    day: "by day",
+    week: "by week",
+    month: "by month",
+    quarter: "by quarter",
+    year: "by year"
+  };
+  const H = height;
+  const padL = 28,
+    padR = 18,
+    padT = 12,
+    padB = 28;
   const chartW = W - padL - padR,
     chartH = H - padT - padB;
+  const baseY = padT + chartH;
   const np = pts.length;
   const xs = pts.map((_, i) => padL + (np === 1 ? chartW / 2 : i / (np - 1) * chartW));
+  const colW = Math.min(32, Math.max(14, np > 1 ? chartW / (np - 1) : chartW));
   const allVals = pts.flatMap(p => [p.pending, p.completed, p.cancelled]);
   const maxV = Math.max(...allVals, 1);
   const yOf = (v, mx) => padT + chartH - v / (mx || 1) * chartH;
+
+  // Totals shown in the readout (or the hovered bucket's values)
+  const totals = {
+    pending: 0,
+    completed: 0,
+    cancelled: 0
+  };
+  pts.forEach(p => {
+    totals.pending += p.pending;
+    totals.completed += p.completed;
+    totals.cancelled += p.cancelled;
+  });
+  // Tasks with no date can't be placed on a timeline, so the line chart skips them
+  const undatedCount = tasks.length - datedTasks.length;
+  const hovPt = hovered !== null ? pts[hovered] : null;
+  const shown = hovPt || totals;
+  const shownTotal = shown.pending + shown.completed + shown.cancelled;
 
   // ── rAF line animation ─────────────────────────────────────────────────────
   const lineAnimRef = useRef(null);
@@ -11142,11 +11194,22 @@ const LineChart = ({
     pts,
     maxV
   });
-  const isVisibleRef = useRef(false);
-  const pendingAnim = useRef(false);
-  const lineContRef = useRef(null);
   const linePathRefs = useRef({});
+  const areaRefs = useRef({});
   const dotRefs = useRef([]);
+
+  // Keep the drawing 1:1 with the space it's given (no stretched text/dots)
+  const wrapRef = useRef(null);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const obs = new ResizeObserver(entries => {
+      const w = Math.round(entries[0]?.contentRect?.width || 0);
+      if (w >= 200) setW(prev => Math.abs(prev - w) >= 2 ? w : prev);
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
 
   // Compute shared x-range for completed+cancelled so both lines always span
   // the same extent (the union of where either series has data).
@@ -11166,8 +11229,7 @@ const LineChart = ({
     };
   })();
 
-  // Per-series line range: edgeFirst/edgeLast index in pts (inclusive).
-  // A dot should show if i is within this range (line passes through it).
+  // Per-series line range: a dot shows if i is within this range.
   const lineRanges = {};
   series.forEach(s => {
     if ((s.key === "completed" || s.key === "cancelled") && sharedCompCanRange) {
@@ -11189,27 +11251,15 @@ const LineChart = ({
     }
   });
 
-  // Build segments with proper zero-edge handling:
-  // - Trim leading/trailing runs of 2+ zeros, but include ONE zero on each edge (descent/rise)
-  // - Internal zeros (with non-zero data on both sides) are always included as real dips
-  // - Break the line only where there are 2+ consecutive zeros with no non-zero data between them
-  // forcedRange: optional {edgeFirst, edgeLast} to override the auto-detected range
+  // Build the line for a series. One extra zero is kept on each edge so the
+  // line rises from / drops to the baseline; inner zeros are real dips.
   const buildLineSegments = (valPts, key, mx, forcedRange) => {
     if (valPts.length === 0) return [];
     let edgeFirst, edgeLast;
     if (forcedRange) {
       edgeFirst = forcedRange.edgeFirst;
       edgeLast = forcedRange.edgeLast;
-      // If neither series has any data at all in the forced range, still need a line of zeros
-      // Check if this specific key has any data anywhere
-      const hasAny = valPts.some(p => p[key] > 0);
-      if (!hasAny) {
-        // Draw a flat zero line across the forced range
-        edgeFirst = forcedRange.edgeFirst;
-        edgeLast = forcedRange.edgeLast;
-      }
     } else {
-      // Find first and last non-zero index
       let first = -1,
         last = -1;
       for (let i = 0; i < valPts.length; i++) if (valPts[i][key] > 0) {
@@ -11217,35 +11267,32 @@ const LineChart = ({
         last = i;
       }
       if (first < 0) return [];
-      // Extend by one zero on each side (the drop-to-zero and rise-from-zero edges)
       edgeFirst = Math.max(0, first - 1);
       edgeLast = Math.min(valPts.length - 1, last + 1);
     }
     const slice = valPts.slice(edgeFirst, edgeLast + 1);
     const sliceXs = xs.slice(edgeFirst, edgeLast + 1);
-    // No mid-series gaps — draw one continuous line through all internal zeros.
-    // The slice already has the correct outer zero-edges trimmed above.
-    const segments = [];
-    const cur = [];
-    for (let i = 0; i < slice.length; i++) {
-      cur.push({
-        pt: slice[i],
-        x: sliceXs[i]
-      });
+    const seg = slice.map((pt, i) => ({
+      pt,
+      x: sliceXs[i]
+    }));
+    if (seg.length === 0) return [];
+    if (seg.length === 1) return [`M${seg[0].x},${yOf(seg[0].pt[key], mx)}`];
+    let d = `M${seg[0].x},${yOf(seg[0].pt[key], mx)}`;
+    for (let i = 1; i < seg.length; i++) {
+      const cpx = (seg[i - 1].x + seg[i].x) / 2;
+      const y0 = yOf(seg[i - 1].pt[key], mx),
+        y1 = yOf(seg[i].pt[key], mx);
+      d += ` C${cpx},${y0} ${cpx},${y1} ${seg[i].x},${y1}`;
     }
-    if (cur.length > 0) segments.push(cur);
-    // Build path strings
-    return segments.map(seg => {
-      if (seg.length === 1) return `M${seg[0].x},${yOf(seg[0].pt[key], mx)}`;
-      let d = `M${seg[0].x},${yOf(seg[0].pt[key], mx)}`;
-      for (let i = 1; i < seg.length; i++) {
-        const cpx = (seg[i - 1].x + seg[i].x) / 2;
-        const y0 = yOf(seg[i - 1].pt[key], mx),
-          y1 = yOf(seg[i].pt[key], mx);
-        d += ` C${cpx},${y0} ${cpx},${y1} ${seg[i].x},${y1}`;
-      }
-      return d;
-    });
+    return [d];
+  };
+  const areaFromLine = seg => {
+    if (!seg) return "";
+    const m1 = seg.match(/^M([-\d.]+),/);
+    const m2 = seg.match(/([-\d.]+),[-\d.]+$/);
+    if (!m1 || !m2) return "";
+    return `${seg} L${m2[1]},${baseY} L${m1[1]},${baseY} Z`;
   };
   const applyLineFrame = (animPts, animMax) => {
     series.forEach(s => {
@@ -11255,6 +11302,8 @@ const LineChart = ({
       els.forEach((el, si) => {
         if (el) el.setAttribute("d", segs[si] || "");
       });
+      const ar = areaRefs.current[s.key];
+      if (ar) ar.setAttribute("d", areaFromLine(segs[0]));
     });
     animPts.forEach((p, i) => {
       const dots = dotRefs.current[i];
@@ -11308,11 +11357,9 @@ const LineChart = ({
     };
     lineStartT.current = null;
     lineAnimRef.current = requestAnimationFrame(lineTick);
-    pendingAnim.current = false;
   };
-  const lineVisTimerRef = useRef(null); // kept for cleanup safety
 
-  // Always animate immediately on mount and data change — no visibility deferral
+  // Always animate immediately on mount and data change (or when the width changes)
   const keysId = displayKeys.join(",");
   const valSig = displayKeys.map(k => `${buckets[k]?.pending || 0}-${buckets[k]?.completed || 0}-${buckets[k]?.cancelled || 0}`).join("|");
   useEffect(() => {
@@ -11326,59 +11373,247 @@ const LineChart = ({
     return () => {
       if (lineAnimRef.current) cancelAnimationFrame(lineAnimRef.current);
     };
-  }, [keysId, valSig]);
+  }, [keysId, valSig, W, H]);
+  if (pts.length === 0 || n === 0 && !dateRange && !["today", "week", "month", "year"].includes(timeRange)) return null;
 
-  // Initial path strings (will be immediately overwritten by rAF but needed for first render)
-  // (segment paths initialized empty; rAF fills them in)
-
-  return /*#__PURE__*/React.createElement("div", {
-    ref: lineContRef
-  }, /*#__PURE__*/React.createElement("div", {
+  // ── Shared "gauge" chrome: drop shadow, gloss, soft area gradients ────────
+  const defs = h("defs", null, h("filter", {
+    id: `${chartId}-shadow`,
+    filterUnits: "userSpaceOnUse",
+    x: 0,
+    y: 0,
+    width: W,
+    height: H
+  }, h("feDropShadow", {
+    dx: 0,
+    dy: 2,
+    stdDeviation: 2.5,
+    floodColor: "#000",
+    floodOpacity: 0.2
+  })), h("linearGradient", {
+    id: `${chartId}-gloss`,
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 1
+  }, h("stop", {
+    offset: "0%",
+    stopColor: "#fff",
+    stopOpacity: 0.22
+  }), h("stop", {
+    offset: "50%",
+    stopColor: "#fff",
+    stopOpacity: 0.05
+  }), h("stop", {
+    offset: "100%",
+    stopColor: "#fff",
+    stopOpacity: 0
+  })), series.map(s => h("linearGradient", {
+    key: s.key,
+    id: `${chartId}-area-${s.key}`,
+    x1: 0,
+    y1: 0,
+    x2: 0,
+    y2: 1
+  }, h("stop", {
+    offset: "0%",
     style: {
-      overflowX: "auto",
-      WebkitOverflowScrolling: "touch",
-      position: "relative",
-      // Cap how wide the chart can stretch relative to its height — on wide
-      // containers (tablet/desktop) an unconstrained 100%-wide, fixed-height
-      // SVG gets flattened and hard to read. Keeping it near its native
-      // ~2.2:1 aspect ratio (and centering it) keeps the plot legible instead
-      // of squeezed, while still shrinking/scrolling fine on narrow screens.
-      maxWidth: Math.round(H * 2.2),
+      stopColor: s.color,
+      stopOpacity: 0.3
+    }
+  }), h("stop", {
+    offset: "100%",
+    style: {
+      stopColor: s.color,
+      stopOpacity: 0
+    }
+  }))));
+  const dimmed = key => hovSeries !== null && hovSeries !== key;
+  return h("div", {
+    ref: wrapRef,
+    style: {
+      width: "100%",
+      maxWidth: 640,
       marginLeft: "auto",
       marginRight: "auto"
-    },
-    ref: el => el && (el._lineRef = true)
-  }, /*#__PURE__*/React.createElement("svg", {
+    }
+  },
+  // Readout: big number + sublabel, same voice as the pie / gauge centre label
+  h("div", {
+    style: {
+      display: "flex",
+      alignItems: "flex-end",
+      justifyContent: "space-between",
+      gap: 10,
+      marginBottom: 8,
+      padding: "0 2px",
+      direction: isHeL ? "rtl" : "ltr",
+      textAlign: isHeL ? "right" : "left"
+    }
+  }, h("div", {
+    style: {
+      minWidth: 0
+    }
+  }, h("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: C.text,
+      lineHeight: 1
+    }
+  }, shownTotal), h("div", {
+    style: {
+      fontSize: 10,
+      color: hovPt ? C.text3 : C.text4,
+      marginTop: 2,
+      fontWeight: 500,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis"
+    }
+  }, hovPt ? hovPt.tip : `${t("tasks")} · ${granNames[granularity]}${undatedCount > 0 ? ` · ${undatedCount} ${isHeL ? "ללא תאריך" : "undated"}` : ""}`)), h("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      flexShrink: 0
+    }
+  }, series.map(s => h("div", {
+    key: s.key,
+    onMouseEnter: () => setHovSeries(s.key),
+    onMouseLeave: () => setHovSeries(null),
+    style: {
+      cursor: "default",
+      opacity: dimmed(s.key) ? 0.45 : 1,
+      transition: "opacity 0.2s"
+    }
+  }, h("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5
+    }
+  }, h("div", {
+    style: {
+      width: 8,
+      height: 8,
+      borderRadius: 3,
+      background: s.color,
+      flexShrink: 0
+    }
+  }), h("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: s.color,
+      lineHeight: 1
+    }
+  }, shown[s.key])), h("div", {
+    style: {
+      fontSize: 9,
+      color: C.text4,
+      marginTop: 3,
+      fontWeight: 500
+    }
+  }, s.label))))),
+  // Plot
+  h("svg", {
     width: "100%",
     height: H,
     viewBox: `0 0 ${W} ${H}`,
-    preserveAspectRatio: "none",
     style: {
       display: "block",
       overflow: "visible",
       direction: "ltr"
     },
     onMouseLeave: () => setHovered(null)
-  }, [0, 0.25, 0.5, 0.75, 1].map((f, i) => {
+  }, defs,
+  // Recessed plate
+  h("rect", {
+    x: 0.5,
+    y: 0.5,
+    width: W - 1,
+    height: H - 1,
+    rx: 12,
+    fill: C.bg3,
+    stroke: C.border,
+    strokeWidth: 1
+  }),
+  // Grid + y labels
+  [0.25, 0.5, 0.75, 1].map((f, i) => {
     const y = padT + chartH * (1 - f);
-    return /*#__PURE__*/React.createElement("g", {
+    const v = maxV * f;
+    const whole = Math.abs(v - Math.round(v)) < 0.01;
+    return h("g", {
       key: i
-    }, /*#__PURE__*/React.createElement("line", {
+    }, h("line", {
       x1: padL,
       y1: y,
       x2: padL + chartW,
       y2: y,
-      stroke: "var(--border)",
+      stroke: C.border,
       strokeWidth: 0.8,
-      strokeDasharray: i === 0 ? "" : "3,3"
-    }), f > 0 && /*#__PURE__*/React.createElement("text", {
-      x: padL - 4,
-      y: y + 4,
+      strokeDasharray: "3,3"
+    }), whole && h("text", {
+      x: padL - 7,
+      y: y + 3,
       textAnchor: "end",
       fontSize: 8,
-      fill: "var(--text4)"
-    }, Math.round(maxV * f)));
-  }), series.map(s => {
+      fill: C.text4
+    }, Math.round(v)));
+  }), h("text", {
+    x: padL - 7,
+    y: baseY + 3,
+    textAnchor: "end",
+    fontSize: 8,
+    fill: C.text4
+  }, "0"),
+  // Baseline track (like the gauge / pie track)
+  h("line", {
+    x1: padL - 2,
+    y1: baseY,
+    x2: padL + chartW + 2,
+    y2: baseY,
+    stroke: C.text5,
+    strokeWidth: 3,
+    strokeLinecap: "round",
+    opacity: 0.35
+  }),
+  // Today + hover column highlight
+  pts.map((p, i) => (p.isToday || hovered === i) && h("rect", {
+    key: `band-${i}`,
+    x: xs[i] - colW / 2,
+    y: padT,
+    width: colW,
+    height: chartH,
+    rx: 6,
+    fill: hovered === i ? C.text5 : C.blue,
+    opacity: hovered === i ? 0.16 : 0.08,
+    style: {
+      pointerEvents: "none"
+    }
+  })),
+  // Soft area under each line
+  series.map(s => h("path", {
+    key: `area-${s.key}`,
+    ref: el => {
+      areaRefs.current[s.key] = el;
+    },
+    d: "",
+    fill: `url(#${chartId}-area-${s.key})`,
+    stroke: "none",
+    style: {
+      opacity: dimmed(s.key) ? 0.25 : 1,
+      transition: "opacity 0.2s",
+      pointerEvents: "none"
+    }
+  })),
+  // Lines with the same drop shadow the donut / gauge use
+  h("g", {
+    style: {
+      filter: `url(#${chartId}-shadow)`,
+      pointerEvents: "none"
+    }
+  }, series.map(s => {
     const forced = s.key === "completed" || s.key === "cancelled" ? sharedCompCanRange : undefined;
     const segCount = buildLineSegments(pts, s.key, maxV, forced).length || 1;
     if (!linePathRefs.current[s.key] || linePathRefs.current[s.key].length !== segCount) {
@@ -11386,7 +11621,7 @@ const LineChart = ({
     }
     return Array.from({
       length: segCount
-    }, (_, si) => /*#__PURE__*/React.createElement("path", {
+    }, (_, si) => h("path", {
       key: `${s.key}-${si}`,
       ref: el => {
         if (linePathRefs.current[s.key]) linePathRefs.current[s.key][si] = el;
@@ -11394,50 +11629,64 @@ const LineChart = ({
       d: "",
       fill: "none",
       stroke: s.color,
-      strokeWidth: 2,
+      strokeWidth: 2.5,
       strokeLinejoin: "round",
       strokeLinecap: "round",
-      opacity: 0.9
+      style: {
+        opacity: dimmed(s.key) ? 0.25 : 0.95,
+        transition: "opacity 0.2s"
+      }
     }));
-  }), pts.map((p, i) => {
+  })),
+  // Glossy highlight over the plate
+  h("rect", {
+    x: 0.5,
+    y: 0.5,
+    width: W - 1,
+    height: H - 1,
+    rx: 12,
+    fill: `url(#${chartId}-gloss)`,
+    style: {
+      pointerEvents: "none"
+    }
+  }),
+  // Per-bucket: hit area, axis tick (like the pie bezel), dots, label
+  pts.map((p, i) => {
     const isHov = hovered === i;
+    const labelled = showLabel(i);
     if (!dotRefs.current[i]) dotRefs.current[i] = {};
-    return /*#__PURE__*/React.createElement("g", {
+    return h("g", {
       key: i,
       style: {
         cursor: "pointer"
       },
       onMouseEnter: () => setHovered(i),
       onMouseLeave: () => setHovered(null)
-    }, /*#__PURE__*/React.createElement("rect", {
-      x: xs[i] - 10,
-      y: padT,
-      width: 20,
-      height: chartH,
+    }, h("rect", {
+      x: xs[i] - colW / 2,
+      y: 0,
+      width: colW,
+      height: H,
       fill: "transparent"
-    }), isHov && /*#__PURE__*/React.createElement("line", {
+    }), h("line", {
       x1: xs[i],
-      y1: padT,
+      y1: baseY + 4,
       x2: xs[i],
-      y2: padT + chartH,
-      stroke: "var(--border2)",
-      strokeWidth: 1,
-      strokeDasharray: "3,3"
-    }), showLabel(i) && /*#__PURE__*/React.createElement("circle", {
-      cx: xs[i],
-      cy: padT + chartH,
-      r: 2.5,
-      fill: "var(--text4)",
-      opacity: 0.3
+      y2: baseY + (labelled ? 9 : 6.5),
+      stroke: C.text5,
+      strokeWidth: labelled ? 1.4 : 1,
+      opacity: labelled ? 0.55 : 0.3,
+      style: {
+        pointerEvents: "none"
+      }
     }), series.map(s => {
-      // For month view or custom day range: hide dots on non-key days (r=0 keeps rAF cy updates working)
-      const isKeyDay = useMonthDayLabels ? showLabel(i) || p.isToday : true;
+      const isKeyDay = useMonthDayLabels ? labelled || p.isToday : true;
       const range = lineRanges[s.key];
       const onLine = range !== null && i >= range.lo && i <= range.hi;
-      const r = !onLine ? 0 : isHov ? 4.5 : p.isToday ? 4 : isKeyDay ? 2.5 : 0;
-      const sw = !onLine ? 0 : isHov ? 1.8 : p.isToday ? 2 : isKeyDay ? 1.2 : 0;
-      const op = !onLine ? 0 : isHov ? 1 : p.isToday ? 1 : isKeyDay ? 1 : 0;
-      return /*#__PURE__*/React.createElement("circle", {
+      const r = !onLine ? 0 : isHov ? 5 : p.isToday ? 4.5 : isKeyDay ? 3 : 0;
+      const sw = !onLine ? 0 : 2;
+      const op = !onLine ? 0 : dimmed(s.key) ? 0.3 : 1;
+      return h("circle", {
         key: s.key,
         ref: el => {
           if (dotRefs.current[i]) dotRefs.current[i][s.key] = el;
@@ -11448,120 +11697,24 @@ const LineChart = ({
         fill: s.color,
         stroke: "#fff",
         strokeWidth: sw,
-        opacity: op
+        opacity: op,
+        style: {
+          transition: "r 0.15s, opacity 0.2s",
+          pointerEvents: "none"
+        }
       });
-    }), showLabel(i) && /*#__PURE__*/React.createElement("text", {
+    }), labelled && h("text", {
       x: xs[i],
-      y: padT + chartH + 14,
+      y: baseY + 20,
       textAnchor: "middle",
       fontSize: p.isToday ? 9 : 8.5,
-      fill: p.isToday ? "var(--blue)" : "var(--text4)",
-      fontWeight: p.isToday ? "700" : "400"
+      fill: p.isToday ? C.blue : isHov ? C.text2 : C.text4,
+      fontWeight: p.isToday || isHov ? "700" : "500",
+      style: {
+        pointerEvents: "none"
+      }
     }, (p.label || "").length > 7 ? (p.label || "").slice(0, 7) + "…" : p.label || ""));
-  })), hovered !== null && (() => {
-    const p = pts[hovered];
-    const tipW = 90,
-      tipH = 74;
-    const pctCenter = xs[hovered] / W * 100; // % across container
-    // clamp: left edge >= 0, right edge <= 100%
-    // left% such that [left%, left%+tipW/containerW*100] stays in [0,100]
-    // We use inline style with a CSS clamp via max/min on percentage:
-    const tipRows = [{
-      label: t("pendingL"),
-      value: p.pending,
-      color: "var(--blue)"
-    }, {
-      label: t("completedL"),
-      value: p.completed,
-      color: "var(--green)"
-    }, {
-      label: t("cancelledL"),
-      value: p.cancelled,
-      color: "#FB7185"
-    }];
-    // anchor: centered on point, shifted right if too far left, left if too far right
-    // We use paddingLeft offset on SVG (padL) so adjust pct to account for that
-    const leftPct = pctCenter;
-    return /*#__PURE__*/React.createElement("div", {
-      style: {
-        position: "absolute",
-        left: `clamp(4px, calc(${leftPct}% - ${tipW / 2}px), calc(100% - ${tipW + 4}px))`,
-        top: `${padT + 4}px`,
-        width: tipW,
-        background: "var(--card)",
-        border: "1px solid var(--border2)",
-        borderRadius: 8,
-        boxShadow: "0 2px 10px rgba(0,0,0,0.15)",
-        pointerEvents: "none",
-        padding: "6px 8px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 3,
-        zIndex: 10
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 9,
-        fontWeight: 700,
-        color: "var(--text3)",
-        marginBottom: 1
-      }
-    }, p.label), tipRows.map((s, si) => /*#__PURE__*/React.createElement("div", {
-      key: si,
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 4
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 7,
-        height: 7,
-        borderRadius: 2,
-        background: s.color,
-        flexShrink: 0
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 9,
-        color: "var(--text3)",
-        flex: 1
-      }
-    }, s.label), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10,
-        fontWeight: 700,
-        color: s.color
-      }
-    }, s.value))));
-  })()), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "center",
-      gap: 14,
-      marginTop: 6,
-      flexWrap: "wrap"
-    }
-  }, series.map(s => /*#__PURE__*/React.createElement("div", {
-    key: s.key,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 4
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 16,
-      height: 3,
-      borderRadius: 2,
-      background: s.color
-    }
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      color: "var(--text4)"
-    }
-  }, s.label)))));
+  })));
 };
 
 // TreeMap: squarified treemap sized by task count per type
@@ -15584,6 +15737,21 @@ const SettingsModal = ({
   cleanDelaysMsg
 }) => {
   const isHe = getLang() === "he";
+  // Several rows below swap their own button(s) out for a confirm/cancel
+  // pair in place (Reset Everything, Delete tasks by type, Clean Delays) --
+  // i.e. the exact element the person just tapped gets removed from the DOM
+  // as part of the same state update. On iOS Safari, removing the focused
+  // element from inside a scrolling container while it's still focused can
+  // reset that container's scroll position to the top, which is the
+  // uncomfortable jump this sheet doesn't want. Blurring first isn't
+  // reliably enough on its own -- the removal can still happen before the
+  // blur has actually been processed -- so this also pushes the state
+  // change (which does the removing) a couple of frames later, after the
+  // blur has definitely taken effect.
+  const deferAfterBlur = (e, fn) => {
+    if (e && e.currentTarget && e.currentTarget.blur) e.currentTarget.blur();
+    requestAnimationFrame(() => requestAnimationFrame(fn));
+  };
   const [jsonText, setJsonText] = useState("");
   // ── iCalendar import state ──
   const icsFileRef = useRef(null);
@@ -16685,14 +16853,14 @@ const SettingsModal = ({
     ? /*#__PURE__*/React.createElement("div", {
         style: { display: "flex", gap: 6, flexShrink: 0 }
       }, /*#__PURE__*/React.createElement("button", {
-        onClick: e => { e.currentTarget.blur(); setCleanConfirm(false); },
+        onClick: e => deferAfterBlur(e, () => setCleanConfirm(false)),
         style: {
           padding: "7px 12px", borderRadius: 20,
           border: `1px solid ${C.border}`, background: C.card2, color: C.text3,
           fontSize: 12, fontWeight: 600, cursor: "pointer"
         }
       }, isHe ? "ביטול" : "Cancel"), /*#__PURE__*/React.createElement("button", {
-        onClick: e => { e.currentTarget.blur(); runCleanDelays(); },
+        onClick: e => deferAfterBlur(e, runCleanDelays),
         style: {
           padding: "7px 14px", borderRadius: 20, border: "none",
           background: "linear-gradient(135deg,#EF4444,#DC2626)", color: "#fff",
@@ -16701,7 +16869,7 @@ const SettingsModal = ({
         }
       }, isHe ? "בטל את כולן" : "Cancel them"))
     : /*#__PURE__*/React.createElement("button", {
-        onClick: e => { e.currentTarget.blur(); setCleanConfirm(true); },
+        onClick: e => deferAfterBlur(e, () => setCleanConfirm(true)),
         disabled: lateCount === 0,
         style: {
           padding: "7px 16px", borderRadius: 20,
@@ -16774,7 +16942,7 @@ const SettingsModal = ({
           ? `למחוק ${typeCounts[delType] || 0}? לא ניתן לבטל.`
           : `Delete ${typeCounts[delType] || 0}? Can't undo.`),
         /*#__PURE__*/React.createElement("button", {
-          onClick: e => { e.currentTarget.blur(); setDelConfirm(false); },
+          onClick: e => deferAfterBlur(e, () => setDelConfirm(false)),
           style: {
             padding: "7px 12px", borderRadius: 20, flexShrink: 0,
             border: `1px solid ${C.border}`, background: C.card2, color: C.text3,
@@ -16782,7 +16950,7 @@ const SettingsModal = ({
           }
         }, isHe ? "ביטול" : "Cancel"),
         /*#__PURE__*/React.createElement("button", {
-          onClick: e => { e.currentTarget.blur(); runDeleteType(); },
+          onClick: e => deferAfterBlur(e, runDeleteType),
           style: {
             padding: "7px 14px", borderRadius: 20, border: "none", flexShrink: 0,
             background: "linear-gradient(135deg,#EF4444,#DC2626)", color: "#fff",
@@ -16791,7 +16959,7 @@ const SettingsModal = ({
           }
         }, isHe ? "מחק" : "Delete"))
     : /*#__PURE__*/React.createElement("button", {
-        onClick: e => { e.currentTarget.blur(); setDelConfirm(true); },
+        onClick: e => deferAfterBlur(e, () => setDelConfirm(true)),
         disabled: !(typeCounts[delType] > 0),
         style: {
           padding: "7px 16px", borderRadius: 20, flexShrink: 0,
@@ -16820,7 +16988,7 @@ const SettingsModal = ({
     sub: isHe ? "מחק את כל הנתונים וטען מחדש" : "Delete all data & reload fresh",
     danger: true
   }, resetStep === 0 ? /*#__PURE__*/React.createElement("button", {
-    onClick: () => setResetStep(1),
+    onClick: e => deferAfterBlur(e, () => setResetStep(1)),
     style: {
       padding: "7px 16px",
       borderRadius: 20,
@@ -16839,7 +17007,7 @@ const SettingsModal = ({
       flexShrink: 0
     }
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setResetStep(0),
+    onClick: e => deferAfterBlur(e, () => setResetStep(0)),
     style: {
       padding: "7px 12px",
       borderRadius: 20,
@@ -17168,7 +17336,37 @@ const SearchView = ({
   };
 
   // When preset changes, auto-set from/to
+  // Keep the preset dropdown and the From/To pickers describing the same range:
+  // no dates -> "All time"; dates equal to a preset's range -> that preset;
+  // anything else -> "Custom".
+  const syncPreset = (f, t2) => {
+    if (!f && !t2) return "alltime";
+    for (const pr of ["today", "week", "month", "year"]) {
+      const r = presetToDates(pr);
+      if (r.from === f && r.to === t2) return pr;
+    }
+    return "custom";
+  };
+  // Ignore half-typed years (0002, 0020...) when keeping the range valid
+  const saneDate = v => !!v && v.slice(0, 4) >= "1900";
+  const handleFromChange = e => {
+    const v = e.target.value || "";
+    // Picking a From after the current To pulls To along (no empty range)
+    const nextTo = v && toDate && saneDate(v) && v > toDate ? v : toDate;
+    setFromDate(v);
+    if (nextTo !== toDate) setToDate(nextTo);
+    setDatePreset(syncPreset(v, nextTo));
+  };
+  const handleToChange = e => {
+    const v = e.target.value || "";
+    // Picking a To before the current From pulls From along
+    const nextFrom = v && fromDate && saneDate(v) && v < fromDate ? v : fromDate;
+    setToDate(v);
+    if (nextFrom !== fromDate) setFromDate(nextFrom);
+    setDatePreset(syncPreset(nextFrom, v));
+  };
   const handlePresetChange = preset => {
+    if (preset === "custom") return; // "Custom" only describes a range already set
     const {
       from,
       to
@@ -17309,7 +17507,17 @@ const SearchView = ({
     fontFamily: "inherit",
     cursor: "pointer",
     height: 34,
-    boxSizing: "border-box"
+    boxSizing: "border-box",
+    // A <select>'s native minimum width is driven by its longest option
+    // label, and flex items default to min-width:auto -- together those
+    // beat flex-shrink and push the row wider than its card, spilling
+    // buttons past the edge on narrow screens. minWidth:0 (kept per-instance
+    // below) lets flexbox actually shrink these, and the overflow/ellipsis
+    // trio keeps a shrunk select from clipping outside its own closed box.
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap"
   };
 
   // Format date for display dd/mm/yyyy
@@ -17328,6 +17536,7 @@ const SearchView = ({
     style: {
       position: "relative",
       flex: 1,
+      minWidth: 0,
       height: 34
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -17351,7 +17560,15 @@ const SearchView = ({
     className: IS_IOS ? "date-ios" : "date-desktop",
     value: value,
     onChange: onChange,
-    onClick: IS_IOS ? (e => { try { e.target.showPicker(); } catch(err) {} }) : undefined,
+    // Our visible label sits on top of a fully transparent native input, so
+    // there's no native calendar icon left for the user to click. Desktop
+    // browsers (Chrome/Edge/Firefox/Safari) only open the picker when that
+    // icon is clicked -- not from a click anywhere else in the field -- so
+    // without this, a tap on the label opened nothing on computer even
+    // though the same trick happens to work via a direct tap on iOS.
+    // showPicker() opens it programmatically on any browser that supports
+    // it; the try/catch is a no-op fallback for the few that don't.
+    onClick: e => { try { e.target.showPicker(); } catch(err) {} },
     style: {
       position: "absolute",
       inset: 0,
@@ -17491,6 +17708,9 @@ const SearchView = ({
       display: "flex",
       flexWrap: "wrap",
       alignItems: "center",
+      justifyContent: "center",
+      width: "100%",
+      animation: "fadeIn 0.25s ease",
       gap: 6,
       margin: "0 0 12px",
       padding: "8px 0",
@@ -17779,8 +17999,7 @@ const SearchView = ({
     onChange: e => setTypeFilter(e.target.value),
     style: {
       ...filterSel,
-      flex: 1,
-      minWidth: 70
+      flex: 1
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
@@ -17792,8 +18011,7 @@ const SearchView = ({
     onChange: e => handlePresetChange(e.target.value),
     style: {
       ...filterSel,
-      flex: 1,
-      minWidth: 90
+      flex: 1
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: "nodate"
@@ -17814,8 +18032,7 @@ const SearchView = ({
     onChange: e => setSortOrder(e.target.value),
     style: {
       ...filterSel,
-      flex: 1,
-      minWidth: 80
+      flex: 1
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: "smart"
@@ -17829,20 +18046,14 @@ const SearchView = ({
       gap: 6,
       marginBottom: 6
     }
-  }, /*#__PURE__*/React.createElement(DatePicker, {
+  }, DatePicker({
     value: fromDate,
     placeholder: isHe ? "מתאריך" : "From",
-    onChange: e => {
-      setFromDate(e.target.value);
-      if (e.target.value || toDate) setDatePreset("custom");
-    }
-  }), /*#__PURE__*/React.createElement(DatePicker, {
+    onChange: handleFromChange
+  }), DatePicker({
     value: toDate,
     placeholder: isHe ? "עד תאריך" : "To",
-    onChange: e => {
-      setToDate(e.target.value);
-      if (fromDate || e.target.value) setDatePreset("custom");
-    }
+    onChange: handleToChange
   })))), filtered.length > 0 && /*#__PURE__*/React.createElement("div", {
     ref: pieCardRef,
     style: {
@@ -20920,7 +21131,14 @@ function App() {
     setModalOpen(true);
   };
   const openEdit = task => {
-    setEditTask(task);
+    // A tapped chip may be a projected future occurrence of a recurring task
+    // (see mFutureByDate/wFutureByDate in MonthView/WeekView) rather than a
+    // real stored task -- it only exists to preview where the series lands
+    // on the calendar. Always resolve back to the real, stored task (its
+    // actual next-due date) instead of editing the virtual date it was
+    // rendered under, regardless of which future cell was tapped.
+    const real = task && task._projected ? (tasks.find(t => t.id === task.id) || task) : task;
+    setEditTask(real);
     setModalOpen(true);
   };
   const handleSave = form => {
@@ -23029,7 +23247,8 @@ function App() {
     onShareReady: registerShareAction,
     selectMode: selectMode,
     selectedIds: selectedIds,
-    onToggleSelect: toggleTaskSelected
+    onToggleSelect: toggleTaskSelected,
+    prefLookahead: prefLookahead
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
     tasks: [...tasks, ...archiveTasks],
     curDate: calDate,
@@ -23040,7 +23259,8 @@ function App() {
     onShareReady: registerShareAction,
     selectMode: selectMode,
     selectedIds: selectedIds,
-    onToggleSelect: toggleTaskSelected
+    onToggleSelect: toggleTaskSelected,
+    prefLookahead: prefLookahead
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
     tasks: [...tasks, ...archiveTasks],
     onToggle: handleToggle,
