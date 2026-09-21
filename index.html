@@ -1000,6 +1000,19 @@ const _cacheArchiveToLocal = arr => {
     window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: false } }));
   }
 };
+// Combine the active list with the archive the same way everywhere, keeping
+// exactly one copy per task id. A raw [...tasks, ...archiveTasks] concat (the
+// old approach, used all over the app) silently renders a task twice for as
+// long as it happens to exist in both arrays at once -- which is exactly
+// what week/month view showed for completed tasks -- even though there was
+// only ever one real event. This is defensive: it doesn't matter *why* an id
+// ended up in both places, the merged view only ever shows it once. `tasks`
+// wins on a collision since it's the more "live" copy.
+const mergeUniqueTasks = (tasks, archiveTasks) => {
+  const seen = new Set((tasks || []).map(t => t.id));
+  const extra = (archiveTasks || []).filter(t => !seen.has(t.id));
+  return [...(tasks || []), ...extra];
+};
 const persistTasks = (tasks, setArchiveTasks) => {
   _cacheTasksToLocal(tasks);
 
@@ -21574,7 +21587,7 @@ function App() {
   // The selected tasks as one flat list, oldest first: by date (undated last),
   // then clock time (untimed first), then name.
   const buildBulkShareList = ids => {
-    const selected = [...tasks, ...archiveTasks].filter(tk => ids.has(tk.id));
+    const selected = mergeUniqueTasks(tasks, archiveTasks).filter(tk => ids.has(tk.id));
     return selected.sort((a, b) => {
       if (!!a.date !== !!b.date) return a.date ? -1 : 1;
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
@@ -22351,7 +22364,7 @@ function App() {
       gcalFailed.current = {};
       await gcalPullNow();
       if (prefGcalForeign) await gcalPullForeignNow();
-      const remainingTasks = tasks.filter(tk => !toDeleteIds.has(tk.id));
+      const remainingTasks = mergeUniqueTasks(tasks, archiveTasks).filter(tk => !toDeleteIds.has(tk.id));
       let uploaded = 0, failed = 0;
       for (const task of remainingTasks) {
         if (task.source === "google") continue; // lives in its own Google event, not a TaskIt-pushed one
@@ -22444,7 +22457,12 @@ function App() {
     }
     gcalSeenIds.current = combinedIds;
 
-    for (const task of tasks) {
+    // Include archiveTasks here too: done/cancelled tasks beyond ARCHIVE_BUFFER
+    // live there, not in `tasks`, and would otherwise never be considered for
+    // push at all -- exactly what silently dropped a chunk of a JSON import
+    // (any completed task that pushed the total past the buffer landed
+    // straight in archiveTasks) from ever reaching Google Calendar.
+    for (const task of mergeUniqueTasks(tasks, archiveTasks)) {
       if (task.source === "google") continue; // imported non-TaskIt event — edited/pushed via patchForeignEvent instead
       if (!GCal.shouldSync(task)) continue;
       const sig = GCal.taskSignature(task);
@@ -22961,7 +22979,7 @@ function App() {
     applyBulkPicker(value, kind);
   };
   const handleBulkDelete = ids => {
-    [...tasks, ...archiveTasks].forEach(tk => {
+    mergeUniqueTasks(tasks, archiveTasks).forEach(tk => {
       if (!ids.has(tk.id) || isBulkEditLocked(tk)) return;
       if (tk.source === "google" && !tk.googleShared) {
         gcalEnqueue(() => GCal.deleteForeignEvent(tk.googleCalendarId, tk.googleEventId)).catch(() => {});
@@ -23465,7 +23483,7 @@ function App() {
 
   // Completed this week (include archiveTasks so previously-dateless tasks that were
   // completed and then archived still count toward this week's total)
-  const weekDone = [...tasks, ...archiveTasks].filter(t => isDone(t) && t.date && isThisWeek(t.date)).length;
+  const weekDone = mergeUniqueTasks(tasks, archiveTasks).filter(t => isDone(t) && t.date && isThisWeek(t.date)).length;
   const overdueCount = tasks.filter(t => isOverdue(t)).length;
   const todayTaskCount = tasks.filter(t => isPending(t) && t.date && t.date <= todayStr()).length;
   const appWidth = useWindowWidth();
@@ -24880,7 +24898,7 @@ function App() {
       animation: slideDir === "left" ? "slideInLeft 0.22s cubic-bezier(0.25,1,0.5,1) both" : slideDir === "right" ? "slideInRight 0.22s cubic-bezier(0.25,1,0.5,1) both" : undefined
     }
   }, view === "home" && /*#__PURE__*/React.createElement(Dashboard, {
-    tasks: [...tasks, ...archiveTasks],
+    tasks: mergeUniqueTasks(tasks, archiveTasks),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -24900,7 +24918,7 @@ function App() {
     onSetSelected: setTasksSelected,
     onQuickPicksReady: registerBulkQuickPicks
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
-    tasks: [...tasks, ...archiveTasks],
+    tasks: mergeUniqueTasks(tasks, archiveTasks),
     curDate: calDate,
     onNav: handleMonthNav,
     onDayClick: ds => {
@@ -24919,7 +24937,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
-    tasks: [...tasks, ...archiveTasks],
+    tasks: mergeUniqueTasks(tasks, archiveTasks),
     curDate: calDate,
     onNav: handleWeekNav,
     onTaskClick: openEdit,
@@ -24933,7 +24951,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
-    tasks: [...tasks, ...archiveTasks],
+    tasks: mergeUniqueTasks(tasks, archiveTasks),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -25013,7 +25031,7 @@ function App() {
     collapseAllRef: collapseAllTypesRef,
     singleColumnLists: singleColumnLists
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
-    tasks: [...tasks, ...archiveTasks],
+    tasks: mergeUniqueTasks(tasks, archiveTasks),
     onEdit: openEdit,
     onShareReady: registerShareAction,
     selectMode: selectMode,
@@ -25068,7 +25086,7 @@ function App() {
   }), /*#__PURE__*/React.createElement(SettingsModal, {
     open: dataModalOpen,
     onClose: () => setDataModalOpen(false),
-    tasks: [...tasks, ...archiveTasks],
+    tasks: mergeUniqueTasks(tasks, archiveTasks),
     charts: filteredCharts,
     dark: dark,
     darkOverride: darkOverride,
