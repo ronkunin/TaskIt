@@ -172,9 +172,13 @@
     if(logo){
       logo.addEventListener('click',function(){
         try{
-          var tasks=localStorage.getItem('taskflow_v5_main')||'[]';
-          var archive=localStorage.getItem('taskflow_v5_archive')||'[]';
-          var parsed={tasks:JSON.parse(tasks),archive:JSON.parse(archive),_exported:new Date().toISOString()};
+          var tasks=JSON.parse(localStorage.getItem('taskflow_v5_main')||'[]');
+          var archive=JSON.parse(localStorage.getItem('taskflow_v5_archive')||'[]');
+          // Connected devices no longer keep a full local copy (Google holds it);
+          // what's local is only the outbox of not-yet-synced changes.
+          var outbox=JSON.parse(localStorage.getItem('taskflow_v6_outbox')||'null');
+          if(!tasks.length&&outbox&&Array.isArray(outbox.tasks))tasks=outbox.tasks;
+          var parsed={tasks:tasks,archive:archive,_exported:new Date().toISOString()};
           var json=JSON.stringify(parsed,null,2);
           if(navigator.clipboard&&navigator.clipboard.writeText){
             navigator.clipboard.writeText(json).then(function(){
@@ -950,10 +954,78 @@ const isSelectLocked = tk => !!(tk && (tk.googleShared || tk._projected));
 // other than Share must re-check this (and skip any task it's true for)
 // before touching a selected task.
 const isBulkEditLocked = tk => !!(tk && (tk.hebcal || tk.intl || tk.type === "calendar" || isSelectLocked(tk)));
-// ── Storage helpers (localStorage-only) ──────────────────────────────────────
+// ── Storage helpers ──────────────────────────────────────────────────────────
+// Two storage modes:
+//  • LOCAL mode (never connected to Google on this device): localStorage is the
+//    only home the tasks have, so the full tasks/archive lists are written to
+//    it exactly as before.
+//  • CLOUD mode (connected to Google Calendar on this device): Google is the
+//    single source of truth. The full lists are NEVER written to localStorage
+//    any more -- a stale local copy merging with a fresh pull was what kept
+//    producing duplicated tasks. Instead only a small "outbox" is kept: tasks
+//    whose latest change Google hasn't confirmed yet (a failed push, an edit
+//    made offline, a task that can't be synced at all) plus ids deleted here
+//    but not yet deleted on Google. Everything else is displayed straight from
+//    the latest sync.
 // _rawSave: used directly by the "Load JSON" import/restore flow (bypasses
 // the tasks/archive React state setters, since it needs to write both keys
 // before the merged data round-trips back through onLoad).
+const OUTBOX_KEY = "taskflow_v6_outbox";
+const LEGACY_TASK_KEYS = ["taskflow_v5_main", "taskflow_v5_archive", "taskflow_v4_tasks"];
+// GCal is declared further down; this is only ever called at runtime, after
+// the whole script has run. The try/catch covers the (theoretical) case of it
+// being called earlier than that.
+const isCloudMode = () => {
+  try {
+    return typeof GCal !== "undefined" && !!GCal.isConnected();
+  } catch {
+    return false;
+  }
+};
+const _emitStorageStatus = ok => window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok } }));
+const loadOutbox = () => {
+  try {
+    const o = JSON.parse(localStorage.getItem(OUTBOX_KEY) || "null");
+    return {
+      tasks: Array.isArray(o?.tasks) ? o.tasks.filter(t => t && t.id) : [],
+      deleted: Array.isArray(o?.deleted) ? o.deleted.filter(Boolean).map(String) : []
+    };
+  } catch {
+    return { tasks: [], deleted: [] };
+  }
+};
+// Returns the JSON actually written ("" when the outbox was emptied), or null on failure.
+const saveOutbox = (tasksArr, deletedArr) => {
+  try {
+    if (!tasksArr.length && !deletedArr.length) {
+      localStorage.removeItem(OUTBOX_KEY);
+      _emitStorageStatus(true);
+      return "";
+    }
+    const json = JSON.stringify({ v: 1, saved: Date.now(), tasks: tasksArr, deleted: deletedArr });
+    localStorage.setItem(OUTBOX_KEY, json);
+    _emitStorageStatus(true);
+    return json;
+  } catch {
+    _emitStorageStatus(false);
+    return null;
+  }
+};
+const hasLegacyTaskCache = () => {
+  try {
+    return LEGACY_TASK_KEYS.some(k => localStorage.getItem(k) != null);
+  } catch {
+    return false;
+  }
+};
+// The automatic clean-up: removes every full local copy of the task lists.
+// Only ever called in cloud mode, and only once the outbox already holds
+// everything Google hasn't confirmed -- so nothing unsynced can be lost.
+const purgeLegacyTaskCache = () => {
+  try {
+    LEGACY_TASK_KEYS.forEach(k => localStorage.removeItem(k));
+  } catch {}
+};
 const _rawLoad = key => {
   try {
     return JSON.parse(localStorage.getItem(key) || "[]");
@@ -962,6 +1034,9 @@ const _rawLoad = key => {
   }
 };
 const _rawSave = (key, arr) => {
+  // Cloud mode: the import lands in React state via onLoad, gets pushed to
+  // Google, and anything not yet confirmed is kept in the outbox -- no full copy.
+  if ((key === STORAGE_KEY || key === ARCHIVE_KEY) && isCloudMode()) return;
   try {
     localStorage.setItem(key, JSON.stringify(arr.map(({
       duration,
@@ -981,6 +1056,7 @@ const loadArchiveTasks = () => _rawLoad(ARCHIVE_KEY);
 
 // Write the full tasks/archive to localStorage after every change
 const _cacheTasksToLocal = arr => {
+  if (isCloudMode()) return; // cloud mode: see the outbox effect in App instead
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
     window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: true } }));
@@ -993,6 +1069,7 @@ const _cacheTasksToLocal = arr => {
   }
 };
 const _cacheArchiveToLocal = arr => {
+  if (isCloudMode()) return; // cloud mode: see the outbox effect in App instead
   try {
     localStorage.setItem(ARCHIVE_KEY, JSON.stringify(arr));
     window.dispatchEvent(new CustomEvent("taskflow-storage-status", { detail: { ok: true } }));
@@ -20537,14 +20614,21 @@ const GCal = (() => {
     // Same principle as pushTask: delete from the one place we know it lives. Fall
     // back to every calendar only if we truly have no record of where it is (e.g.
     // deleting a task the same session it was created, before any pull ran).
+    // "Not there" (404/410) counts as done. Anything else -- above all a
+    // network failure while offline -- is rethrown now, instead of being
+    // swallowed, so the caller can keep the deletion in the outbox and retry;
+    // a silently-lost delete is how a deleted task came back on the next pull.
+    const gone = e => { if (e && (e.status === 404 || e.status === 410)) return; throw e; };
     if (knownLoc) {
-      await apiFetch(`/calendars/${enc(knownLoc)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
+      await apiFetch(`/calendars/${enc(knownLoc)}/events/${eventId}`, { method: "DELETE" }).catch(gone);
       return;
     }
     const ids = await getAllCalendarIds();
+    let firstErr = null;
     for (const cid of ids) {
-      await apiFetch(`/calendars/${enc(cid)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
+      await apiFetch(`/calendars/${enc(cid)}/events/${eventId}`, { method: "DELETE" }).catch(gone).catch(e => { firstErr = firstErr || e; });
     }
+    if (firstErr) throw firstErr;
   }
 
   // ── Pull ──────────────────────────────────────────────────────────────────
@@ -20566,12 +20650,9 @@ const GCal = (() => {
       try {
         do {
           const params = new URLSearchParams({ maxResults: "250", showDeleted: "false" });
-          // The anchor date sits far outside the rolling window every other calendar
-          // uses, so the unscheduled calendar is read in full. It only ever holds
-          // dateless tasks, so there is no volume concern.
-          if (type !== UNSCHEDULED_KEY) {
-            params.set("timeMin", new Date(Date.now() - 400 * 864e5).toISOString());
-          }
+          // No time window any more: with no full local copy, Google is the only
+          // place a task lives, so anything outside a window would simply vanish
+          // from the app (it used to only survive in the local cache).
           if (pageToken) params.set("pageToken", pageToken);
           const res = await apiFetch(`/calendars/${enc(calendarId)}/events?${params}`);
           for (const ev of res?.items || []) {
@@ -20580,7 +20661,11 @@ const GCal = (() => {
             events.push({ calendarId, type, event: ev });
           }
           pageToken = res?.nextPageToken || null;
-        } while (pageToken && ++guard < 40);
+        } while (pageToken && ++guard < 200);
+        // Stopped by the page guard with pages still left: that's a partial
+        // read, and must not be mistaken for a complete one (which is allowed
+        // to conclude "missing = deleted elsewhere").
+        if (pageToken) complete = false;
       } catch (e) {
         complete = false; // never let a partial read look like "these tasks are gone"
       }
@@ -21423,21 +21508,53 @@ const BulkActionBar = ({
 };
 
 function App() {
+  // Decided once, at startup, from the same flag GCal uses. See the storage
+  // helpers at the top for what the two modes mean.
+  const startedInCloudMode = useRef(null);
+  if (startedInCloudMode.current === null) startedInCloudMode.current = isCloudMode();
+  // Cloud mode's local outbox: id -> task not yet confirmed by Google, plus ids
+  // deleted here but not yet on Google. Loaded once, synchronously.
+  const outboxRef = useRef(null);
+  if (outboxRef.current === null) {
+    const ob = startedInCloudMode.current ? loadOutbox() : { tasks: [], deleted: [] };
+    outboxRef.current = {
+      tasks: new Map(ob.tasks.map(t => [t.id, t])),
+      deleted: new Set(ob.deleted),
+      lastJson: null
+    };
+  }
+  // Upgrade path for a device that was already connected before this version:
+  // its old full local copy (the one that kept duplicating) is NOT shown. It's
+  // held here only so the first complete pull can rescue any edit in it that's
+  // newer than what Google has, and is then deleted from localStorage for good.
+  const legacyRescueRef = useRef(undefined);
+  if (legacyRescueRef.current === undefined) {
+    legacyRescueRef.current = null;
+    if (startedInCloudMode.current && hasLegacyTaskCache()) {
+      try {
+        legacyRescueRef.current = [..._applyMigrations(loadTasks()), ..._applyMigrations(loadArchiveTasks())];
+      } catch {
+        legacyRescueRef.current = [];
+      }
+    }
+  }
   const [tasks, setTasks] = useState(() => {
     try {
+      // Cloud mode: start from the outbox only -- the rest arrives with the pull.
+      if (startedInCloudMode.current) return _applyMigrations([...outboxRef.current.tasks.values()]);
       return _applyMigrations(loadTasks());
     } catch {
       return [];
     }
   });
-  // Track which task IDs came from localStorage at startup.
-  // On the first complete GCal pull, any of these not found in GCal were
-  // deleted on another device and should be removed locally.
+  // Used by the first complete pull to decide which local tasks Google not
+  // having means "deleted on another device". Deliberately left empty now:
+  // in cloud mode the only tasks present at startup are outbox tasks, i.e.
+  // local work Google hasn't seen yet, which must be kept and pushed; and a
+  // local-mode device connecting for the first time must push its tasks, not
+  // lose every one of them to this rule (which is what seeding it from the
+  // full local copy used to do).
   const initialLocalIds = useRef(new Set());
-  // Seed the initial local IDs ref once, synchronously, from the same localStorage read.
-  if (initialLocalIds.current.size === 0) {
-    try { loadTasks().forEach(t => initialLocalIds.current.add(t.id)); } catch {}
-  }
   const [archiveTasks, setArchiveTasks] = useState([]); // loaded in background after first paint
   // TODAY is a module-level Date, computed once when the script first loads,
   // that dozens of places across the app (week/month "is today"
@@ -21881,6 +21998,12 @@ function App() {
   // Google on every pull, so it is not device state — two devices that pull the same
   // calendars end up with the same map. Nothing here is written to localStorage.
   const gcalRemote = useRef({});
+  // taskId -> the signature Google has actually CONFIRMED (read back in a pull,
+  // or returned by a successful push). Unlike gcalRemote this is never set
+  // optimistically, which is what makes it safe for deciding what can leave
+  // the local outbox.
+  const gcalConfirmed = useRef({});
+  const [gcalConfirmTick, setGcalConfirmTick] = useState(0);
   // taskId -> the calendar id we last actually saw this task's event living in.
   // This is what lets pushTask/deleteTask clean up a stale copy after a type
   // change without guessing — and, just as importantly, what lets them do
@@ -21992,6 +22115,21 @@ function App() {
       const hadBefore = gcalRemote.current;
       gcalRemote.current = remote;
       gcalLoc.current = loc;
+      // What Google actually holds right now. Merged (not replaced) so a push
+      // that confirmed while this pull was in flight isn't forgotten.
+      const confirmedNow = { ...gcalConfirmed.current };
+      for (const [tid, event] of Object.entries(byId)) confirmedNow[tid] = GCal.remoteSigOf(event) || "";
+      gcalConfirmed.current = confirmedNow;
+
+      // Ids deleted on this device while Google couldn't be reached. Their
+      // events must not be pulled back in (that resurrected them), and get
+      // deleted on Google below instead.
+      const tombstones = new Set(outboxRef.current.deleted);
+      const localPresent = new Set([...tasks, ...archiveTasks].map(t => t.id));
+      for (const tid of [...tombstones]) if (localPresent.has(tid)) tombstones.delete(tid);
+      // One-time rescue of the old full local copy (see legacyRescueRef). Only
+      // on a complete pull, so Google's answer is the whole picture.
+      const legacy = complete ? legacyRescueRef.current : null;
 
       setTasks(ts => {
         // Archived tasks keep their event but must never be resurrected into the
@@ -22000,6 +22138,7 @@ function App() {
         let next = ts;
         for (const [tid, event] of Object.entries(byId)) {
           if (archivedIds.has(tid)) continue;
+          if (tombstones.has(tid)) continue;
           const existing = next.find(t => t.id === tid);
           // Never let a pulled event overwrite an existing holiday task's own
           // fields — see the NEEDS_REPAIR comment above. The task stays exactly
@@ -22013,7 +22152,11 @@ function App() {
           const patch = GCal.eventToTaskPatch(event);
           if (!existing) {
             next = next === ts ? [...ts] : next;
-            next.push({ id: tid, created: Date.now(), ...patch });
+            // Nothing local remembers when a pulled task was created any more,
+            // so use the event's own creation time -- stable across reloads and
+            // devices -- rather than "now", which reset on every load.
+            const createdAt = event.created ? new Date(event.created).getTime() : NaN;
+            next.push({ id: tid, created: Number.isNaN(createdAt) ? Date.now() : createdAt, ...patch });
           } else if (!existing.updated || patch.updated >= existing.updated) {
             next = (next === ts ? [...ts] : next).map(t => t.id === tid ? { ...t, ...patch } : t);
           }
@@ -22038,8 +22181,54 @@ function App() {
             return !(t.id in hadBefore);
           });
         }
+        if (legacy && legacy.length) {
+          // Keep an old local edit only where Google has the task and the local
+          // copy is strictly newer (an edit that never got pushed), plus tasks
+          // that can never sync at all (so Google can't have them). Anything
+          // else in the old copy -- including the local duplicates -- is dropped,
+          // exactly as the first-pull rule above always treated it.
+          const byLocalId = new Map(next.map((t, i) => [t.id, i]));
+          for (const lt of legacy) {
+            if (!lt || !lt.id || lt.source === "google" || GCal.isHolidayTask(lt) || tombstones.has(lt.id)) continue;
+            const idx = byLocalId.get(lt.id);
+            if (byId[lt.id]) {
+              if (idx == null) continue;
+              const cur = next[idx];
+              if (lt.updated && (!cur.updated || lt.updated > cur.updated)) {
+                next = next === ts ? [...ts] : next;
+                next[idx] = { ...cur, ...lt };
+              }
+            } else if (!GCal.shouldSync(lt) && idx == null) {
+              next = next === ts ? [...ts] : next;
+              byLocalId.set(lt.id, next.length);
+              next.push(lt);
+            }
+          }
+        }
         return next;
       });
+      if (legacy) legacyRescueRef.current = null;
+
+      // Carry out the deletions that were waiting for Google.
+      for (const tid of [...outboxRef.current.deleted]) {
+        if (localPresent.has(tid)) { outboxRef.current.deleted.delete(tid); continue; }
+        if (byId[tid]) {
+          const l = loc[tid];
+          gcalEnqueue(() => GCal.deleteTask(tid, l)).then(() => {
+            outboxRef.current.deleted.delete(tid);
+            delete gcalRemote.current[tid];
+            delete gcalLoc.current[tid];
+            delete gcalConfirmed.current[tid];
+            setGcalConfirmTick(n => n + 1);
+          }).catch(() => {}); // still offline / failed: stays in the outbox, retried next pull
+        } else if (complete) {
+          // Google doesn't have it (never pushed, or already gone) -- nothing left to do.
+          outboxRef.current.deleted.delete(tid);
+        }
+      }
+      // Re-evaluates the outbox against what Google just confirmed (and saves
+      // any tombstones dropped above).
+      setGcalConfirmTick(n => n + 1);
 
       setGcalStats(s => ({ ...s, lastPull: Date.now() }));
       if (complete) { gcalHasPulledOnce.current = true; setGcalReady(true); setGcalError(""); }
@@ -22214,6 +22403,7 @@ function App() {
     gcalRemote.current = {};
     gcalLoc.current = {};
     gcalFailed.current = {};
+    gcalConfirmed.current = {};
     gcalHasPulledOnce.current = false;
     setGcalStatus("");
     setGcalScanMsg("");
@@ -22545,7 +22735,13 @@ function App() {
         delete gcalRemote.current[id];
         delete gcalLoc.current[id];
         delete gcalFailed.current[id];
-        gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {});
+        delete gcalConfirmed.current[id];
+        gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {
+          // Couldn't reach Google (offline, expired token...). Remember the
+          // deletion in the outbox so the next pull doesn't bring it back.
+          outboxRef.current.deleted.add(String(id));
+          setGcalConfirmTick(n => n + 1);
+        });
       }
     }
     gcalSeenIds.current = combinedIds;
@@ -22564,7 +22760,14 @@ function App() {
       gcalRemote.current[task.id] = sig; // optimistic, corrected by the next pull
       setGcalPushCount(c => c + 1);
       gcalEnqueue(() => GCal.pushTask(task, knownLoc))
-        .then(r => { if (r && r.sig) { delete gcalFailed.current[task.id]; if (r.calendarId) gcalLoc.current[task.id] = r.calendarId; } })
+        .then(r => {
+          if (r && r.sig) {
+            delete gcalFailed.current[task.id];
+            if (r.calendarId) gcalLoc.current[task.id] = r.calendarId;
+            gcalConfirmed.current[task.id] = r.sig;
+            setGcalConfirmTick(n => n + 1);
+          }
+        })
         .catch(e => {
           delete gcalRemote.current[task.id];
           gcalFailed.current[task.id] = e.message || String(e);
@@ -22676,6 +22879,8 @@ function App() {
   // Load archive in background — never blocks first paint, independent of the
   // Google Calendar restore check below.
   useEffect(() => {
+    // Cloud mode keeps no local archive: it's rebuilt from the pull.
+    if (startedInCloudMode.current) return;
     const t = setTimeout(() => {
       try {
         setArchiveTasks(_applyMigrations(loadArchiveTasks()));
@@ -22715,6 +22920,83 @@ function App() {
     const pruned = persistTasks(tasks, setArchiveTasks);
     if (pruned.length !== tasks.length) setTasks(pruned);
   }, [tasks]);
+
+  // ── Cloud-mode outbox + automatic clean-up of the old local copy ─────────
+  // Runs after every change to the task lists and after every pull/push.
+  //  • Before the first complete pull of a session, every change is local
+  //    work Google hasn't seen, so each changed task is added to the outbox
+  //    and each removed one is remembered as a pending deletion.
+  //  • Once a complete pull has landed, the outbox is simply "every task
+  //    whose current version Google hasn't confirmed" -- recomputed from
+  //    scratch each time, so it can never drift or accumulate duplicates.
+  //    Then the old full local copy, if any, is deleted.
+  //  • Connecting (local -> cloud) seeds the outbox with everything, so a tab
+  //    closed before the first push finishes loses nothing. Disconnecting
+  //    (cloud -> local) writes the full lists back to localStorage, since from
+  //    then on this device is the only home they have.
+  const outboxWasCloud = useRef(startedInCloudMode.current);
+  const outboxPrevAll = useRef(null);
+  useEffect(() => {
+    const ob = outboxRef.current;
+    const all = mergeUniqueTasks(tasks, archiveTasks);
+    const cur = new Map(all.map(t => [t.id, t]));
+    const prev = outboxPrevAll.current;
+    outboxPrevAll.current = cur;
+    const cloud = isCloudMode();
+    const isRegenerableHoliday = t => GCal.isHolidayTask(t) && !t.done && !t.cancelled;
+    const eligible = t => t && t.id && t.source !== "google" && !t._projected && !t._continuation && !isRegenerableHoliday(t);
+
+    if (!cloud) {
+      if (outboxWasCloud.current) {
+        outboxWasCloud.current = false;
+        _cacheTasksToLocal(tasks);
+        _cacheArchiveToLocal(archiveTasks);
+        ob.tasks.clear();
+        ob.deleted.clear();
+        ob.lastJson = saveOutbox([], []);
+      }
+      return;
+    }
+
+    if (!outboxWasCloud.current) {
+      // Just connected on this device: everything here is unpushed local work.
+      outboxWasCloud.current = true;
+      for (const t of all) if (eligible(t)) ob.tasks.set(t.id, t);
+    } else if (!gcalReady) {
+      if (prev) {
+        for (const [id, t] of cur) if (prev.get(id) !== t && eligible(t)) ob.tasks.set(id, t);
+        for (const [id, t] of prev) {
+          if (cur.has(id)) continue;
+          ob.tasks.delete(id);
+          if (t.source !== "google") ob.deleted.add(String(id));
+        }
+      }
+    } else {
+      const isConfirmed = t => {
+        if (!GCal.shouldSync(t)) return false; // can never reach Google: local is its only home
+        const c = gcalConfirmed.current[t.id];
+        if (!c) return false;
+        const sig = GCal.taskSignature(t);
+        return c === sig || c === sig.slice(0, 1000); // the stored sig is capped at 1000 chars
+      };
+      ob.tasks = new Map(all.filter(t => eligible(t) && !isConfirmed(t)).map(t => [t.id, t]));
+    }
+    for (const id of [...ob.deleted]) if (cur.has(id)) ob.deleted.delete(id);
+
+    const tasksArr = [...ob.tasks.values()];
+    const deletedArr = [...ob.deleted];
+    const json = tasksArr.length || deletedArr.length ? JSON.stringify({ tasksArr, deletedArr }) : "";
+    let saved = true;
+    if (json !== ob.lastJson) {
+      const res = saveOutbox(tasksArr, deletedArr);
+      saved = res !== null;
+      if (saved) ob.lastJson = json;
+    }
+    // The automatic clean-up. Only once Google has answered in full, the old
+    // copy's rescue (if any) has run, and the outbox holding everything
+    // unconfirmed is safely on disk.
+    if (gcalReady && saved && legacyRescueRef.current === null && hasLegacyTaskCache()) purgeLegacyTaskCache();
+  }, [tasks, archiveTasks, gcalReady, gcalConnected, gcalConfirmTick]);
   // Auto-detect holidays from loaded tasks on a new device (same account, no prefs yet)
   useEffect(() => {
     if (getPref(PREF_IL) === null && tasks.some(tk => tk.hebcal && !tk.intl)) {
