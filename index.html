@@ -237,7 +237,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "10.4";
+const APP_VERSION = "10.5";
 
 const {
   useState,
@@ -15873,6 +15873,55 @@ const icsStableId = seed => {
   return "ics_" + h.toString(36) + "_" + (s.length.toString(36));
 };
 
+// Maps a simple RRULE onto the app's native "repeated" task model (recur +
+// recurUntil), so a whole series -- a weekly lecture, a daily habit -- becomes
+// ONE repeating task the person ticks off occurrence by occurrence, exactly
+// like a repeating task they'd created by hand, rather than a separate task
+// per date. Only patterns plain enough for that model to express qualify:
+// DAILY, WEEKLY on a single weekday (whatever BYDAY/interval that resolves
+// to), MONTHLY/YEARLY on the same day every 1 interval. Anything richer
+// (several weekdays in one RRULE, BYMONTHDAY, a monthly/yearly interval other
+// than 1, ...) returns null so the caller falls back to one task per date.
+const icsRRuleToNativeRecur = (startDate, rrule) => {
+  if (!rrule) return null;
+  const parts = {};
+  String(rrule).split(";").forEach(p => {
+    const eq = p.indexOf("=");
+    if (eq > 0) parts[p.slice(0, eq).trim().toUpperCase()] = p.slice(eq + 1).trim().toUpperCase();
+  });
+  const freq = parts.FREQ;
+  if (!freq || !["DAILY", "WEEKLY", "MONTHLY", "YEARLY"].includes(freq)) return null;
+  if (parts.BYMONTHDAY || parts.BYSETPOS || parts.BYMONTH || parts.BYYEARDAY || parts.BYWEEKNO) return null;
+  const iv = Math.max(1, parseInt(parts.INTERVAL || "1", 10) || 1);
+  const count = parts.COUNT ? Math.max(1, parseInt(parts.COUNT, 10) || 1) : null;
+  const untilParsed = parts.UNTIL ? icsParseDT(parts.UNTIL) : null;
+  let untilDate = untilParsed ? new Date(untilParsed.ms) : null;
+
+  let recur = null;
+  if (freq === "DAILY") {
+    recur = iv;
+    if (!untilDate && count) untilDate = new Date(startDate.getTime() + (count - 1) * iv * 864e5);
+  } else if (freq === "WEEKLY") {
+    if (parts.BYDAY) {
+      const days = [...new Set(parts.BYDAY.split(",").map(x => ICS_WEEKDAYS[x.trim().slice(-2)]).filter(x => x != null))];
+      // More than one weekday, or a weekday that doesn't match the event's
+      // own start day, can't be expressed as a single "every N days" repeat.
+      if (days.length !== 1 || days[0] !== startDate.getDay()) return null;
+    }
+    recur = iv * 7;
+    if (!untilDate && count) untilDate = new Date(startDate.getTime() + (count - 1) * iv * 7 * 864e5);
+  } else if (freq === "MONTHLY") {
+    if (iv !== 1) return null; // native "month" repeat has no interval of its own
+    recur = "month";
+    if (!untilDate && count) untilDate = addMonthsClamped(startDate, count - 1);
+  } else {
+    if (iv !== 1) return null; // native "year" repeat has no interval of its own
+    recur = "year";
+    if (!untilDate && count) untilDate = addYearsClamped(startDate, count - 1);
+  }
+  return { recur, recurUntil: untilDate ? localDs(untilDate) : null };
+};
+
 // Turn raw .ics text into tasks of the given type. `existingIds` is mutated so a
 // re-import of the same file (or a second file sharing UIDs) adds nothing twice.
 const icsToTasks = (text, type, existingIds) => {
@@ -15880,6 +15929,7 @@ const icsToTasks = (text, type, existingIds) => {
   const out = [];
   let skipped = 0;
   let expanded = 0;
+  let repeated = 0;
   for (const ev of events) {
     const st = icsParseDT(ev.start);
     const mark = splitStatusMark(ev.summary);
@@ -15896,7 +15946,38 @@ const icsToTasks = (text, type, existingIds) => {
     }
     const note = ev.description || (ev.location ? (getLang() === "he" ? "מיקום: " : "Location: ") + ev.location : null) || null;
     const excluded = new Set(ev.exdates || []);
-    // One independent, non-repeating task per occurrence.
+    const ds0 = localDs(new Date(st.ms));
+    const time0 = st.allDay ? "" : `${String(new Date(st.ms).getHours()).padStart(2, "0")}:${String(new Date(st.ms).getMinutes()).padStart(2, "0")}`;
+    // A plain, still-open series (not already marked done/cancelled, and with
+    // no per-occurrence exceptions the native model can't carry) becomes one
+    // repeating task instead of a separate task for every date.
+    const native = (!isCancelled && !isDoneEv && !excluded.size)
+      ? icsRRuleToNativeRecur(new Date(st.ms), ev.rrule)
+      : null;
+    if (native) {
+      const id = icsStableId(ev.uid ? ev.uid + "|series" : name + "|series|" + ds0 + "|" + time0);
+      if (!existingIds.has(id)) {
+        existingIds.add(id);
+        out.push({
+          id,
+          name,
+          type,
+          date: ds0,
+          time: time0,
+          length,
+          note,
+          recur: native.recur,
+          recurUntil: native.recurUntil,
+          done: false,
+          cancelled: false,
+          created: Date.now(),
+          ics: true
+        });
+        repeated++;
+      }
+      continue;
+    }
+    // Everything else: one independent, non-repeating task per occurrence.
     const occurrences = icsExpandRRule(new Date(st.ms), ev.rrule);
     if (occurrences.length > 1) expanded++;
     for (const occ of occurrences) {
@@ -15922,7 +16003,7 @@ const icsToTasks = (text, type, existingIds) => {
       });
     }
   }
-  return { tasks: out, skipped, total: events.length, expanded };
+  return { tasks: out, skipped, total: events.length, expanded, repeated };
 };
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -17194,13 +17275,14 @@ const SettingsModal = ({
     setIcsBusy(true);
     try {
       const existing = new Set((tasks || []).map(tk => tk.id));
-      let added = [], skipped = 0, total = 0, expanded = 0;
+      let added = [], skipped = 0, total = 0, expanded = 0, repeated = 0;
       for (const f of icsFiles) {
         const r = icsToTasks(f.text, type, existing);
         added = added.concat(r.tasks);
         skipped += r.skipped;
         total += r.total;
         expanded += r.expanded;
+        repeated += r.repeated || 0;
       }
       if (!added.length) {
         setIcsMsg(total === 0
@@ -17209,8 +17291,8 @@ const SettingsModal = ({
       } else {
         onImportIcs && onImportIcs(added);
         setIcsMsg(isHe
-          ? `נוצרו ${added.length} משימות כ־“${type}” מתוך ${total} אירועים${expanded > 0 ? ` · ${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : ""}${skipped > 0 ? ` · ${skipped} דולגו` : ""}`
-          : `Created ${added.length} tasks as "${type}" from ${total} events${expanded > 0 ? ` · ${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates` : ""}${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
+          ? `נוצרו ${added.length} משימות כ־“${type}” מתוך ${total} אירועים${repeated > 0 ? ` · ${repeated} כחוזרות` : ""}${expanded > 0 ? ` · ${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : ""}${skipped > 0 ? ` · ${skipped} דולגו` : ""}`
+          : `Created ${added.length} tasks as "${type}" from ${total} events${repeated > 0 ? ` · ${repeated} imported as repeating` : ""}${expanded > 0 ? ` · ${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates` : ""}${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
         setIcsFiles([]);
       }
     } catch (err) {
