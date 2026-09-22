@@ -237,7 +237,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "10.3";
+const APP_VERSION = "10.4";
 
 const {
   useState,
@@ -15812,7 +15812,11 @@ const icsExpandRRule = (startDate, rrule) => {
   const iv = Math.max(1, parseInt(parts.INTERVAL || "1", 10) || 1);
   const count = parts.COUNT ? Math.max(1, parseInt(parts.COUNT, 10) || 1) : null;
   const untilParsed = parts.UNTIL ? icsParseDT(parts.UNTIL) : null;
-  const untilMs = untilParsed ? untilParsed.ms : null;
+  // A date-only UNTIL (no time component) means "stop after this whole day",
+  // not "stop at midnight at the start of this day" -- otherwise the very
+  // last valid occurrence (which carries the event's own start time) reads
+  // as past the cutoff and gets dropped.
+  const untilMs = untilParsed ? (untilParsed.allDay ? untilParsed.ms + 86399999 : untilParsed.ms) : null;
 
   const horizon = new Date();
   horizon.setHours(23, 59, 59, 999);
@@ -15849,13 +15853,13 @@ const icsExpandRRule = (startDate, rrule) => {
       weekAnchor.setDate(weekAnchor.getDate() + 7 * iv);
     }
   } else {
-    const d = new Date(startDate);
+    let d = new Date(startDate);
     let guard = 0;
     while (guard++ < ICS_MAX_OCCURRENCES) {
       if (!push(d)) break;
-      if (freq === "DAILY") d.setDate(d.getDate() + iv);
-      else if (freq === "MONTHLY") d.setMonth(d.getMonth() + iv);
-      else d.setFullYear(d.getFullYear() + iv);
+      if (freq === "DAILY") { d = new Date(d); d.setDate(d.getDate() + iv); }
+      else if (freq === "MONTHLY") d = addMonthsClamped(d, iv);
+      else d = addYearsClamped(d, iv);
       d.setHours(H, Mi, 0, 0);
     }
   }
@@ -25494,6 +25498,13 @@ function App() {
     onDeleteType: type => {
       if (!type) return;
       const match = tk => (tk.type || "general") === type;
+      mergeUniqueTasks(tasks, archiveTasks).forEach(tk => {
+        if (!match(tk)) return;
+        if (tk.source === "google" && !tk.googleShared) {
+          gcalEnqueue(() => GCal.deleteForeignEvent(tk.googleCalendarId, tk.googleEventId)).catch(() => {});
+          delete gcalForeignPushed.current[tk.id];
+        }
+      });
       setTasks(prev => prev.filter(tk => !match(tk)));
       setArchiveTasks(prev => (prev || []).filter(tk => !match(tk)));
     },
