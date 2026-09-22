@@ -1013,6 +1013,54 @@ const mergeUniqueTasks = (tasks, archiveTasks) => {
   const extra = (archiveTasks || []).filter(t => !seen.has(t.id));
   return [...(tasks || []), ...extra];
 };
+// A second, content-based safety net on top of mergeUniqueTasks. That one only
+// catches a task whose *same id* shows up in both `tasks` and `archiveTasks`;
+// it can't help when two genuinely separate local records (different ids)
+// both describe the same real task -- which still reads as a duplicate in
+// week/month view. This collapses those too, by name+date+time+type+status,
+// keeping whichever copy appeared first (tasks before archiveTasks, and
+// otherwise array order, which mergeUniqueTasks already preserves).
+// Anything synthetic/intentionally-repeating is left alone: recurring
+// look-ahead projections (_projected), overnight spill blocks
+// (_continuation), and holiday/calendar-type entries, which can legitimately
+// share a name+date with something else.
+// Holidays get their own name normalizer (same idea as the one used in the
+// Scan & Sync tool): "Erev X" and "X" should match, and Hebrew/English
+// punctuation differences shouldn't prevent a match.
+const normHolidayNameForDisplay = s => String(s || "").trim().toLowerCase().replace(/^(erev|eve of)\s+/i, "").replace(/[^\p{L}\p{N}]+/gu, "");
+const dedupeForDisplay = list => {
+  const seenKeys = new Set();
+  const out = [];
+  // Holidays (hebcal/intl-generated) are handled separately below: two
+  // Hebcal syncs can occasionally disagree by a day on when a holiday
+  // starts, which produces two real local task records for the same
+  // holiday under two different dates -- close together, but not identical,
+  // so the exact name+date key above would never catch them. Track kept
+  // holidays by normalized name + rough date, and skip a later one that
+  // lands within a couple of days of an already-kept match.
+  const keptHolidays = [];
+  const HOLIDAY_WINDOW_MS = 2 * 86400000;
+  for (const tk of list) {
+    if (tk._projected || tk._continuation || tk.type === "calendar") {
+      out.push(tk);
+      continue;
+    }
+    if (tk.hebcal || tk.intl) {
+      const name = normHolidayNameForDisplay(tk.name) || normHolidayNameForDisplay(tk.nameEn);
+      const time = tk.date ? new Date(tk.date + "T00:00:00").getTime() : NaN;
+      const isDup = name && !Number.isNaN(time) && keptHolidays.some(h => h.name === name && h.done === !!tk.done && h.cancelled === !!tk.cancelled && Math.abs(h.time - time) <= HOLIDAY_WINDOW_MS);
+      if (isDup) continue;
+      keptHolidays.push({ name, time, done: !!tk.done, cancelled: !!tk.cancelled });
+      out.push(tk);
+      continue;
+    }
+    const key = (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "") + "|" + (tk.time || "") + "|" + (tk.type || "") + "|" + (tk.done ? 1 : 0) + (tk.cancelled ? 1 : 0);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    out.push(tk);
+  }
+  return out;
+};
 const persistTasks = (tasks, setArchiveTasks) => {
   _cacheTasksToLocal(tasks);
 
@@ -22244,6 +22292,52 @@ function App() {
         })[0];
         items.filter(it => it !== anchor && sameShape(it, anchor)).forEach(item => toDeleteIds.add(item.tk.id));
       });
+      // Pass 1b: native holiday duplicates (hebcal/intl-generated) sharing
+      // the same holiday name but landing on dates a day or two apart --
+      // e.g. two separate Hebcal syncs disagreeing on which local date a
+      // holiday starts on. Pass 1 above requires an EXACT date match, which
+      // structurally can never catch this: it's specifically what's been
+      // showing up as "the same holiday in a different week." These are
+      // app-generated and safely regenerable, so it's fine to collapse them
+      // by name alone within a small date window -- unlike Pass 1, no
+      // Google link is required first, since there's nothing on Google to
+      // corroborate against for a purely-local holiday task.
+      //
+      // Whatever gets dropped here is ALWAYS local-only (added to
+      // localOnlyIds, declared early specifically for this): a wrong guess
+      // about which of two local records is the "real" one must never be
+      // allowed to delete an actual synced Google Calendar event. Worst
+      // case if this picks wrong is a holiday task losing its local link
+      // and getting re-pushed as new -- never data loss on Google's side.
+      const localOnlyIds = new Set();
+      const nativeHolidayItems = eligible.filter(item => item.tk.source !== "google" && (item.tk.hebcal || item.tk.intl) && !toDeleteIds.has(item.tk.id));
+      const HOLIDAY_DATE_WINDOW_MS = 2 * 86400000;
+      nativeHolidayItems.forEach(item => {
+        if (toDeleteIds.has(item.tk.id)) return;
+        const name = normHolidayName(item.tk.name) || normHolidayName(item.tk.nameEn);
+        if (!name) return;
+        const itemTime = new Date(item.tk.date + "T00:00:00").getTime();
+        if (Number.isNaN(itemTime)) return;
+        nativeHolidayItems.forEach(other => {
+          if (other === item || toDeleteIds.has(other.tk.id) || toDeleteIds.has(item.tk.id)) return;
+          const otherName = normHolidayName(other.tk.name) || normHolidayName(other.tk.nameEn);
+          if (otherName !== name) return;
+          if (!!item.tk.done !== !!other.tk.done || !!item.tk.cancelled !== !!other.tk.cancelled) return;
+          const otherTime = new Date(other.tk.date + "T00:00:00").getTime();
+          if (Number.isNaN(otherTime) || Math.abs(otherTime - itemTime) > HOLIDAY_DATE_WINDOW_MS) return;
+          // Prefer keeping whichever copy is actually linked to a real
+          // Google event (same priority Pass 1 uses), so a merge doesn't
+          // needlessly orphan a working sync; fall back to the earlier-
+          // created copy when neither (or both) are linked.
+          const itemLinked = !!gcalLoc.current[item.tk.id], otherLinked = !!gcalLoc.current[other.tk.id];
+          let keep;
+          if (itemLinked !== otherLinked) keep = itemLinked ? item : other;
+          else keep = (item.tk.created || 0) <= (other.tk.created || 0) ? item : other;
+          const drop = keep === item ? other : item;
+          toDeleteIds.add(drop.tk.id);
+          localOnlyIds.add(drop.tk.id);
+        });
+      });
       // Pass 2: a foreign-imported task (from a subscribed Google holiday
       // calendar, say) that names the same holiday, on the same date, as a
       // native one this app already generates -- the exact scenario the
@@ -22265,7 +22359,6 @@ function App() {
       // genuine independent Google Calendar events, not ones TaskIt created,
       // so only the extra LOCAL copy is removed -- neither online event is
       // ever touched by this pass.
-      const localOnlyIds = new Set();
       const normEventKey = tk => (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "") + "|" + (tk.time || "");
       const foreignGroups = {};
       eligible.filter(item => item.tk.source === "google" && !isHolidayish(item.tk) && !toDeleteIds.has(item.tk.id)).forEach(item => {
@@ -24898,7 +24991,7 @@ function App() {
       animation: slideDir === "left" ? "slideInLeft 0.22s cubic-bezier(0.25,1,0.5,1) both" : slideDir === "right" ? "slideInRight 0.22s cubic-bezier(0.25,1,0.5,1) both" : undefined
     }
   }, view === "home" && /*#__PURE__*/React.createElement(Dashboard, {
-    tasks: mergeUniqueTasks(tasks, archiveTasks),
+    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -24918,7 +25011,7 @@ function App() {
     onSetSelected: setTasksSelected,
     onQuickPicksReady: registerBulkQuickPicks
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
-    tasks: mergeUniqueTasks(tasks, archiveTasks),
+    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
     curDate: calDate,
     onNav: handleMonthNav,
     onDayClick: ds => {
@@ -24937,7 +25030,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
-    tasks: mergeUniqueTasks(tasks, archiveTasks),
+    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
     curDate: calDate,
     onNav: handleWeekNav,
     onTaskClick: openEdit,
@@ -24951,7 +25044,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
-    tasks: mergeUniqueTasks(tasks, archiveTasks),
+    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -25031,7 +25124,7 @@ function App() {
     collapseAllRef: collapseAllTypesRef,
     singleColumnLists: singleColumnLists
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
-    tasks: mergeUniqueTasks(tasks, archiveTasks),
+    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
     onEdit: openEdit,
     onShareReady: registerShareAction,
     selectMode: selectMode,
