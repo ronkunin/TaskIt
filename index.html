@@ -988,6 +988,14 @@ const isBulkEditLocked = tk => !!(tk && (tk.hebcal || tk.intl || tk.type === "ca
 // the tasks/archive React state setters, since it needs to write both keys
 // before the merged data round-trips back through onLoad).
 const OUTBOX_KEY = "taskflow_v6_outbox";
+// The last full task/archive snapshot this device actually had CONFIRMED by a
+// complete Google pull. Shown, read-only, the instant the app opens in cloud
+// mode so the list isn't empty while the real pull is still running -- see
+// the "boot preview" logic in App(). Deliberately its own key: it must never
+// mix with OUTBOX_KEY (edits Google hasn't confirmed yet) or with the plain
+// local-mode STORAGE_KEY/ARCHIVE_KEY, so a not-yet-synced change can never be
+// mistaken for -- or overwritten by -- a stale confirmed snapshot.
+const SYNC_CACHE_KEY = "taskflow_v6_synccache";
 const LEGACY_TASK_KEYS = ["taskflow_v5_main", "taskflow_v5_archive", "taskflow_v4_tasks"];
 // GCal is declared further down; this is only ever called at runtime, after
 // the whole script has run. The try/catch covers the (theoretical) case of it
@@ -1027,6 +1035,33 @@ const saveOutbox = (tasksArr, deletedArr) => {
     _emitStorageStatus(false);
     return null;
   }
+};
+// Read the confirmed-sync snapshot used for the read-only boot preview.
+const loadSyncCache = () => {
+  try {
+    const c = JSON.parse(localStorage.getItem(SYNC_CACHE_KEY) || "null");
+    return {
+      tasks: Array.isArray(c?.tasks) ? c.tasks.filter(t => t && t.id) : [],
+      archive: Array.isArray(c?.archive) ? c.archive.filter(t => t && t.id) : []
+    };
+  } catch {
+    return { tasks: [], archive: [] };
+  }
+};
+// Overwrites the confirmed-sync snapshot. Called only once a pull has fully
+// landed (gcalReady), so it's always the freshest confirmed picture -- never
+// a partial or optimistic one -- and only ever replaces the previous
+// snapshot wholesale, never merges with it.
+const saveSyncCache = (tasksArr, archiveArr) => {
+  try {
+    localStorage.setItem(SYNC_CACHE_KEY, JSON.stringify({ v: 1, saved: Date.now(), tasks: tasksArr, archive: archiveArr }));
+    return true;
+  } catch {
+    return false;
+  }
+};
+const clearSyncCache = () => {
+  try { localStorage.removeItem(SYNC_CACHE_KEY); } catch {}
 };
 const hasLegacyTaskCache = () => {
   try {
@@ -18718,11 +18753,6 @@ const loadSearchHistory = () => {
     return [];
   }
 };
-const saveSearchHistory = h => {
-  try {
-    localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(h));
-  } catch {}
-};
 
 // Given a preset, return {from,to} date strings (YYYY-MM-DD), or "" for open-ended
 const presetToDates = preset => {
@@ -21649,24 +21679,60 @@ function App() {
       }
     }
   }
+  // The read-only boot preview: last confirmed-synced snapshot (see
+  // SYNC_CACHE_KEY), loaded once, synchronously, same as the outbox above.
+  const syncCacheRef = useRef(null);
+  if (syncCacheRef.current === null) {
+    syncCacheRef.current = startedInCloudMode.current ? loadSyncCache() : { tasks: [], archive: [] };
+  }
   const [tasks, setTasks] = useState(() => {
     try {
-      // Cloud mode: start from the outbox only -- the rest arrives with the pull.
-      if (startedInCloudMode.current) return _applyMigrations([...outboxRef.current.tasks.values()]);
+      // Cloud mode: start from the last confirmed snapshot, with any
+      // not-yet-confirmed outbox edits (newer local work) layered on top so
+      // nothing pending gets briefly hidden behind the older cached copy.
+      if (startedInCloudMode.current) {
+        const byId = new Map(syncCacheRef.current.tasks.map(t => [t.id, t]));
+        for (const t of outboxRef.current.tasks.values()) byId.set(t.id, t);
+        for (const delId of outboxRef.current.deleted) byId.delete(delId);
+        return _applyMigrations([...byId.values()]);
+      }
       return _applyMigrations(loadTasks());
     } catch {
       return [];
     }
   });
   // Used by the first complete pull to decide which local tasks Google not
-  // having means "deleted on another device". Deliberately left empty now:
-  // in cloud mode the only tasks present at startup are outbox tasks, i.e.
-  // local work Google hasn't seen yet, which must be kept and pushed; and a
-  // local-mode device connecting for the first time must push its tasks, not
-  // lose every one of them to this rule (which is what seeding it from the
-  // full local copy used to do).
-  const initialLocalIds = useRef(new Set());
-  const [archiveTasks, setArchiveTasks] = useState([]); // loaded in background after first paint
+  // having means "deleted on another device" -- vs. brand-new local work
+  // that Google simply hasn't seen yet, which must never be deleted just for
+  // being briefly absent from the first pull's result. Seeded with the ids
+  // that came from the sync-cache boot preview: those are tasks this device
+  // already had CONFIRMED once, so if the first pull doesn't have one of
+  // them any more, it really was deleted elsewhere. Outbox-only ids are
+  // deliberately left out -- unpushed new work that Google doesn't know
+  // about yet must always be kept and pushed, not mistaken for a deletion.
+  const initialLocalIds = useRef(new Set([
+    ...syncCacheRef.current.tasks.map(t => t.id),
+    ...syncCacheRef.current.archive.map(t => t.id)
+  ]));
+  const [archiveTasks, setArchiveTasks] = useState(() => {
+    // Cloud mode: seed from the same confirmed snapshot the boot preview
+    // uses for `tasks`; local mode still loads it in the background below.
+    if (startedInCloudMode.current) {
+      try { return _applyMigrations(syncCacheRef.current.archive); } catch { return []; }
+    }
+    return [];
+  });
+  // True while what's on screen is still that read-only boot preview rather
+  // than anything a real pull has confirmed. Starts true only when there was
+  // actually a snapshot to show; turns off for good the moment the first
+  // full pull of this session lands (gcalReady) -- see the effect below.
+  // Every task-mutating handler in this file checks it first and refuses to
+  // run while it's true, so nothing can change out from under the
+  // about-to-arrive real data (no edit, drag, complete/cancel, rename,
+  // retype, or bulk action of any kind).
+  const [bootLocked, setBootLocked] = useState(() =>
+    startedInCloudMode.current && (syncCacheRef.current.tasks.length > 0 || syncCacheRef.current.archive.length > 0)
+  );
   // TODAY is a module-level Date, computed once when the script first loads,
   // that dozens of places across the app (week/month "is today"
   // highlighting, chart date ranges, search's Today/This week/month/year
@@ -21728,6 +21794,7 @@ function App() {
     setBulkQuickPicks(data);
   }, []);
   const toggleSelectMode = () => {
+    if (bootLocked) return; // read-only boot preview: no bulk-select yet
     if (selectMode) {
       exitSelectMode();
     } else {
@@ -23005,7 +23072,9 @@ function App() {
   // Load archive in background — never blocks first paint, independent of the
   // Google Calendar restore check below.
   useEffect(() => {
-    // Cloud mode keeps no local archive: it's rebuilt from the pull.
+    // Cloud mode doesn't use the plain local archive keys at all: its
+    // archive starts from the sync-cache snapshot (see syncCacheRef above)
+    // and is then rebuilt for real as the live pull lands.
     if (startedInCloudMode.current) return;
     const t = setTimeout(() => {
       try {
@@ -23036,11 +23105,13 @@ function App() {
       if (el) el.textContent = getLang() === "he" ? "מתחבר…" : "Reconnecting…";
       return;
     }
-    if (gcalConnected && !gcalReady && !syncWaitTimedOut) {
-      // Connected, and the first pull from Google hasn't landed yet -- hold a
-      // little longer so the app doesn't flash into view with a stale/empty
-      // list right before those tasks arrive. Click the splash any time to
-      // skip this and go straight in.
+    if (gcalConnected && !gcalReady && !syncWaitTimedOut && !bootLocked) {
+      // Connected, the first pull from Google hasn't landed yet, and there's
+      // no cached snapshot to show in the meantime -- hold a little longer so
+      // the app doesn't flash into view with a stale/empty list right before
+      // those tasks arrive. Click the splash any time to skip this and go
+      // straight in. When bootLocked IS true there's already a (read-only)
+      // snapshot on screen, so there's nothing to gain by holding here too.
       const el = document.getElementById('html-splash-sub');
       if (el) el.textContent = getLang() === "he" ? "מסנכרן…" : "Syncing…";
       return;
@@ -23052,7 +23123,14 @@ function App() {
       splash.style.opacity = '0';
       setTimeout(() => splash.remove(), 250);
     }
-  }, [gcalGate, gcalConnected, gcalReady, syncWaitTimedOut, splashSkipped]);
+  }, [gcalGate, gcalConnected, gcalReady, syncWaitTimedOut, splashSkipped, bootLocked]);
+  // The boot preview ends for good the moment the first full pull of this
+  // session lands: `tasks`/`archiveTasks` already hold the real, confirmed
+  // data by then (gcalPullNow's setTasks runs before setGcalReady(true)), so
+  // there is nothing left to protect and every handler below unlocks.
+  useEffect(() => {
+    if (gcalReady && bootLocked) setBootLocked(false);
+  }, [gcalReady, bootLocked]);
   useEffect(() => {
     if (!loading) setTimeout(() => updatePillToTab(view), 80);
   }, [loading]);
@@ -23083,6 +23161,9 @@ function App() {
   //    then on this device is the only home they have.
   const outboxWasCloud = useRef(startedInCloudMode.current);
   const outboxPrevAll = useRef(null);
+  // Last JSON written to SYNC_CACHE_KEY, so a render that didn't actually
+  // change tasks/archiveTasks doesn't re-write the same snapshot to disk.
+  const syncCacheLastJson = useRef(null);
   useEffect(() => {
     const ob = outboxRef.current;
     const all = mergeUniqueTasks(tasks, archiveTasks);
@@ -23101,6 +23182,11 @@ function App() {
         ob.tasks.clear();
         ob.deleted.clear();
         ob.lastJson = saveOutbox([], []);
+        // Back to local mode: the boot preview belongs to cloud mode only,
+        // and a stale one lying around could show the wrong list if this
+        // device reconnects (possibly to a different account) later.
+        clearSyncCache();
+        syncCacheLastJson.current = null;
       }
       return;
     }
@@ -23143,6 +23229,16 @@ function App() {
     // copy's rescue (if any) has run, and the outbox holding everything
     // unconfirmed is safely on disk.
     if (gcalReady && saved && legacyRescueRef.current === null && hasLegacyTaskCache()) purgeLegacyTaskCache();
+    // Refresh the boot-preview snapshot from the same confirmed state that's
+    // on screen right now. Runs after every pull AND after every ordinary
+    // edit once a pull has landed, so the next cold start's preview is never
+    // more than one change behind what was actually last synced.
+    if (gcalReady) {
+      const cacheJson = JSON.stringify({ tasks, archiveTasks });
+      if (cacheJson !== syncCacheLastJson.current) {
+        if (saveSyncCache(tasks, archiveTasks)) syncCacheLastJson.current = cacheJson;
+      }
+    }
   }, [tasks, archiveTasks, gcalReady, gcalConnected, gcalConfirmTick]);
   // Auto-detect holidays from loaded tasks on a new device (same account, no prefs yet)
   useEffect(() => {
@@ -23295,6 +23391,7 @@ function App() {
     document.title = "TaskIt";
   }, []);
   const openNew = (dateStr = null, timeStr = null) => {
+    if (bootLocked) return; // read-only boot preview: no adding/editing yet
     resetFabIdle();
     setEditTask(null);
     const d = dateStr || (view === "month" ? calSelectedDate : null);
@@ -23303,6 +23400,7 @@ function App() {
     setModalOpen(true);
   };
   const openEdit = task => {
+    if (bootLocked) return; // read-only boot preview: no editing yet
     // A tapped chip may be a projected future occurrence of a recurring task
     // (see mFutureByDate/wFutureByDate in MonthView/WeekView) rather than a
     // real stored task -- it only exists to preview where the series lands
@@ -23314,6 +23412,7 @@ function App() {
     setModalOpen(true);
   };
   const handleSave = form => {
+    if (bootLocked) return; // read-only boot preview: no saving yet
     const now = Date.now();
     if (editTask) {
       // A "google" task whose type was retyped to something else converts into
@@ -23416,6 +23515,7 @@ function App() {
     return [...tasks, next];
   };
   const handleToggle = id => {
+    if (bootLocked) return; // read-only boot preview: no complete/uncomplete yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23449,6 +23549,7 @@ function App() {
     });
   };
   const handleDelete = id => {
+    if (bootLocked) return; // read-only boot preview: no deleting yet
     const task = tasks.find(t => t.id === id);
     if (task && task.source === "google" && !task.googleShared) {
       gcalEnqueue(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
@@ -23466,6 +23567,7 @@ function App() {
   // re-check hebcal/intl/calendar/googleShared themselves before doing
   // anything irreversible.
   const handleBulkBarAction = kind => {
+    if (bootLocked) return; // read-only boot preview: no bulk actions yet
     if (kind === "share") {
       setArmedBulk(null);
       openBulkShare();
@@ -23501,6 +23603,7 @@ function App() {
     applyBulkPicker(value, kind);
   };
   const handleBulkDelete = ids => {
+    if (bootLocked) return; // read-only boot preview: no bulk actions yet
     mergeUniqueTasks(tasks, archiveTasks).forEach(tk => {
       if (!ids.has(tk.id) || isBulkEditLocked(tk)) return;
       if (tk.source === "google" && !tk.googleShared) {
@@ -23563,6 +23666,7 @@ function App() {
     return null;
   };
   const applyBulkPicker = (value, kindArg) => {
+    if (bootLocked) return; // read-only boot preview: no bulk actions yet
     const ids = selectedIds;
     const kind = kindArg || bulkPickerKind;
     setBulkPickerKind(null);
@@ -23604,6 +23708,7 @@ function App() {
     // Selection is deliberately kept so several actions can be chained.
   };
   const handleRename = (id, name, andNext = false) => {
+    if (bootLocked) return; // read-only boot preview: no renaming yet
     setTasks(ts => ts.map(t => t.id === id ? {
       ...t,
       name
@@ -23628,6 +23733,7 @@ function App() {
     }
   };
   const handleCancelFromList = id => {
+    if (bootLocked) return; // read-only boot preview: no cancel/uncancel yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23678,6 +23784,7 @@ function App() {
   // also passed, it too is cancelled and advanced again, repeating until the task's
   // next occurrence lands on today or later (or it stops recurring).
   const handleCleanDelays = () => {
+    if (bootLocked) return; // read-only boot preview: no bulk cancel yet
     const todayDs = todayStr();
     let cancelledCount = 0;
     setTasks(ts => {
@@ -23705,6 +23812,7 @@ function App() {
       : cancelledCount === 0 ? "No overdue tasks found" : `Cancelled ${cancelledCount} overdue task${cancelledCount === 1 ? "" : "s"}`);
   };
   const handleDelay = id => {
+    if (bootLocked) return; // read-only boot preview: no delaying yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23761,6 +23869,7 @@ function App() {
   };
   // Drag-to-reschedule from the week grid: move a task to another day/time.
   const handleReschedule = (id, newDate, newTime) => {
+    if (bootLocked) return; // read-only boot preview: no drag/reschedule yet
     if (moveArchivedTask(id, { date: newDate, time: newTime || "", ...(newTime ? {} : { length: null }) })) return;
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
@@ -23784,6 +23893,7 @@ function App() {
   // Drag-to-move in the list/month/up-next views: change only the date, keeping
   // the task's time of day intact.
   const handleDropDate = (id, newDate) => {
+    if (bootLocked) return; // read-only boot preview: no drag yet
     if (moveArchivedTask(id, { date: newDate })) return;
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
@@ -23799,6 +23909,7 @@ function App() {
   };
   // Drag-to-retype in the by-type view.
   const handleDropType = (id, newType) => {
+    if (bootLocked) return; // read-only boot preview: no drag/retype yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23836,6 +23947,7 @@ function App() {
     });
   };
   const handleCompleteFromModal = (task, action) => {
+    if (bootLocked) return; // read-only boot preview: no complete/cancel yet
     // Restore from archive (task not in main tasks list)
     if (action === "uncomplete" || action === "uncancel") {
       const isInMain = tasks.some(t => t.id === task.id);
@@ -24425,6 +24537,19 @@ function App() {
   }, gcalBusy
     ? (getLang() === "he" ? "מתחבר מחדש…" : "Reconnecting…")
     : (getLang() === "he" ? "⚠️ Google Calendar מנותק — הקש כדי להתחבר מחדש" : "⚠️ Google Calendar disconnected — tap to reconnect")
+  ), bootLocked && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#DBEAFE",
+      color: "#1E40AF",
+      fontSize: 13,
+      fontWeight: 600,
+      textAlign: "center",
+      padding: "8px 12px",
+      direction: getLang() === "he" ? "rtl" : "ltr"
+    }
+  }, getLang() === "he"
+    ? "🔄 מציג משימות שמורות — עריכה תיפתח לאחר סנכרון"
+    : "🔄 Showing saved tasks — editing unlocks once synced"
   ), /*#__PURE__*/React.createElement("header", {
     ref: appHeaderRef,
     style: {
@@ -25493,6 +25618,7 @@ function App() {
       name,
       date
     }) => {
+      if (bootLocked) return; // read-only boot preview: no adding yet
       const newTask = {
         id: uid(),
         name,
@@ -25516,6 +25642,7 @@ function App() {
       name,
       type
     }) => {
+      if (bootLocked) return; // read-only boot preview: no adding yet
       const effectiveType = type === "repeated" ? "regular" : type;
       const newTask = {
         id: uid(),
@@ -25538,6 +25665,7 @@ function App() {
       }), 900);
     },
     onRenameType: (oldType, newType) => {
+      if (bootLocked) return; // read-only boot preview: no retyping yet
       if (!newType || newType === oldType) return;
       const now = Date.now();
       setTasks(ts => ts.map(t => {
