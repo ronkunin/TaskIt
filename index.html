@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "10.8";
+const APP_VERSION = "11";
 
 const {
   useState,
@@ -24537,19 +24537,6 @@ function App() {
   }, gcalBusy
     ? (getLang() === "he" ? "מתחבר מחדש…" : "Reconnecting…")
     : (getLang() === "he" ? "⚠️ Google Calendar מנותק — הקש כדי להתחבר מחדש" : "⚠️ Google Calendar disconnected — tap to reconnect")
-  ), bootLocked && /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: "#DBEAFE",
-      color: "#1E40AF",
-      fontSize: 13,
-      fontWeight: 600,
-      textAlign: "center",
-      padding: "8px 12px",
-      direction: getLang() === "he" ? "rtl" : "ltr"
-    }
-  }, getLang() === "he"
-    ? "🔄 מציג משימות שמורות — עריכה תיפתח לאחר סנכרון"
-    : "🔄 Showing saved tasks — editing unlocks once synced"
   ), /*#__PURE__*/React.createElement("header", {
     ref: appHeaderRef,
     style: {
