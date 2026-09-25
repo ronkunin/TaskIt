@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "11";
+const APP_VERSION = "12";
 
 const {
   useState,
@@ -769,26 +769,33 @@ const TYPE_META = {
 // Each hue below therefore gets its own explicit accent/bg/border trio per
 // theme, matching the built-ins' recipe instead of deriving bg/border from
 // the accent via alpha.
-const CUSTOM_COLORS_LIGHT = ["#BE185D", "#B91C1C", "#C2410C", "#4D7C0F", "#047857", "#6D28D9", "#0E7490", "#86198F"];
-const CUSTOM_BG_LIGHT = ["#FFD3E8", "#FFD6D6", "#FFDAB8", "#D9F5A8", "#AEEEDD", "#DED2FF", "#B9EAF5", "#F5C6F5"];
-const CUSTOM_BORDER_LIGHT = ["#E85FA0", "#F87171", "#FB9550", "#A3D65C", "#34D399", "#A78BFA", "#5FD0E0", "#E29FE2"];
-const CUSTOM_COLORS_DARK = ["#FF4FA3", "#FF6B6B", "#FF9540", "#A3E635", "#34EAAE", "#B69CFF", "#3EE0F5", "#E27BFA"];
-const CUSTOM_BG_DARK = ["#4A1233", "#4A1616", "#4A2A08", "#33420C", "#0B3D2E", "#2E2166", "#0A3A47", "#3E1250"];
-const CUSTOM_BORDER_DARK = ["#C23B76", "#D9534F", "#C2660C", "#7CA829", "#1E9E77", "#5B48B8", "#157C93", "#8A2FA8"];
+// 15 slots: the original 8 (pink, red, orange, lime, emerald, violet, cyan,
+// fuchsia) plus gold, brown, slate, wine, green, olive, plum -- chosen to stay
+// clear of both each other and the built-in types' blue/indigo/teal/sky/amber.
+// Order matters only for which alphabetical rank gets which hue; the first 8
+// are unchanged so existing setups with <=8 custom types look exactly the same.
+const CUSTOM_COLORS_LIGHT = ["#BE185D", "#B91C1C", "#C2410C", "#4D7C0F", "#047857", "#6D28D9", "#0E7490", "#86198F", "#A16207", "#7C3F1D", "#475569", "#881337", "#15803D", "#5F5F15", "#7E3A6E"];
+const CUSTOM_BG_LIGHT = ["#FFD3E8", "#FFD6D6", "#FFDAB8", "#D9F5A8", "#AEEEDD", "#DED2FF", "#B9EAF5", "#F5C6F5", "#FDEFA0", "#EED9C8", "#DDE3EB", "#F7C9D6", "#C6F0D2", "#E8E6B8", "#EBD3E6"];
+const CUSTOM_BORDER_LIGHT = ["#E85FA0", "#F87171", "#FB9550", "#A3D65C", "#34D399", "#A78BFA", "#5FD0E0", "#E29FE2", "#EAB308", "#B07A55", "#94A3B8", "#C2415F", "#4ADE80", "#A8A548", "#B874A8"];
+const CUSTOM_COLORS_DARK = ["#FF4FA3", "#FF6B6B", "#FF9540", "#A3E635", "#34EAAE", "#B69CFF", "#3EE0F5", "#E27BFA", "#FACC15", "#D6A079", "#B4C2D4", "#F0708F", "#4ADE80", "#D4D16A", "#DA9BCB"];
+const CUSTOM_BG_DARK = ["#4A1233", "#4A1616", "#4A2A08", "#33420C", "#0B3D2E", "#2E2166", "#0A3A47", "#3E1250", "#423508", "#3B2416", "#243040", "#3F0D1C", "#0F3A1E", "#33320E", "#3A1834"];
+const CUSTOM_BORDER_DARK = ["#C23B76", "#D9534F", "#C2660C", "#7CA829", "#1E9E77", "#5B48B8", "#157C93", "#8A2FA8", "#B8930C", "#8C5A3A", "#5E6F85", "#A3304F", "#22963F", "#8A8733", "#93508A"];
 const isDarkNow = () => typeof window !== "undefined" && !!window.__dark;
 const getCustomColors = () => isDarkNow() ? CUSTOM_COLORS_DARK : CUSTOM_COLORS_LIGHT;
-// Sequential assignment so <=8 customs never share a color; hash fallback for >8
-const _customColorIndex = {};
-let _customColorCounter = 0;
+// Assigns each custom type's color by its alphabetical rank among every
+// custom type currently in use (see window.__customTypes, set by App on
+// every render), not by which one this device/session happened to meet
+// first -- so any two devices looking at the same set of custom types
+// always land on the same color for the same name, and <=15 customs never
+// share a color. Falls back to a hash of the name itself (still fully
+// deterministic, still device-independent) if window.__customTypes hasn't
+// been seeded yet -- e.g. called before App's first render.
 const getCustomColorIndex = type => {
-  if (_customColorIndex[type] === undefined) {
-    if (_customColorCounter < getCustomColors().length) {
-      _customColorIndex[type] = _customColorCounter++;
-    } else {
-      _customColorIndex[type] = Array.from(type).reduce((s, c) => s + c.charCodeAt(0), 0) % getCustomColors().length;
-    }
-  }
-  return _customColorIndex[type];
+  const n = getCustomColors().length;
+  const known = (typeof window !== "undefined" && window.__customTypes) || [];
+  const rank = known.indexOf(type);
+  if (rank !== -1) return rank % n;
+  return Array.from(type).reduce((s, c) => s + c.charCodeAt(0), 0) % n;
 };
 const customTypeMeta = type => {
   const label = type.charAt(0).toUpperCase() + type.slice(1);
@@ -2575,6 +2582,13 @@ const Icon = ({
       y1: "16",
       x2: "23",
       y2: "16"
+    })),
+    pin: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("path", {
+      d: "M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"
+    }), /*#__PURE__*/React.createElement("circle", {
+      cx: "12",
+      cy: "10",
+      r: "3"
     }))
   };
   return /*#__PURE__*/React.createElement("svg", {
@@ -3395,7 +3409,25 @@ const TaskCard = ({
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: { whiteSpace: "pre-wrap", wordBreak: "break-word", userSelect: "text", WebkitUserSelect: "text", textAlign: "start", display: "block" }
-  }, _noteText)))));
+  }, _noteText), task.location && /*#__PURE__*/React.createElement("div", {
+    // Read-only mirror of whatever Google's own "location" field holds (see
+    // GCal.eventToTaskPatch) -- never editable or removable here, and only
+    // ever shown alongside the note, exactly where the note itself shows.
+    style: {
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 5,
+      marginTop: 6,
+      color: C.text4,
+      fontSize: 11.5
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "pin",
+    size: 11,
+    color: C.text4
+  }), /*#__PURE__*/React.createElement("span", {
+    style: { whiteSpace: "pre-wrap", wordBreak: "break-word", textAlign: "start" }
+  }, task.location))))));
 };
 
 //  DELETE BUTTON (double-click confirm) 
@@ -4637,19 +4669,30 @@ const computeRewindStats = tasks => {
 };
 const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
   const isHe = getLang() === "he";
+  const dark = isDarkNow();
   const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   const W = 760;
   const PAD = 36;
   const CW = W - PAD * 2;
-  // Always the same light palette regardless of the person's own theme, so
-  // the card reads identically wherever it ends up. Font weight never goes
-  // above 750 anywhere in here.
-  const INK = "#0B1220",
-    INK2 = "#334155",
-    INK3 = "#64748B",
-    INK4 = "#94A3B8";
-  const CARD = "#FFFFFF",
-    LINE = "#E6EBF5";
+  // Follows the app's own theme (see isDarkNow) when drawn inline in the
+  // app itself. shareRewindImage, the actual share-to-image flow, always
+  // forces light mode first (see withForcedShareTheme) before calling this,
+  // specifically so the shared card still reads the same wherever it ends
+  // up -- that behavior is unchanged, it just now lives entirely in the
+  // caller instead of being hard-coded in here.
+  const INK = dark ? "#F1F5F9" : "#0B1220",
+    INK2 = dark ? "#CBD5E1" : "#334155",
+    INK3 = dark ? "#94A3B8" : "#64748B",
+    INK4 = dark ? "#64748B" : "#94A3B8";
+  const CARD = dark ? "#1E293B" : "#FFFFFF",
+    LINE = dark ? "#334155" : "#E6EBF5",
+    // A faint recessed fill/line -- bar tracks, legend-row backgrounds, the
+    // lighter of the two alternating gridlines. Slightly lifted off CARD
+    // rather than a flat neutral, so it still reads as "a shade up" on dark.
+    TRACK = dark ? "#253347" : "#F8FAFC",
+    // The small "subtitle" chip near the top (e.g. "This month · Work").
+    CHIP_BG = dark ? "#26305E" : "#EEF2FF",
+    CHIP_BORDER = dark ? "#4338CA" : "#C7D2FE";
   const VIOLET = "#7C3AED",
     INDIGO = "#4F46E5",
     BLUE = "#2563EB",
@@ -4783,9 +4826,9 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
     const chipW = tw + 26, chipH = 28;
     const chipX = isHe ? startX - chipW : startX;
     drawRoundedRectPath(ctx, chipX, y + 74, chipW, chipH, 14);
-    ctx.fillStyle = "#EEF2FF";
+    ctx.fillStyle = CHIP_BG;
     ctx.fill();
-    ctx.strokeStyle = "#C7D2FE";
+    ctx.strokeStyle = CHIP_BORDER;
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.fillStyle = INDIGO;
@@ -4898,7 +4941,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
       ctx.textBaseline = "middle";
       for (let g = 0; g <= 2; g++) {
         const gy = plotTop + plotH - g / 2 * plotH;
-        ctx.strokeStyle = g === 0 ? LINE : "#F1F5F9";
+        ctx.strokeStyle = g === 0 ? LINE : TRACK;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(plotX, gy);
@@ -4938,7 +4981,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
         const isPk = i === peakI;
         ctx.beginPath();
         ctx.arc(px(i), py(c), isPk ? 5.5 : 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = isPk ? "#DB2777" : "#fff";
+        ctx.fillStyle = isPk ? "#DB2777" : CARD;
         ctx.fill();
         ctx.lineWidth = 2.5;
         ctx.strokeStyle = isPk ? "#DB2777" : INDIGO;
@@ -5008,8 +5051,8 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
           ctx.closePath();
           ctx.fillStyle = s.c;
           ctx.fill();
-          // thin white separator
-          ctx.strokeStyle = "#fff";
+          // thin separator, matching the panel behind it
+          ctx.strokeStyle = CARD;
           ctx.lineWidth = 2;
           ctx.stroke();
           cum += a;
@@ -5031,7 +5074,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
         const ly = y + 56 + i * 44;
         const rowY = ly - 12;
         drawRoundedRectPath(ctx, legX, rowY, legW, 34, 10);
-        ctx.fillStyle = "#F8FAFC";
+        ctx.fillStyle = TRACK;
         ctx.fill();
         const dotX = isHe ? legX + legW - 16 : legX + 16;
         ctx.beginPath();
@@ -5091,7 +5134,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
         const bw = Math.max(4, count / maxT * barMaxW);
         const bx = isHe ? PAD + CW - ip - labelW - barMaxW : barX;
         drawRoundedRectPath(ctx, bx, ry + 2, barMaxW, 16, 8);
-        ctx.fillStyle = "#F1F5F9";
+        ctx.fillStyle = TRACK;
         ctx.fill();
         const fx = isHe ? bx + barMaxW - bw : bx;
         drawRoundedRectPath(ctx, fx, ry + 2, bw, 16, 8);
@@ -5131,7 +5174,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
         const bh = c > 0 ? Math.max(6, c / maxW2 * maxBarH) : 3;
         const isTop = c === maxW2 && c > 0;
         drawRoundedRectPath(ctx, x, baseY - maxBarH, colW, maxBarH, 8);
-        ctx.fillStyle = "#F8FAFC";
+        ctx.fillStyle = TRACK;
         ctx.fill();
         drawRoundedRectPath(ctx, x, baseY - bh, colW, bh, 8);
         const g2 = ctx.createLinearGradient(0, baseY - bh, 0, baseY);
@@ -5168,7 +5211,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
         const ry = y + 22 + i * rowH;
         const dotX = isHe ? PAD + CW - ip - 4 : PAD + ip + 4;
         if (rows.length > 1 && i === 0) {
-          ctx.strokeStyle = "#E2E8F0";
+          ctx.strokeStyle = LINE;
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.moveTo(dotX, ry + 12);
@@ -5307,21 +5350,37 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
   ctx.scale(pixelRatio, pixelRatio);
   // backdrop: soft tinted gradient + two blurred brand-colored blobs
   const bgGrad = ctx.createLinearGradient(0, 0, W * 0.4, H);
-  bgGrad.addColorStop(0, "#F7F8FF");
-  bgGrad.addColorStop(0.5, "#EEF2FF");
-  bgGrad.addColorStop(1, "#FDF2F8");
+  if (dark) {
+    bgGrad.addColorStop(0, "#0B1220");
+    bgGrad.addColorStop(0.5, "#111827");
+    bgGrad.addColorStop(1, "#1B1030");
+  } else {
+    bgGrad.addColorStop(0, "#F7F8FF");
+    bgGrad.addColorStop(0.5, "#EEF2FF");
+    bgGrad.addColorStop(1, "#FDF2F8");
+  }
   ctx.fillStyle = bgGrad;
   ctx.fillRect(0, 0, W, H);
   ctx.save();
-  ctx.globalAlpha = 0.32;
+  ctx.globalAlpha = dark ? 0.4 : 0.32;
   const blob1 = ctx.createRadialGradient(W * 0.86, H * 0.07, 10, W * 0.86, H * 0.07, 260);
-  blob1.addColorStop(0, "#C7D2FE");
-  blob1.addColorStop(1, "rgba(199,210,254,0)");
+  if (dark) {
+    blob1.addColorStop(0, "#4338CA");
+    blob1.addColorStop(1, "rgba(67,56,202,0)");
+  } else {
+    blob1.addColorStop(0, "#C7D2FE");
+    blob1.addColorStop(1, "rgba(199,210,254,0)");
+  }
   ctx.fillStyle = blob1;
   ctx.fillRect(0, 0, W, H * 0.4);
   const blob2 = ctx.createRadialGradient(W * 0.1, H * 0.92, 10, W * 0.1, H * 0.92, 300);
-  blob2.addColorStop(0, "#FBCFE8");
-  blob2.addColorStop(1, "rgba(251,207,232,0)");
+  if (dark) {
+    blob2.addColorStop(0, "#9D174D");
+    blob2.addColorStop(1, "rgba(157,23,77,0)");
+  } else {
+    blob2.addColorStop(0, "#FBCFE8");
+    blob2.addColorStop(1, "rgba(251,207,232,0)");
+  }
   ctx.fillStyle = blob2;
   ctx.fillRect(0, H * 0.6, W, H * 0.4);
   ctx.restore();
@@ -15996,7 +16055,11 @@ const icsToTasks = (text, type, existingIds) => {
       else if (ev.duration) length = icsDurationMins(ev.duration);
       if (length != null && length > 1440) length = null;
     }
-    const note = ev.description || (ev.location ? (getLang() === "he" ? "מיקום: " : "Location: ") + ev.location : null) || null;
+    const note = ev.description || null;
+    // Kept as its own field (see GCal.eventToTaskPatch, which does the same
+    // for a live Google Calendar sync) rather than folded into the note text
+    // -- displayed read-only, never something the person can edit here.
+    const location = ev.location || null;
     const excluded = new Set(ev.exdates || []);
     const ds0 = localDs(new Date(st.ms));
     const time0 = st.allDay ? "" : `${String(new Date(st.ms).getHours()).padStart(2, "0")}:${String(new Date(st.ms).getMinutes()).padStart(2, "0")}`;
@@ -16024,6 +16087,7 @@ const icsToTasks = (text, type, existingIds) => {
           time: time0,
           length,
           note,
+          location,
           recur: native.recur,
           recurUntil: native.recurUntil,
           done: false,
@@ -16052,6 +16116,7 @@ const icsToTasks = (text, type, existingIds) => {
         time,
         length,
         note,
+        location,
         recur: null,
         done: isDoneEv,
         cancelled: isCancelled,
@@ -18805,7 +18870,8 @@ const SearchView = ({
   selectedIds = null,
   onToggleSelect = null,
   onSetSelected = null,
-  onQuickPicksReady = null
+  onQuickPicksReady = null,
+  dark = false
 }) => {
   const isHe = getLang() === "he";
   const viewWidth = useWindowWidth();
@@ -19272,7 +19338,7 @@ const SearchView = ({
       if (reportPulseTimer.current) clearTimeout(reportPulseTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportSignature, chartTitle, displayMode]);
+  }, [reportSignature, chartTitle, displayMode, dark]);
   // Pie chart data
   const pendingC = filtered.filter(tk => !isDone(tk) && !isCancelled(tk)).length;
   const completedC = filtered.filter(tk => isDone(tk)).length;
@@ -19508,6 +19574,27 @@ const SearchView = ({
       flex: 1
     }
   }, isHe ? "חיפוש משימות" : t("searchView")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setDisplayMode(displayMode === "tasks" ? "report" : "tasks"),
+    title: displayMode === "tasks" ? (isHe ? "צפייה בדוח" : "View report") : (isHe ? "חזרה למשימות" : "Back to tasks"),
+    "data-share-ignore": "true",
+    style: {
+      width: 32,
+      height: 32,
+      borderRadius: 9,
+      border: `1px solid ${displayMode === "report" ? C.blue : C.border2}`,
+      background: displayMode === "report" ? C.blueBg : C.card2,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0,
+      transition: "background 0.18s,border-color 0.18s"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: displayMode === "tasks" ? "trending" : "list",
+    size: 14,
+    color: displayMode === "report" ? C.blue : C.text3
+  })), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       setFiltersOpen(o => !o);
     },
@@ -19665,50 +19752,7 @@ const SearchView = ({
     value: toDate,
     placeholder: isHe ? "עד תאריך" : "To",
     onChange: handleToChange
-  })))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 4,
-      padding: 4,
-      borderRadius: 13,
-      background: C.card2,
-      border: `1px solid ${C.border}`,
-      marginTop: 18,
-      marginBottom: 18
-    }
-  }, [{
-    id: "tasks",
-    icon: "list",
-    label: isHe ? "צפייה במשימות" : "View tasks"
-  }, {
-    id: "report",
-    icon: "trending",
-    label: isHe ? "צפייה בדוח" : "View report"
-  }].map(opt => /*#__PURE__*/React.createElement("button", {
-    key: opt.id,
-    onClick: () => setDisplayMode(opt.id),
-    style: {
-      flex: 1,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 7,
-      padding: "10px 10px",
-      borderRadius: 10,
-      border: "none",
-      cursor: "pointer",
-      background: displayMode === opt.id ? C.card : "transparent",
-      boxShadow: displayMode === opt.id ? "0 2px 6px rgba(0,0,0,0.08)" : "none",
-      color: displayMode === opt.id ? C.text : C.text3,
-      fontSize: 13,
-      fontWeight: 700,
-      transition: "background 0.2s ease, box-shadow 0.2s ease, color 0.2s ease"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: opt.icon,
-    size: 15,
-    color: "currentColor"
-  }), opt.label))), displayMode === "tasks" && /*#__PURE__*/React.createElement(React.Fragment, {
+  })))), displayMode === "tasks" && /*#__PURE__*/React.createElement(React.Fragment, {
     key: "mode-tasks"
   }, sortedKeys.length === 0 ? /*#__PURE__*/React.createElement("div", {
     style: {
@@ -20655,6 +20699,10 @@ const GCal = (() => {
       done: p.done === "1",
       cancelled: p.cancelled === "1",
       length: p.length ? Number(p.length) : null,
+      // Read-only mirror of whatever Google's own "location" field holds --
+      // TaskIt never writes to this (see taskToEventBody, which omits it
+      // entirely so a PATCH never touches it), only displays it.
+      location: event.location || null,
       updated: event.updated ? new Date(event.updated).getTime() : Date.now()
     };
     if (p.seriesId) patch.seriesId = p.seriesId;
@@ -20939,6 +20987,7 @@ const GCal = (() => {
       id: foreignTaskId(calendarId, event.id),
       name: mark.name || untitled,
       note: event.description || null,
+      location: event.location || null,
       type: "google",
       source: "google",
       googleCalendarId: calendarId,
@@ -21679,11 +21728,18 @@ function App() {
       }
     }
   }
-  // The read-only boot preview: last confirmed-synced snapshot (see
-  // SYNC_CACHE_KEY), loaded once, synchronously, same as the outbox above.
+  // The boot preview: last confirmed-synced snapshot (see SYNC_CACHE_KEY),
+  // loaded once, synchronously, same as the outbox above. Shown -- and fully
+  // editable -- the instant the app opens, before the real pull confirms it.
   const syncCacheRef = useRef(null);
   if (syncCacheRef.current === null) {
     syncCacheRef.current = startedInCloudMode.current ? loadSyncCache() : { tasks: [], archive: [] };
+  }
+  // Quick id -> task lookup into that same snapshot, used below to record
+  // what a task looked like right before an "offline" edit touched it.
+  const syncCacheByIdRef = useRef(null);
+  if (syncCacheByIdRef.current === null) {
+    syncCacheByIdRef.current = new Map([...syncCacheRef.current.tasks, ...syncCacheRef.current.archive].map(t => [t.id, t]));
   }
   const [tasks, setTasks] = useState(() => {
     try {
@@ -21714,6 +21770,19 @@ function App() {
     ...syncCacheRef.current.tasks.map(t => t.id),
     ...syncCacheRef.current.archive.map(t => t.id)
   ]));
+  // Edit-while-offline bookkeeping: id -> the taskSignature() that task had
+  // in the boot-preview snapshot at the moment it was first touched during
+  // this offline window (see the outbox-tracking effect, which fills this
+  // in). Only ever holds ids the snapshot actually had -- a brand-new task
+  // has no "before" to compare against and doesn't need one; it simply
+  // survives the first pull like any other unpushed local addition.
+  // Consumed, and cleared, by gcalPullNow the moment the first complete pull
+  // lands: any id here whose fresh signature still matches this recorded one
+  // had nothing change under it, so the offline edit is kept and pushed as
+  // usual; any id whose fresh signature differs was edited or deleted
+  // elsewhere in the meantime, and the offline edit is discarded in favor of
+  // what Google actually has now.
+  const offlineTouchedRef = useRef(new Map());
   const [archiveTasks, setArchiveTasks] = useState(() => {
     // Cloud mode: seed from the same confirmed snapshot the boot preview
     // uses for `tasks`; local mode still loads it in the background below.
@@ -21722,15 +21791,14 @@ function App() {
     }
     return [];
   });
-  // True while what's on screen is still that read-only boot preview rather
-  // than anything a real pull has confirmed. Starts true only when there was
+  // True while what's on screen is still the boot preview rather than
+  // anything a real pull has confirmed. Starts true only when there was
   // actually a snapshot to show; turns off for good the moment the first
   // full pull of this session lands (gcalReady) -- see the effect below.
-  // Every task-mutating handler in this file checks it first and refuses to
-  // run while it's true, so nothing can change out from under the
-  // about-to-arrive real data (no edit, drag, complete/cancel, rename,
-  // retype, or bulk action of any kind).
-  const [bootLocked, setBootLocked] = useState(() =>
+  // Editing during this window is fully allowed (see offlineTouchedRef
+  // above); this flag itself is now only used to decide whether the app can
+  // skip holding on the splash screen for that first pull.
+  const [hasBootPreview, setHasBootPreview] = useState(() =>
     startedInCloudMode.current && (syncCacheRef.current.tasks.length > 0 || syncCacheRef.current.archive.length > 0)
   );
   // TODAY is a module-level Date, computed once when the script first loads,
@@ -21794,7 +21862,6 @@ function App() {
     setBulkQuickPicks(data);
   }, []);
   const toggleSelectMode = () => {
-    if (bootLocked) return; // read-only boot preview: no bulk-select yet
     if (selectMode) {
       exitSelectMode();
     } else {
@@ -22320,6 +22387,35 @@ function App() {
       const tombstones = new Set(outboxRef.current.deleted);
       const localPresent = new Set([...tasks, ...archiveTasks].map(t => t.id));
       for (const tid of [...tombstones]) if (localPresent.has(tid)) tombstones.delete(tid);
+      const isFirstPull = !gcalHasPulledOnce.current;
+      // Any task touched during the still-ongoing offline window is immune to
+      // every patch from every pull attempt (complete or not) until the one
+      // pull that's actually authoritative enough to judge it -- see below.
+      // Captured as a plain Set, not read live off the ref, because the ref
+      // gets cleared once that judgment happens, while setTasks's updater
+      // below may still run its closure after that clear.
+      const offlineTouchedIds = new Set(offlineTouchedRef.current.keys());
+      // Reconciling whatever got edited during the offline window against
+      // what this pull actually found. Only happens once, on the complete
+      // pull that's about to flip gcalReady on for the first time -- that's
+      // the one moment "what Google has now" is authoritative enough to
+      // judge every recorded base against. A recorded base that still
+      // matches means nothing changed remotely since this device last saw
+      // that task, so the offline edit is safe and kept (below); anything
+      // else is a conflict.
+      const offlineConflicts = new Set();
+      if (isFirstPull && complete) {
+        for (const [tid, baseSig] of offlineTouchedRef.current) {
+          if (remote[tid] !== baseSig) offlineConflicts.add(tid);
+        }
+        // A deletion made offline whose base no longer matches is undone --
+        // someone changed that task elsewhere since, so Google's fresh copy
+        // wins over the deletion, same as any other conflict here.
+        for (const tid of offlineConflicts) {
+          if (tombstones.has(tid)) { tombstones.delete(tid); outboxRef.current.deleted.delete(tid); }
+        }
+        offlineTouchedRef.current.clear();
+      }
       // One-time rescue of the old full local copy (see legacyRescueRef). Only
       // on a complete pull, so Google's answer is the whole picture.
       const legacy = complete ? legacyRescueRef.current : null;
@@ -22350,7 +22446,16 @@ function App() {
             // devices -- rather than "now", which reset on every load.
             const createdAt = event.created ? new Date(event.created).getTime() : NaN;
             next.push({ id: tid, created: Number.isNaN(createdAt) ? Date.now() : createdAt, ...patch });
-          } else if (!existing.updated || patch.updated >= existing.updated) {
+          } else if (offlineTouchedIds.has(tid) && !offlineConflicts.has(tid)) {
+            // Edited (or deleted, handled above) during the offline window,
+            // from a base that still matches Google's copy: the offline edit
+            // wins outright and is left exactly as it is, never overwritten
+            // by this (unchanged) patch -- regardless of timestamps.
+            continue;
+          } else if (offlineConflicts.has(tid) || !existing.updated || patch.updated >= existing.updated) {
+            // A recorded offline edit that conflicts always loses here, even
+            // if its own `updated` looks newer -- something else changed
+            // that base remotely, so Google's fresh copy wins instead.
             next = (next === ts ? [...ts] : next).map(t => t.id === tid ? { ...t, ...patch } : t);
           }
         }
@@ -22360,7 +22465,6 @@ function App() {
         // apart "was in localStorage at startup → deleted elsewhere → remove" from
         // "created in this session, not pushed yet → keep".
         if (complete) {
-          const isFirstPull = !gcalHasPulledOnce.current;
           next = (next === ts ? [...ts] : next).filter(t => {
             if (t.source === "google") return true; // lives in a foreign calendar, handled by gcalPullForeignNow
             // Holiday tasks are regenerated locally, not "owned" by whatever
@@ -23105,13 +23209,14 @@ function App() {
       if (el) el.textContent = getLang() === "he" ? "מתחבר…" : "Reconnecting…";
       return;
     }
-    if (gcalConnected && !gcalReady && !syncWaitTimedOut && !bootLocked) {
+    if (gcalConnected && !gcalReady && !syncWaitTimedOut && !hasBootPreview) {
       // Connected, the first pull from Google hasn't landed yet, and there's
       // no cached snapshot to show in the meantime -- hold a little longer so
       // the app doesn't flash into view with a stale/empty list right before
       // those tasks arrive. Click the splash any time to skip this and go
-      // straight in. When bootLocked IS true there's already a (read-only)
-      // snapshot on screen, so there's nothing to gain by holding here too.
+      // straight in. When hasBootPreview IS true there's already a snapshot on
+      // screen -- fully editable, see offlineTouchedRef -- so there's
+      // nothing to gain by holding here too.
       const el = document.getElementById('html-splash-sub');
       if (el) el.textContent = getLang() === "he" ? "מסנכרן…" : "Syncing…";
       return;
@@ -23123,14 +23228,14 @@ function App() {
       splash.style.opacity = '0';
       setTimeout(() => splash.remove(), 250);
     }
-  }, [gcalGate, gcalConnected, gcalReady, syncWaitTimedOut, splashSkipped, bootLocked]);
+  }, [gcalGate, gcalConnected, gcalReady, syncWaitTimedOut, splashSkipped, hasBootPreview]);
   // The boot preview ends for good the moment the first full pull of this
   // session lands: `tasks`/`archiveTasks` already hold the real, confirmed
   // data by then (gcalPullNow's setTasks runs before setGcalReady(true)), so
   // there is nothing left to protect and every handler below unlocks.
   useEffect(() => {
-    if (gcalReady && bootLocked) setBootLocked(false);
-  }, [gcalReady, bootLocked]);
+    if (gcalReady && hasBootPreview) setHasBootPreview(false);
+  }, [gcalReady, hasBootPreview]);
   useEffect(() => {
     if (!loading) setTimeout(() => updatePillToTab(view), 80);
   }, [loading]);
@@ -23197,11 +23302,20 @@ function App() {
       for (const t of all) if (eligible(t)) ob.tasks.set(t.id, t);
     } else if (!gcalReady) {
       if (prev) {
-        for (const [id, t] of cur) if (prev.get(id) !== t && eligible(t)) ob.tasks.set(id, t);
+        // Record, once, what a cache-known task looked like right before its
+        // first offline touch -- the "base" gcalPullNow compares Google's
+        // fresh copy against once the first pull lands. Only for ids the
+        // boot preview actually had; a brand-new id has nothing to compare.
+        const recordBase = id => {
+          if (offlineTouchedRef.current.has(id)) return;
+          const cached = syncCacheByIdRef.current.get(id);
+          if (cached) offlineTouchedRef.current.set(id, GCal.taskSignature(cached));
+        };
+        for (const [id, t] of cur) if (prev.get(id) !== t && eligible(t)) { ob.tasks.set(id, t); recordBase(id); }
         for (const [id, t] of prev) {
           if (cur.has(id)) continue;
           ob.tasks.delete(id);
-          if (t.source !== "google") ob.deleted.add(String(id));
+          if (t.source !== "google") { ob.deleted.add(String(id)); recordBase(id); }
         }
       }
     } else {
@@ -23391,7 +23505,6 @@ function App() {
     document.title = "TaskIt";
   }, []);
   const openNew = (dateStr = null, timeStr = null) => {
-    if (bootLocked) return; // read-only boot preview: no adding/editing yet
     resetFabIdle();
     setEditTask(null);
     const d = dateStr || (view === "month" ? calSelectedDate : null);
@@ -23400,7 +23513,6 @@ function App() {
     setModalOpen(true);
   };
   const openEdit = task => {
-    if (bootLocked) return; // read-only boot preview: no editing yet
     // A tapped chip may be a projected future occurrence of a recurring task
     // (see mFutureByDate/wFutureByDate in MonthView/WeekView) rather than a
     // real stored task -- it only exists to preview where the series lands
@@ -23412,7 +23524,6 @@ function App() {
     setModalOpen(true);
   };
   const handleSave = form => {
-    if (bootLocked) return; // read-only boot preview: no saving yet
     const now = Date.now();
     if (editTask) {
       // A "google" task whose type was retyped to something else converts into
@@ -23515,7 +23626,6 @@ function App() {
     return [...tasks, next];
   };
   const handleToggle = id => {
-    if (bootLocked) return; // read-only boot preview: no complete/uncomplete yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23549,7 +23659,6 @@ function App() {
     });
   };
   const handleDelete = id => {
-    if (bootLocked) return; // read-only boot preview: no deleting yet
     const task = tasks.find(t => t.id === id);
     if (task && task.source === "google" && !task.googleShared) {
       gcalEnqueue(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
@@ -23567,7 +23676,6 @@ function App() {
   // re-check hebcal/intl/calendar/googleShared themselves before doing
   // anything irreversible.
   const handleBulkBarAction = kind => {
-    if (bootLocked) return; // read-only boot preview: no bulk actions yet
     if (kind === "share") {
       setArmedBulk(null);
       openBulkShare();
@@ -23603,7 +23711,6 @@ function App() {
     applyBulkPicker(value, kind);
   };
   const handleBulkDelete = ids => {
-    if (bootLocked) return; // read-only boot preview: no bulk actions yet
     mergeUniqueTasks(tasks, archiveTasks).forEach(tk => {
       if (!ids.has(tk.id) || isBulkEditLocked(tk)) return;
       if (tk.source === "google" && !tk.googleShared) {
@@ -23666,7 +23773,6 @@ function App() {
     return null;
   };
   const applyBulkPicker = (value, kindArg) => {
-    if (bootLocked) return; // read-only boot preview: no bulk actions yet
     const ids = selectedIds;
     const kind = kindArg || bulkPickerKind;
     setBulkPickerKind(null);
@@ -23708,7 +23814,6 @@ function App() {
     // Selection is deliberately kept so several actions can be chained.
   };
   const handleRename = (id, name, andNext = false) => {
-    if (bootLocked) return; // read-only boot preview: no renaming yet
     setTasks(ts => ts.map(t => t.id === id ? {
       ...t,
       name
@@ -23733,7 +23838,6 @@ function App() {
     }
   };
   const handleCancelFromList = id => {
-    if (bootLocked) return; // read-only boot preview: no cancel/uncancel yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23784,7 +23888,6 @@ function App() {
   // also passed, it too is cancelled and advanced again, repeating until the task's
   // next occurrence lands on today or later (or it stops recurring).
   const handleCleanDelays = () => {
-    if (bootLocked) return; // read-only boot preview: no bulk cancel yet
     const todayDs = todayStr();
     let cancelledCount = 0;
     setTasks(ts => {
@@ -23812,7 +23915,6 @@ function App() {
       : cancelledCount === 0 ? "No overdue tasks found" : `Cancelled ${cancelledCount} overdue task${cancelledCount === 1 ? "" : "s"}`);
   };
   const handleDelay = id => {
-    if (bootLocked) return; // read-only boot preview: no delaying yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23869,7 +23971,6 @@ function App() {
   };
   // Drag-to-reschedule from the week grid: move a task to another day/time.
   const handleReschedule = (id, newDate, newTime) => {
-    if (bootLocked) return; // read-only boot preview: no drag/reschedule yet
     if (moveArchivedTask(id, { date: newDate, time: newTime || "", ...(newTime ? {} : { length: null }) })) return;
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
@@ -23893,7 +23994,6 @@ function App() {
   // Drag-to-move in the list/month/up-next views: change only the date, keeping
   // the task's time of day intact.
   const handleDropDate = (id, newDate) => {
-    if (bootLocked) return; // read-only boot preview: no drag yet
     if (moveArchivedTask(id, { date: newDate })) return;
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
@@ -23909,7 +24009,6 @@ function App() {
   };
   // Drag-to-retype in the by-type view.
   const handleDropType = (id, newType) => {
-    if (bootLocked) return; // read-only boot preview: no drag/retype yet
     setTasks(ts => {
       const task = ts.find(t => t.id === id);
       if (!task) return ts;
@@ -23947,7 +24046,6 @@ function App() {
     });
   };
   const handleCompleteFromModal = (task, action) => {
-    if (bootLocked) return; // read-only boot preview: no complete/cancel yet
     // Restore from archive (task not in main tasks list)
     if (action === "uncomplete" || action === "uncancel") {
       const isInMain = tasks.some(t => t.id === task.id);
@@ -24240,6 +24338,14 @@ function App() {
   // Expose dark-mode state globally so custom-type color helpers can pick
   // the right (light vs dark) bold hue without prop-drilling
   if (typeof window !== "undefined") window.__dark = dark;
+  // Every distinct custom type name currently in use, alphabetically sorted,
+  // exposed the same way as window.__dark above so getCustomColorIndex can
+  // assign each color by name rather than by which device happened to meet
+  // that type first -- see the comment there. Recomputed each render, same
+  // as everything else derived straight from `tasks`.
+  if (typeof window !== "undefined") {
+    window.__customTypes = [...new Set(mergeUniqueTasks(tasks, archiveTasks).map(t => t.type).filter(isCustomType))].sort((a, b) => a.localeCompare(b));
+  }
   const [, setRenderTick] = useState(0);
   if (typeof window !== "undefined") window.__appForceRender = () => setRenderTick(n => n + 1);
   if (typeof window !== "undefined") window.__openLoad = () => {
@@ -25605,7 +25711,6 @@ function App() {
       name,
       date
     }) => {
-      if (bootLocked) return; // read-only boot preview: no adding yet
       const newTask = {
         id: uid(),
         name,
@@ -25629,7 +25734,6 @@ function App() {
       name,
       type
     }) => {
-      if (bootLocked) return; // read-only boot preview: no adding yet
       const effectiveType = type === "repeated" ? "regular" : type;
       const newTask = {
         id: uid(),
@@ -25652,7 +25756,6 @@ function App() {
       }), 900);
     },
     onRenameType: (oldType, newType) => {
-      if (bootLocked) return; // read-only boot preview: no retyping yet
       if (!newType || newType === oldType) return;
       const now = Date.now();
       setTasks(ts => ts.map(t => {
@@ -25675,7 +25778,8 @@ function App() {
     selectedIds: selectedIds,
     onToggleSelect: toggleTaskSelected,
     onSetSelected: setTasksSelected,
-    onQuickPicksReady: registerBulkQuickPicks
+    onQuickPicksReady: registerBulkQuickPicks,
+    dark: dark
   })))), /*#__PURE__*/React.createElement(Modal, {
     open: modalOpen,
     onClose: () => {
