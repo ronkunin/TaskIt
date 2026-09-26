@@ -3725,7 +3725,8 @@ const buildTaskShareCard = ({
   note,
   recur,
   status,
-  hideType = false
+  hideType = false,
+  hideName = false
 }, colors, W, cardRadius, minHeight = 0) => {
   const isHe = getLang() === "he";
   const m = getTypeMeta(type);
@@ -3747,9 +3748,14 @@ const buildTaskShareCard = ({
   const noteFont = `400 14px ${FONT}`;
   const meas = document.createElement("canvas").getContext("2d");
   meas.font = nameFont;
-  const displayName = (name || "").trim() || (isHe ? "משימה ללא שם" : "Untitled task");
-  const nameLines = truncateCanvasLines(wrapCanvasText(meas, displayName, contentW), 3);
-  const recurLabel = !recur ? "" : recur === "month" ? isHe ? "כל חודש" : "Every month" : recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", recur);
+  // hideName: the name is common to every selected task and already shown
+  // once in the shared title above (see renderBulkShareCanvas) -- an empty
+  // array here, not a fallback like "Untitled task", so the card simply
+  // skips the name line and its space entirely rather than showing
+  // something misleading.
+  const displayName = hideName ? "" : (name || "").trim() || (isHe ? "משימה ללא שם" : "Untitled task");
+  const nameLines = displayName ? truncateCanvasLines(wrapCanvasText(meas, displayName, contentW), 3) : [];
+  const recurLabel = shareRecurLabel(recur);
   // Date, time (or a start-end range above 2h), and repeat all live on one
   // line in the same style, wrapping onto a second line only if they don't
   // fit. Same threshold and mutually-exclusive time/length display as the
@@ -4076,23 +4082,31 @@ const copyOrDownloadShareCanvas = async (canvas, filename) => {
     appToast(t("shareFailed"));
   }
 };
-// If every selected task shares an obvious attribute -- the same date, the
-// same time, the same name, or the same type -- that becomes the title of
-// the shared photo instead of the generic "N selected tasks", since it's
-// more informative (e.g. sharing everything due today reads as that date
-// rather than just a count). Date+time together beat either alone; after
-// that, a shared name, then a shared type. Falls back to the plain count
-// title when nothing is common.
+// The human label for a recur value ("month" / "year" / a number of days),
+// or "" for no repeat. Shared by buildTaskShareCard's own detail line and
+// computeShareTitle (when a repeat pattern is common to every selected task)
+// so the wording can never drift between the two.
+const shareRecurLabel = recur => {
+  if (!recur) return "";
+  const isHe = getLang() === "he";
+  if (recur === "month") return isHe ? "כל חודש" : "Every month";
+  if (recur === "year") return isHe ? "כל שנה" : "Every year";
+  return t("everyXDays", recur);
+};
 // Builds the bulk-share title AND says which fields it drew on, so the
 // individual cards below can leave those back out (see renderBulkShareCanvas)
-// rather than repeating the exact same date/time/type on every single card
-// right underneath a title that already says it. Unlike the old version,
-// which stopped at the first common field it found (date+time, OR date, OR
-// time, OR name, OR type), this combines every field that's actually common
-// to every selected task -- so five tasks that share both a type and a date
-// get both in the title, not just whichever came first.
+// rather than repeating the exact same detail on every single card right
+// underneath a title that already says it. Combines every field that's
+// actually common to every selected task -- date, time, name, type, repeat
+// pattern, and duration are each checked independently, so five tasks that
+// share both a type and a date get both in the title, not just whichever
+// came first. Falls back to the plain count only when nothing at all lines
+// up. Length only ever gets suppressed from the cards (see common.length)
+// when time is common too -- with varying start times, each card still
+// needs its own length to work out its own end time, even if that length
+// happens to be the same number everywhere.
 const computeShareTitle = (tasksRaw, n) => {
-  const common = { date: false, time: false, type: false };
+  const common = { date: false, time: false, name: false, type: false, recur: false, length: false };
   if (!tasksRaw.length) return { title: t("bulkShareTitle", n), common };
   const allSame = key => {
     const first = tasksRaw[0][key];
@@ -4102,16 +4116,18 @@ const computeShareTitle = (tasksRaw, n) => {
   const commonDate = allSame("date");
   const commonTime = allSame("time");
   const commonType = allSame("type");
+  const commonRecur = allSame("recur");
+  const commonLength = allSame("length");
+  const firstName = (taskDisplayName(tasksRaw[0]) || "").trim();
+  const commonName = firstName && tasksRaw.every(tk => (taskDisplayName(tk) || "").trim() === firstName) ? firstName : null;
   const parts = [];
   if (commonDate) { parts.push(fmtDate(commonDate)); common.date = true; }
   if (commonTime) { parts.push(commonTime); common.time = true; }
+  if (commonLength) { parts.push(fmtShareLength(Number(commonLength))); common.length = !!commonTime; }
+  if (commonName) { parts.push(commonName); common.name = true; }
   if (commonType) { parts.push(getTypeMeta(commonType).label); common.type = true; }
+  if (commonRecur) { parts.push(shareRecurLabel(commonRecur)); common.recur = true; }
   if (parts.length) return { title: parts.join("   •   "), common };
-  // Nothing schedule- or type-related lines up -- fall back to a shared name
-  // (distinct tasks practically never share one, but recurring-task
-  // occurrences selected together often do), or just the plain count.
-  const names = tasksRaw.map(tk => (taskDisplayName(tk) || "").trim());
-  if (names.every(nm => nm && nm === names[0])) return { title: names[0], common };
   return { title: t("bulkShareTitle", n), common };
 };
 // Builds a PNG-ready canvas for the bulk-select "Share" action -- the same
@@ -4173,17 +4189,21 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
     const status = doneT ? "done" : cancelledT ? "cancelled" : overdueT ? "late" : null;
     const payload = {
       name: taskDisplayName(task),
+      hideName: common.name,
       // Whatever's already common to every task lives in the title above --
-      // repeating the exact same date/time/type on every single card
-      // underneath it would just be noise. The name always stays: it's each
-      // card's own identity, not a detail duplicated from elsewhere.
+      // repeating the exact same date/time/name/type/repeat/duration on
+      // every single card underneath it would just be noise. Length is the
+      // one exception that isn't simply "common ? suppress": with varying
+      // start times, each card still needs its own length to work out its
+      // own end-time range, so it's only left out when time is common too
+      // (see common.length in computeShareTitle).
       date: showDetails && !common.date ? task.date : null,
       time: showDetails && !common.time ? task.time : null,
-      length: showDetails && !common.time ? task.length : null,
+      length: showDetails && !common.length ? task.length : null,
       type: task.type,
       hideType: common.type,
       note: showDetails ? task.note : null,
-      recur: showDetails ? task.recur : null,
+      recur: showDetails && !common.recur ? task.recur : null,
       status
     };
     return buildTaskShareCard(payload, colors, CARD_W, 14);
@@ -5482,41 +5502,53 @@ const shareRewindImage = async (tasks, subtitle, filename, onReveal) => {
 // makes it the containing block for any plain position:fixed descendant --
 // leaving the app's own header/nav chrome outside that card uncovered.
 // Portalling escapes that ancestor so this genuinely covers the viewport.
+// This overlay is chrome around the capture, not part of the photo itself,
+// so it always uses the app's own real, current theme (window.__baseThemeColors,
+// kept up to date by App -- see the effect that also sets data-theme) rather
+// than C.bg/C.blue/C.text3, which resolve against whatever data-theme is
+// LIVE on the page right now -- and during a capture that's often the photo's
+// own requested theme, forced on regardless of the app's real one (see
+// withForcedShareTheme). Reading those directly would make this loader
+// itself flip to the photo's theme instead of staying the app's own.
 const ShareCaptureOverlay = ({
   active
-}) => !active ? null : /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
-  "data-share-ignore": "true",
-  style: {
-    position: "fixed",
-    inset: 0,
-    zIndex: 10000,
-    background: C.bg,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 12
-  }
-}, /*#__PURE__*/React.createElement("svg", {
-  width: "26",
-  height: "26",
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: C.blue,
-  strokeWidth: "2.5",
-  style: {
-    animation: "spin 0.8s linear infinite"
-  }
-}, /*#__PURE__*/React.createElement("path", {
-  d: "M12 2a10 10 0 0 1 10 10",
-  strokeLinecap: "round"
-})), /*#__PURE__*/React.createElement("span", {
-  style: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: C.text3
-  }
-}, t("sharePreparing"))), document.body);
+}) => {
+  if (!active) return null;
+  const base = (typeof window !== "undefined" && window.__baseThemeColors) || { bg: C.bg, blue: C.blue, text3: C.text3 };
+  return /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
+    "data-share-ignore": "true",
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 10000,
+      background: base.bg,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "26",
+    height: "26",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: base.blue,
+    strokeWidth: "2.5",
+    style: {
+      animation: "spin 0.8s linear infinite"
+    }
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M12 2a10 10 0 0 1 10 10",
+    strokeLinecap: "round"
+  })), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      color: base.text3
+    }
+  }, t("sharePreparing"))), document.body);
+};
 
 //  MODAL 
 const Modal = ({
@@ -5677,11 +5709,17 @@ const Modal = ({
     setForm(f => ({
       ...f,
       name: t.name,
+      // Fill only what's still empty -- a date, time, length or repeat the
+      // person already set by hand before picking a suggestion is theirs to
+      // keep, not something a past task's own values should silently
+      // overwrite. Type has no real "empty" state to check (the form always
+      // starts on a default type), so a suggestion's type still applies the
+      // same way it always has.
       type: t.type || f.type,
-      time: t.time || f.time,
-      recur: t.recur ? String(t.recur) : f.recur,
-      length: t.length != null && t.length !== "" ? String(t.length) : f.length,
-      ...(isPend && t.date ? {
+      time: f.time ? f.time : t.time || f.time,
+      recur: f.recur ? f.recur : t.recur ? String(t.recur) : f.recur,
+      length: f.length ? f.length : t.length != null && t.length !== "" ? String(t.length) : f.length,
+      ...(isPend && t.date && !f.date ? {
         date: t.date
       } : {})
     }));
@@ -24430,6 +24468,19 @@ function App() {
     // device whose OS is dark falls back to the prefers-color-scheme CSS and
     // stays dark even when the app (or a share capture) asks for light.
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    // Cache the real (never temporarily-forced) theme's resolved colors --
+    // right now used only by ShareCaptureOverlay's loading spinner, which is
+    // chrome around a share capture rather than part of the photo, and must
+    // keep looking like the rest of the app even while withForcedShareTheme
+    // has data-theme (and window.__dark) flipped to whatever theme the
+    // photo itself was asked for. This effect depends only on `dark` (the
+    // real React state), which a forced capture never touches, so it simply
+    // never reruns -- and this cache never goes stale -- during one.
+    window.__baseThemeColors = {
+      bg: resolveCssColor("var(--bg)"),
+      blue: resolveCssColor("var(--blue)"),
+      text3: resolveCssColor("var(--text3)")
+    };
   }, [dark]);
   useEffect(() => {
     document.documentElement.dir = lang === "he" ? "rtl" : "ltr";
