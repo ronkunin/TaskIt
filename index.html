@@ -288,7 +288,7 @@ const T = {
     fillDetails: "Fill in the task details below",
     shareTask: "Share task as image",
     shareCopied: "Image copied to clipboard",
-    shareFailed: "Couldn't copy — image downloaded instead",
+    shareFailed: "Couldn't copy, image downloaded instead",
     shareUpNext: "Share upcoming tasks as image",
     shareWeek: "Share week as image",
     shareMonth: "Share month as image",
@@ -420,10 +420,10 @@ const T = {
     // Data modal
     taskData: "Task Data",
     exportImport: "Export or import your tasks as JSON",
-    replaceWarning: "Adds these tasks to your existing ones — anything that matches an existing task (same name, date, time & type) is skipped as a duplicate.",
+    replaceWarning: "Adds these tasks to your existing ones. Anything that matches an existing task (same name, date, time & type) is skipped as a duplicate.",
     resetTab: "🗑️ Reset",
     resetTitle: "Reset Everything",
-    resetDesc: "Delete all tasks, charts, and settings — then reload the app fresh.",
+    resetDesc: "Delete all tasks, charts, and settings, then reload the app fresh.",
     resetWarning: "⚠️ This cannot be undone. All your data will be permanently deleted.",
     resetConfirm: "Yes, Delete Everything",
     resetCancel: "Keep My Data",
@@ -471,7 +471,7 @@ const T = {
     fillDetails: "מלא את פרטי המשימה",
     shareTask: "שתף משימה כתמונה",
     shareCopied: "התמונה הועתקה ללוח",
-    shareFailed: "ההעתקה נכשלה — התמונה הורדה במקום",
+    shareFailed: "ההעתקה נכשלה, התמונה הורדה במקום",
     shareUpNext: "שתף את המשימות הקרובות כתמונה",
     shareWeek: "שתף את השבוע כתמונה",
     shareMonth: "שתף את החודש כתמונה",
@@ -593,10 +593,10 @@ const T = {
     progressDashboard: "לוח התקדמות",
     taskData: "נתוני משימות",
     exportImport: "ייצא או ייבא את המשימות שלך כ-JSON",
-    replaceWarning: "המשימות האלה יתווספו לקיימות שלך — כל משימה שכבר קיימת (אותו שם, תאריך, שעה וסוג) תדולג כברירת מחדל.",
+    replaceWarning: "המשימות האלה יתווספו לקיימות שלך. כל משימה שכבר קיימת (אותו שם, תאריך, שעה וסוג) תדולג כברירת מחדל.",
     resetTab: "🗑️ איפוס",
     resetTitle: "איפוס הכל",
-    resetDesc: "מחק את כל המשימות, הגרפים וההגדרות — ורענן את האפליקציה מחדש.",
+    resetDesc: "מחק את כל המשימות, הגרפים וההגדרות, ורענן את האפליקציה מחדש.",
     resetWarning: "⚠️ לא ניתן לבטל פעולה זו. כל הנתונים שלך יימחקו לצמיתות.",
     resetConfirm: "כן, מחק הכל",
     resetCancel: "שמור את הנתונים שלי",
@@ -770,17 +770,23 @@ const TYPE_META = {
 // theme, matching the built-ins' recipe instead of deriving bg/border from
 // the accent via alpha.
 // 15 custom-type slots, most vivid first so a handful of custom types get
-// the most distinct colors: orange, violet, gold, cyan, fuchsia, lime, brown, slate, plum, olive, denim, sand, sage, lavender, graphite.
+// the most distinct colors: orange, violet, mustard, cyan, fuchsia, lime,
+// brown, slate, plum, olive, chestnut, sand, sage, lavender, graphite.
 // Deliberately NO red/rose/pink (reads as a cancelled task) and NO pure or
 // mint green (reads as a completed task) -- lime is yellow-green and sage is
 // a muted gray-green, both clearly apart from the completed green. Also kept
-// clear of the built-in types' blue/indigo/teal/sky/amber.
-const CUSTOM_COLORS_LIGHT = ["#C2570C", "#6D28D9", "#A16207", "#0E7490", "#86198F", "#4D7C0F", "#7C3F1D", "#475569", "#7E3A6E", "#5F5F15", "#34557A", "#7D6A45", "#4F6B52", "#6B5B95", "#3F3F46"];
-const CUSTOM_BG_LIGHT = ["#FFDAB8", "#DED2FF", "#FDEFA0", "#B9EAF5", "#F5C6F5", "#D9F5A8", "#EED9C8", "#DDE3EB", "#EBD3E6", "#E8E6B8", "#D3DFEE", "#EDE3CF", "#D8E5D6", "#E3DDF2", "#E4E4E7"];
-const CUSTOM_BORDER_LIGHT = ["#FB9550", "#A78BFA", "#EAB308", "#5FD0E0", "#E29FE2", "#A3D65C", "#B07A55", "#94A3B8", "#B874A8", "#A8A548", "#7F9DC2", "#BFA97A", "#93AE93", "#A898CF", "#A1A1AA"];
-const CUSTOM_COLORS_DARK = ["#FF9540", "#B69CFF", "#FACC15", "#3EE0F5", "#E27BFA", "#A3E635", "#D6A079", "#B4C2D4", "#DA9BCB", "#D4D16A", "#9DB8DA", "#D9C59A", "#A9C4A6", "#B9ABE0", "#D4D4D8"];
-const CUSTOM_BG_DARK = ["#4A2A08", "#2E2166", "#423508", "#0A3A47", "#3E1250", "#33420C", "#3B2416", "#243040", "#3A1834", "#33320E", "#1C2B3F", "#352C1B", "#1F2D21", "#2A2340", "#27272A"];
-const CUSTOM_BORDER_DARK = ["#C2660C", "#5B48B8", "#B8930C", "#157C93", "#8A2FA8", "#7CA829", "#8C5A3A", "#5E6F85", "#93508A", "#8A8733", "#4D6D94", "#8F7B52", "#5F7D60", "#6E5E9A", "#71717A"];
+// clear of every built-in type's own color -- blue (regular, and now
+// "google" too, see getTypeMeta), indigo (repeated/weekly), teal (general),
+// sky (daily), and amber (calendar/holiday). Mustard and cyan are the two
+// tightest spots (wedged near amber, and between teal and sky) -- both are
+// pulled noticeably darker/more muted than those built-ins so they read as a
+// different tone, not just a slightly different angle on the same hue.
+const CUSTOM_COLORS_LIGHT = ["#C2570C", "#6D28D9", "#713F12", "#155E75", "#86198F", "#4D7C0F", "#7C3F1D", "#475569", "#7E3A6E", "#5F5F15", "#7C2D12", "#7D6A45", "#4F6B52", "#6B5B95", "#3F3F46"];
+const CUSTOM_BG_LIGHT = ["#FFDAB8", "#DED2FF", "#F3E8C9", "#C9EDF2", "#F5C6F5", "#D9F5A8", "#EED9C8", "#DDE3EB", "#EBD3E6", "#E8E6B8", "#F1DACD", "#EDE3CF", "#D8E5D6", "#E3DDF2", "#E4E4E7"];
+const CUSTOM_BORDER_LIGHT = ["#FB9550", "#A78BFA", "#C9A227", "#4FB8D1", "#E29FE2", "#A3D65C", "#B07A55", "#94A3B8", "#B874A8", "#A8A548", "#C2703F", "#BFA97A", "#93AE93", "#A898CF", "#A1A1AA"];
+const CUSTOM_COLORS_DARK = ["#FF9540", "#B69CFF", "#D4A72C", "#67C9DE", "#E27BFA", "#A3E635", "#D6A079", "#B4C2D4", "#DA9BCB", "#D4D16A", "#E08659", "#D9C59A", "#A9C4A6", "#B9ABE0", "#D4D4D8"];
+const CUSTOM_BG_DARK = ["#4A2A08", "#2E2166", "#332705", "#0B2E38", "#3E1250", "#33420C", "#3B2416", "#243040", "#3A1834", "#33320E", "#341207", "#352C1B", "#1F2D21", "#2A2340", "#27272A"];
+const CUSTOM_BORDER_DARK = ["#C2660C", "#5B48B8", "#92650A", "#0E6B82", "#8A2FA8", "#7CA829", "#8C5A3A", "#5E6F85", "#93508A", "#8A8733", "#7C3410", "#8F7B52", "#5F7D60", "#6E5E9A", "#71717A"];
 const isDarkNow = () => typeof window !== "undefined" && !!window.__dark;
 const getCustomColors = () => isDarkNow() ? CUSTOM_COLORS_DARK : CUSTOM_COLORS_LIGHT;
 // Assigns each custom type's color by its alphabetical rank among every
@@ -814,7 +820,10 @@ const customTypeMeta = type => {
   };
 };
 // Get meta for any type -- built-in or custom
-const GOOGLE_TYPE_COLOR = "#4285F4"; // Google's own blue, kept distinct from every built-in/custom color
+// Google's own brand blue -- kept only for the "load Google Calendar
+// events" settings toggle accent below, unrelated to task-type colors now
+// that Google-sourced tasks use the same color as "regular" (see getTypeMeta).
+const GOOGLE_TYPE_COLOR = "#4285F4";
 const getTypeMeta = type => {
   if (!type) {
     const m = TYPE_META.general;
@@ -824,12 +833,20 @@ const getTypeMeta = type => {
     };
   }
   if (type === "google") {
+    // Same color as the default "regular" schedule type -- a Google-sourced
+    // event isn't a meaningfully different kind of task from the person's
+    // own perspective, so it no longer gets its own reserved hue (that used
+    // to be Google's own brand blue, kept deliberately apart from
+    // everything else). Label still says "Google" so it's still clear
+    // where the task came from -- labelKey is explicitly cleared, not just
+    // left as "regular"'s, so nothing that re-derives a label from it later
+    // instead of from the already-translated `label` above ends up showing
+    // "Schedule" for a Google-sourced task.
+    const m = TYPE_META.regular;
     return {
-      label: getLang() === "he" ? "גוגל" : "Google",
-      color: GOOGLE_TYPE_COLOR,
-      bg: GOOGLE_TYPE_COLOR + "18",
-      border: GOOGLE_TYPE_COLOR + "44",
-      dot: GOOGLE_TYPE_COLOR
+      ...m,
+      labelKey: null,
+      label: getLang() === "he" ? "גוגל" : "Google"
     };
   }
   if (TYPE_META[type]) {
@@ -1322,8 +1339,8 @@ const setHebcalSyncedDate = ds => {
 // ── Holiday opt-in preferences ────────────────────────────────────────────────
 const PREF_IL = "taskflow_pref_il"; // "yes" | "no" | null (unset = first time)
 const PREF_INTL = "taskflow_pref_intl"; // "yes" | "no" | null
-const PREF_LOOKAHEAD = "taskflow_pref_lookahead"; // "yes" | "no" — default "yes"
-const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null — default ON (only an explicit "no" turns it off)
+const PREF_LOOKAHEAD = "taskflow_pref_lookahead"; // "yes" | "no" (default yes"
+const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null (default ON, only an explicit no" turns it off)
 const PREF_SINGLE_COLUMN_LISTS = "taskflow_pref_single_column_lists"; // "yes" | "no" | null — default OFF (relative-width columns, as today)
 const ONBOARDED_KEY = "taskflow_onboarded"; // presence = the welcome dialog has already run once
 const getPref = key => localStorage.getItem(key); // null | "yes" | "no"
@@ -1366,7 +1383,7 @@ const addHebcalIds = ids => {
 // Build a deterministic id for a holiday so we never duplicate it
 const hebcalTaskId = item => "hebcal_" + item.date.slice(0, 10) + "_" + item.title.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_\u0590-\u05FF]/g, "");
 const fetchHebcalHolidays = async (startDs, endDs) => {
-  if (!navigator.onLine) throw new Error("Offline — will retry when online");
+  if (!navigator.onLine) throw new Error("Offline, will retry when online");
   const url = `https://www.hebcal.com/hebcal?v=1&cfg=json&mod=on&maj=on&min=on&ss=off&i=on&m=0&geo=geoname&geonameid=294801&start=${startDs}&end=${endDs}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("Hebcal fetch failed");
@@ -4204,13 +4221,16 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   };
   // Every card the exact same size -- not just row-aligned tops, the same
   // height across the whole grid -- so both rows and columns line up
-  // straight. Built twice: once to measure each card's own natural height,
-  // then again with every card told to be at least as tall as the tallest
-  // one (buildTaskShareCard's own minHeight already draws the background
-  // box that tall while keeping the content itself top-aligned, so a short
-  // card just gets clean empty space below it rather than stretched text).
+  // straight. Only when there's actually more than one column: with a
+  // single column there's nothing to line up against, so each card just
+  // takes whatever height it naturally needs, same as the single-task share.
+  // Built twice: once to measure each card's own natural height, then again
+  // with every card told to be at least as tall as the tallest one
+  // (buildTaskShareCard's own minHeight already draws the background box
+  // that tall while keeping the content itself top-aligned, so a short card
+  // just gets clean empty space below it rather than stretched text).
   const naturalCards = tasksRaw.map(t => buildCard(t));
-  const maxCardHeight = Math.max(0, ...naturalCards.map(c => c.height));
+  const maxCardHeight = colCount > 1 ? Math.max(0, ...naturalCards.map(c => c.height)) : 0;
   const allCards = maxCardHeight ? tasksRaw.map(t => buildCard(t, maxCardHeight)) : naturalCards;
   // Row by row, colCount cards at a time -- the last row may hold fewer.
   const rows = [];
@@ -5105,7 +5125,7 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
   {
     const notice = stats.completedCount >= stats.cancelledCount
       ? (isHe ? `${stats.completionRate}% מהכול הגיע לקו הסיום` : `${stats.completionRate}% of everything made it to the finish line`)
-      : (isHe ? "רוב הדברים לא הושלמו — אולי הגיע הזמן לנקות" : "More was dropped than finished — worth a cleanup");
+      : (isHe ? "רוב הדברים לא הושלמו, אולי הגיע הזמן לנקות" : "More was dropped than finished, worth a cleanup");
     section(isHe ? "החלוקה" : "The split", isHe ? "איך זה נגמר" : "How it ended up", notice, EMERALD);
     push(212, (ctx, y) => {
       const ph = 198;
@@ -5476,18 +5496,21 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
   return canvas;
 };
 // Builds and shares a Rewind card for whatever task list the caller passes
+// Builds and shares a Rewind card for whatever task list the caller passes
 // in (e.g. a search's current filtered results) -- always rendered in light
 // mode regardless of the person's actual theme, since it's meant to read
-// the same wherever it ends up. onReveal, if given, fires only once the
-// forced theme has actually been applied (and settled) -- callers use it to
-// flip on their own loading overlay so that overlay never appears, however
-// briefly, still painted in the site's own (different) theme first. Showing
-// it any earlier is exactly what used to make the loader itself flash from
-// one theme to the other mid-spin.
+// the same wherever it ends up. onReveal, if given, fires immediately, before
+// the forced-light-mode flip -- callers use it to flip on their own loading
+// overlay right away, which is what actually covers the screen before that
+// flip's brief flash of the real page in the wrong theme becomes visible.
+// (ShareCaptureOverlay's own colors are independent of the forced theme --
+// see window.__baseThemeColors -- so there's no reason to delay this to
+// avoid the *overlay itself* looking wrong; the only reason left to show it
+// this early is to hide what's behind it.)
 const shareRewindImage = async (tasks, subtitle, filename, onReveal) => {
   try {
+    if (onReveal) onReveal();
     await withForcedShareTheme(true, async () => {
-      if (onReveal) onReveal();
       appToast(t("sharePreparing"));
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const stats = computeRewindStats(tasks || []);
@@ -6924,14 +6947,7 @@ const Modal = ({
         cursor: "pointer",
         padding: 0
       }
-    }, isHe ? "נקה תאריך" : "Clear date"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11,
-        color: C.text4,
-        marginTop: 6,
-        lineHeight: 1.4
-      }
-    }, isHe ? "למשימות שנמשכות יותר מיום אחד — תופיע בכל יום עד תאריך הסיום (בתצוגת שבוע היא תוצג למעלה, כמו משימה ללא שעה)." : "For tasks that run longer than one day — appears every day through the finish date (shows up top in Week view, like a timeless task).")), hasDate && /*#__PURE__*/React.createElement("div", {
+    }, isHe ? "נקה תאריך" : "Clear date")), hasDate && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: hasRecur ? 16 : 0
       }
@@ -7514,9 +7530,9 @@ const MonthView = ({
   const shareMonthImage = async options => {
     if (sharingMonth) return;
     setShareOptions(options || null);
+    setSharingMonth(true);
     try {
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
-        setSharingMonth(true);
         appToast(t("sharePreparing"));
         // Always flip captureWide before snapshotting -- not just on a narrow
         // phone screen. This is what forces the landscape capture width, hides
@@ -9180,9 +9196,9 @@ const WeekView = ({
   const shareWeekImage = async options => {
     if (sharingWeek) return;
     setShareOptions(options || null);
+    setSharingWeek(true);
     try {
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
-        setSharingWeek(true);
         appToast(t("sharePreparing"));
         // Always flip captureWide before snapshotting -- not just on a narrow
         // phone screen. Besides forcing the wide (desktop) layout when needed,
@@ -10659,9 +10675,9 @@ const ListByType = ({
   const shareByTypeImage = async options => {
     if (sharingType) return;
     setShareOptions(options || null);
+    setSharingType(true);
     try {
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
-        setSharingType(true);
         appToast(t("sharePreparing"));
         // Wait a couple of frames for the capture-only expansion (every
         // section forced open) and padding/background below -- plus the
@@ -14896,9 +14912,9 @@ const Dashboard = ({
   const shareUpNextImage = async options => {
     if (sharingUpNext) return;
     setShareOptions(options || null);
+    setSharingUpNext(true);
     try {
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
-        setSharingUpNext(true);
         appToast(t("sharePreparing"));
         // Wait a couple of frames for the capture-only padding/background
         // above (and the loading overlay covering the screen) to actually
@@ -14979,7 +14995,7 @@ const Dashboard = ({
       const involvesOverview = nextSection === 'overview' || appliedSection === 'overview';
       if (sectionTimer) clearTimeout(sectionTimer);
       if (involvesOverview) {
-        sectionTimer = setTimeout(apply, 140);
+        sectionTimer = setTimeout(apply, 70);
       } else {
         apply();
       }
@@ -16853,29 +16869,29 @@ const WelcomeModal = ({
     gradient: "linear-gradient(135deg,#3B82F6,#2563EB)",
     title: isHe ? "המשימות שלך, בדרך שלך" : "Your tasks, your way",
     desc: isHe
-      ? "עקבו לפי תאריך או לפי סוג, ועברו בין בית, שבוע, חודש ורשימה — מה שמתאים לרגע."
-      : "Track by date or by type, and move between Home, Week, Month and List — whichever fits the moment."
+      ? "עקבו לפי תאריך או לפי סוג, ועברו בין בית, שבוע, חודש ורשימה, מה שמתאים לרגע."
+      : "Track by date or by type, and move between Home, Week, Month and List, whichever fits the moment."
   }, {
     icon: "📊",
     gradient: "linear-gradient(135deg,#8B5CF6,#6D28D9)",
     title: isHe ? "גרפים שלא משקרים" : "Charts that keep you honest",
     desc: isHe
-      ? "עוגה, עמודות, מד וטריי-מאפ — ממתין, הושלם ובוטל במבט אחד, לכל טווח תאריכים או סוג."
-      : "Pie, bar, gauge and treemap charts — pending, completed and cancelled at a glance, for any date range or type."
+      ? "עוגה, עמודות, מד וטריי-מאפ: ממתין, הושלם ובוטל במבט אחד, לכל טווח תאריכים או סוג."
+      : "Pie, bar, gauge and treemap charts: pending, completed and cancelled at a glance, for any date range or type."
   }, {
     icon: "🔗",
     gradient: "linear-gradient(135deg,#10B981,#059669)",
     title: isHe ? "שוטף עם Google Calendar" : "Fluent with Google Calendar",
     desc: isHe
-      ? "כל סוג משימה הופך ללוח שנה צבעוני משלו ב-Google, מסונכרן בשני הכיוונים — ערכו בכל צד, זה נשאר מסונכרן."
-      : "Every task type becomes its own color-coded Google calendar, synced both ways — edit on either side and it just stays in sync."
+      ? "כל סוג משימה הופך ללוח שנה צבעוני משלו ב-Google, מסונכרן בשני הכיוונים. ערכו בכל צד וזה נשאר מסונכרן."
+      : "Every task type becomes its own color-coded Google calendar, synced both ways. Edit on either side and it just stays in sync."
   }, {
     icon: "📴",
     gradient: "linear-gradient(135deg,#F59E0B,#D97706)",
     title: isHe ? "עובד מצוין גם אופליין" : "Works great offline too",
     desc: isHe
       ? "שום דבר כאן לא דורש חשבון. הכול נשמר על המכשיר שלכם, ואפשר להתחבר ל-Google מאוחר יותר מההגדרות."
-      : "Nothing here needs an account. Everything saves right on your device — connect Google later, any time, from Settings."
+      : "Nothing here needs an account. Everything saves right on your device. Connect Google later, any time, from Settings."
   }];
   useEffect(() => {
     if (open) {
@@ -17502,7 +17518,7 @@ const SettingsModal = ({
       return;
     }
     if (type === "calendar") {
-      setIcsMsg(isHe ? "‘calendar’ שמור לחגים — בחר שם אחר" : "'calendar' is reserved for holidays — pick another name");
+      setIcsMsg(isHe ? "‘calendar’ שמור לחגים, בחר שם אחר" : "'calendar' is reserved for holidays, pick another name");
       return;
     }
     setIcsBusy(true);
@@ -17707,7 +17723,7 @@ const SettingsModal = ({
         ? (isHe
             ? `נוספו ${fresh.length} משימות${dupCount > 0 ? ` · ${dupCount} כבר קיימות ודולגו` : ""}`
             : `Added ${fresh.length} task${fresh.length === 1 ? "" : "s"}${dupCount > 0 ? ` · ${dupCount} already here, skipped` : ""}`)
-        : (isHe ? "הכול כבר קיים — לא נוסף דבר" : "Everything was already here — nothing added"));
+        : (isHe ? "הכול כבר קיים, לא נוסף דבר" : "Everything was already here, nothing added"));
       setJsonText("");
     } catch {
       setLoadError(t("invalidJson"));
@@ -17989,7 +18005,7 @@ const SettingsModal = ({
       : gcalStatus
         ? gcalStatus
         : gcalConnected
-          ? (isHe ? "מחובר — משימות מסתנכרנות אוטומטית" : "Connected — tasks sync automatically")
+          ? (isHe ? "מחובר, משימות מסתנכרנות אוטומטית" : "Connected, tasks sync automatically")
           : (isHe ? "לא מחובר" : "Not connected")
   }, /*#__PURE__*/React.createElement("button", {
     onClick: gcalConnected ? onDisconnectGCal : onConnectGCal,
@@ -18070,7 +18086,7 @@ const SettingsModal = ({
     style: { fontWeight: 700, marginBottom: 4, color: C.text2 }
   }, isHe ? "לא מסונכרן:" : "Not syncing:"),
     gcalStats.problems.map(pr => /*#__PURE__*/React.createElement("div", { key: pr.id },
-      "• " + (pr.name || (isHe ? "ללא שם" : "untitled")) + " — " + (
+      "• " + (pr.name || (isHe ? "ללא שם" : "untitled")) + ": " + (
         pr.reason === "nodate" ? (isHe ? "אין תאריך" : "no date")
         : pr.reason === "baddate" ? (isHe ? "תאריך לא תקין" : "invalid date")
         : pr.reason === "badtime" ? (isHe ? "שעה לא תקינה" : "invalid time")
@@ -18129,7 +18145,7 @@ const SettingsModal = ({
     label: isHe ? "העתק JSON" : "Copy JSON",
     sub: copyPickerOpen
       ? (isHe ? "בחר אילו סוגים לכלול" : "Choose which types to include")
-      : (isHe ? "ייצא משימות ללוח — אפשר לבחור סוגים" : "Export tasks to clipboard — pick which types")
+      : (isHe ? "ייצא משימות ללוח, אפשר לבחור סוגים" : "Export tasks to clipboard, pick which types")
   }, /*#__PURE__*/React.createElement("button", {
     onClick: e => deferAfterBlur(e, () => copyPickerOpen ? setCopyPickerOpen(false) : openCopyPicker()),
     style: {
@@ -18231,7 +18247,7 @@ const SettingsModal = ({
     : (isHe ? `העתק ${selectedCopyCount} משימות` : `Copy ${selectedCopyCount} task${selectedCopyCount === 1 ? "" : "s"}`)))), /*#__PURE__*/React.createElement(Row, {
     icon: "📂",
     label: isHe ? "טען JSON" : "Load JSON",
-    sub: isHe ? "מוסיף משימות בלי למחוק קיימות — כפילויות ידולגו" : "Adds tasks without deleting existing ones — duplicates are skipped"
+    sub: isHe ? "מוסיף משימות בלי למחוק קיימות, כפילויות ידולגו" : "Adds tasks without deleting existing ones, duplicates are skipped"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: e => deferAfterBlur(e, () => setLoadOpen(v => !v)),
     style: {
@@ -18514,7 +18530,7 @@ const SettingsModal = ({
   }, isHe ? "אפליקציה" : "App"), /*#__PURE__*/React.createElement(Row, {
     icon: "🔄",
     label: (isHe ? "עדכן אפליקציה" : "Update App") + " (" + APP_VERSION + ")",
-    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload — keeps all your data"
+    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload, keeps all your data"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: handleUpdate,
     style: {
@@ -18993,10 +19009,12 @@ const SearchView = ({
   // whatever the current filters turn up (see computeRewindStats /
   // drawRewindCanvas) rather than screenshotting the results screen --
   // chartTitle already describes the active filters in one line, reused
-  // here as the card's subtitle. The busy overlay only switches on once
-  // shareRewindImage's forced-light-mode flip has already landed (see
-  // onReveal there), so it never itself flashes from the site's own theme
-  // into the forced one.
+  // here as the card's subtitle. The busy overlay switches on immediately
+  // (see onReveal in shareRewindImage), before the forced-light-mode flip --
+  // it covers the screen before that flip can flash the real page in the
+  // wrong theme, and its own colors are pinned to the app's real theme
+  // regardless (see window.__baseThemeColors), so there's nothing for it to
+  // get wrong by showing up this early.
   const shareSearchImage = async () => {
     if (sharingSearch) return;
     try {
@@ -19977,7 +19995,7 @@ const SearchView = ({
           fontWeight: 700,
           color: C.text3
         }
-      }, "—"), /*#__PURE__*/React.createElement("span", {
+      }, "-"), /*#__PURE__*/React.createElement("span", {
         style: {
           fontSize: 12,
           fontWeight: 600,
@@ -20980,7 +20998,7 @@ const GCal = (() => {
   // with several "TaskIt · work"-looking entries.
   async function reconcileAndDedupe() {
     const { events, complete } = await pullAll();
-    if (!complete) throw Object.assign(new Error("Could not read every calendar — nothing was deleted"), { status: 0 });
+    if (!complete) throw Object.assign(new Error("Could not read every calendar, nothing was deleted"), { status: 0 });
     const canonical = await getCalendars(true); // type -> one chosen id
 
     const byTid = {};
@@ -21530,7 +21548,34 @@ const BulkActionBar = ({
     size: 18,
     color: "currentColor"
   }), isHe ? "בחירה" : "Quick pick") : null;
-  const actions = [quickSelectBtn, btn("calendar", t("bulkSetDate"), "date"), btn("clock", t("bulkSetTime"), "time"), btn("tag", t("bulkSetType"), "type"), btn("share", t("bulkShare"), "share"), btn("noteIcon", t("bulkClearDetails"), "clear"), btn("trash", t("bulkDelete"), "delete", true)].filter(Boolean);
+  // Thin vertical rule between action groups (see `actions` below) -- purely
+  // visual, so it always stretches to match whatever height the row ends up
+  // (narrow: fixed-height icon buttons; wide: shrink-to-fit column buttons).
+  const divider = key => /*#__PURE__*/React.createElement("div", {
+    key,
+    style: {
+      alignSelf: "stretch",
+      width: 1,
+      margin: narrow ? "8px 2px" : "6px 4px",
+      background: C.border2,
+      flexShrink: 0
+    }
+  });
+  // Grouped delete+clear | share | the three "set X" pickers | quick-select,
+  // with a rule between each group -- quick-select's own divider is only
+  // added when quick-select itself is actually there to divide from (see
+  // quickSelectBtn above, null on screens that don't provide quick picks).
+  const actions = [
+    btn("trash", t("bulkDelete"), "delete", true),
+    btn("noteIcon", t("bulkClearDetails"), "clear"),
+    divider("div-share"),
+    btn("share", t("bulkShare"), "share"),
+    divider("div-sets"),
+    btn("calendar", t("bulkSetDate"), "date"),
+    btn("clock", t("bulkSetTime"), "time"),
+    btn("tag", t("bulkSetType"), "type"),
+    ...(quickSelectBtn ? [divider("div-quickselect"), quickSelectBtn] : [])
+  ].filter(Boolean);
   // Inline replacement for the action-icon row while a picker is active --
   // this lives in the exact same bar, so picking a date/time/type never
   // opens a separate screen. Choosing a value only stages it here; a "Set"
@@ -22123,9 +22168,9 @@ function App() {
   const shareSelectedTasksImage = async options => {
     if (bulkSharing || selectedIds.size === 0) return;
     setBulkShareOptions(options || null);
+    setBulkSharing(true);
     try {
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
-        setBulkSharing(true);
         appToast(t("sharePreparing"));
         // Same beat every other share gives the forced theme to actually
         // apply (a re-render updates the CSS variables the canvas reads)
@@ -22222,6 +22267,16 @@ function App() {
     startY: 0,
     active: false
   });
+  // The view to return to on a swipe-dismiss from search (see the swipe
+  // handler below) -- search isn't part of the normal tab sequence
+  // (SWIPE_VIEWS), so there's no "next" or "previous" tab to swipe between;
+  // a swipe there just means "take me back to what I was looking at".
+  // Always the most recent OTHER view, updated any time `view` changes away
+  // from search, so it's correct regardless of how search was entered.
+  const lastNonSearchViewRef = useRef(view);
+  useEffect(() => {
+    if (view !== "search") lastNonSearchViewRef.current = view;
+  }, [view]);
   const [fabBreathing, setFabBreathing] = useState(false);
   const [fabShock, setFabShock] = useState(false);
   const fabIdleTimer = useRef(null);
@@ -24369,8 +24424,8 @@ function App() {
         bg: "var(--red-bg)", border: "var(--red-border)", color: "var(--red)",
         label: isHePill ? "שמירה נכשלה" : "Save failed", pulse: true,
         title: isHePill
-          ? "לא ניתן לשמור שינויים במכשיר הזה (יתכן שהאחסון מלא או חסום). השינויים שלך עדיין מוצגים אבל לא נשמרים — פנה מקום פנוי או ייצא את הנתונים שלך."
-          : "Changes aren't being saved on this device (storage may be full or blocked). What you see is still here, but it isn't being written to disk — free up space or export your data."
+          ? "לא ניתן לשמור שינויים במכשיר הזה (יתכן שהאחסון מלא או חסום). השינויים שלך עדיין מוצגים אבל לא נשמרים. פנה מקום פנוי או ייצא את הנתונים שלך."
+          : "Changes aren't being saved on this device (storage may be full or blocked). What you see is still here, but it isn't being written to disk. Free up space or export your data."
       },
       offline: {
         bg: "var(--red-bg)", border: "var(--red-border)", color: "var(--red)",
@@ -24462,7 +24517,15 @@ function App() {
     window.__customTypes = [...new Set(mergeUniqueTasks(tasks, archiveTasks).map(t => t.type).filter(isCustomType))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   }
   const [, setRenderTick] = useState(0);
-  if (typeof window !== "undefined") window.__appForceRender = () => setRenderTick(n => n + 1);
+  // flushSync, not a plain setState: a share capture calls this expecting
+  // every descendant's colors to be fully repainted the instant it returns
+  // (see withForcedShareTheme), not merely scheduled -- a big screen (a full
+  // month grid, a long list) can take longer to reconcile than the couple of
+  // animation frames the capture then waits, and html2canvas can end up
+  // snapshotting mid-render: some chips already repainted in the forced
+  // theme, others still showing the old one. Forcing this update to commit
+  // synchronously removes that race instead of just narrowing it.
+  if (typeof window !== "undefined") window.__appForceRender = () => ReactDOM.flushSync(() => setRenderTick(n => n + 1));
   if (typeof window !== "undefined") window.__openLoad = () => {
     setDataModalTab("load");
     setDataModalOpen(true);
@@ -24776,7 +24839,7 @@ function App() {
     }
   }, gcalBusy
     ? (getLang() === "he" ? "מתחבר מחדש…" : "Reconnecting…")
-    : (getLang() === "he" ? "⚠️ Google Calendar מנותק — הקש כדי להתחבר מחדש" : "⚠️ Google Calendar disconnected — tap to reconnect")
+    : (getLang() === "he" ? "⚠️ Google Calendar מנותק, הקש כדי להתחבר מחדש" : "⚠️ Google Calendar disconnected, tap to reconnect")
   ), /*#__PURE__*/React.createElement("header", {
     ref: appHeaderRef,
     style: {
@@ -25582,6 +25645,12 @@ function App() {
       const dx = e.changedTouches[0].clientX - s.startX,
         dy = e.changedTouches[0].clientY - s.startY;
       if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx)) return;
+      if (view === "search") {
+        // Either direction just dismisses search back to wherever the
+        // person was before -- there's no adjacent tab to swipe toward.
+        navigateTo(lastNonSearchViewRef.current);
+        return;
+      }
       const swipeViews = narrow ? SWIPE_VIEWS : WIDE_SWIPE_VIEWS;
       const cur = swipeViews.indexOf(view);
       if (cur === -1) return;
