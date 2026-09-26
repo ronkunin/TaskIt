@@ -2968,7 +2968,11 @@ const TaskCard = ({
     };
   }, [hovered]);
   const _noteText = task.note != null && String(task.note).trim() ? String(task.note) : "";
-  const _showNote = (hovered || noteOpen) && !!_noteText;
+  // A location with no note still needs somewhere to show (see the
+  // expandable box below, which now renders whenever either is present) --
+  // so this has to open on hover/tap even without note text of its own.
+  const _hasExpandable = !!_noteText || !!task.location;
+  const _showNote = (hovered || noteOpen) && _hasExpandable;
 
   // Close noteOpen when clicking outside card or note
   useEffect(() => {
@@ -3378,7 +3382,7 @@ const TaskCard = ({
     name: "x",
     size: 13,
     color: "#BE123C"
-  }))))), _noteText && /*#__PURE__*/React.createElement("div", {
+  }))))), _hasExpandable && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateRows: _showNote ? "1fr" : "0fr",
@@ -4159,28 +4163,18 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   const CARD_GAP = 12;
   // Spread across up to 8 columns using the exact same formula the "by type"
   // share uses (shareColumnCount) -- more tasks, more (and slightly
-  // narrower) columns. Unlike "by type", there's no grouping to preserve
-  // here (an arbitrary bulk selection isn't sectioned by anything), so this
-  // just splits the already-sorted flat list into that many even-as-possible
-  // runs, left to right (right to left in Hebrew).
+  // narrower) columns. Filled in reading order, one row at a time: the
+  // already-sorted flat list goes into row 0's columns left to right (right
+  // to left in Hebrew), then row 1's, and so on -- like text wrapping, not
+  // one column filled all the way down before starting the next.
   const shareColumns = shareColumnCount(tasksRaw.length);
-  const CARD_W = shareColumns > 1 ? 280 : 420;
+  const colCount = shareColumns;
+  const CARD_W = colCount > 1 ? 280 : 420;
   const SHARE_COL_GAP = 16;
-  const target = Math.max(1, Math.ceil(tasksRaw.length / shareColumns));
-  const colCount = Math.max(1, Math.ceil(tasksRaw.length / target));
-  const base = Math.floor(tasksRaw.length / colCount);
-  const rem = tasksRaw.length % colCount;
-  const taskColumns = [];
-  let cursor = 0;
-  for (let i = 0; i < colCount; i++) {
-    const size = base + (i < rem ? 1 : 0);
-    taskColumns.push(tasksRaw.slice(cursor, cursor + size));
-    cursor += size;
-  }
   // Rounded corners since several of these sit stacked in one frame and each
   // needs to read as its own distinct card -- unlike the single-task share,
   // where the one card is flush with the frame's own inset.
-  const buildCard = task => {
+  const buildCard = (task, minHeight = 0) => {
     const doneT = markCompleted && isDone(task);
     const cancelledT = markCompleted && isCancelled(task);
     // A done/cancelled task is never "overdue"; with the mark off it is
@@ -4206,9 +4200,25 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
       recur: showDetails && !common.recur ? task.recur : null,
       status
     };
-    return buildTaskShareCard(payload, colors, CARD_W, 14);
+    return buildTaskShareCard(payload, colors, CARD_W, 14, minHeight);
   };
-  const columnsOfCards = taskColumns.map(col => col.map(buildCard));
+  // Every card the exact same size -- not just row-aligned tops, the same
+  // height across the whole grid -- so both rows and columns line up
+  // straight. Built twice: once to measure each card's own natural height,
+  // then again with every card told to be at least as tall as the tallest
+  // one (buildTaskShareCard's own minHeight already draws the background
+  // box that tall while keeping the content itself top-aligned, so a short
+  // card just gets clean empty space below it rather than stretched text).
+  const naturalCards = tasksRaw.map(t => buildCard(t));
+  const maxCardHeight = Math.max(0, ...naturalCards.map(c => c.height));
+  const allCards = maxCardHeight ? tasksRaw.map(t => buildCard(t, maxCardHeight)) : naturalCards;
+  // Row by row, colCount cards at a time -- the last row may hold fewer.
+  const rows = [];
+  for (let i = 0; i < allCards.length; i += colCount) rows.push(allCards.slice(i, i + colCount));
+  // Every card in a row lines up along the same top edge; the row's own
+  // height is its tallest card, so a short note next to a long one doesn't
+  // pull the row apart -- the next row simply starts below the tallest one.
+  const rowHeights = rows.map(row => Math.max(...row.map(c => c.height)));
   const BRAND = 30;
   const tagline = "Just Task It.";
   const bgColor = resolveCssColor("var(--bg)");
@@ -4220,8 +4230,7 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   const titleLines = truncateCanvasLines(wrapCanvasText(meas, title, contentW), 2);
   const TITLE_LINE_H = 25;
   const titleBlockH = titleLines.length * TITLE_LINE_H + 18;
-  const columnHeights = columnsOfCards.map(col => col.reduce((sum, c) => sum + c.height, 0) + CARD_GAP * Math.max(0, col.length - 1));
-  const cardsH = Math.max(0, ...columnHeights);
+  const cardsH = rowHeights.reduce((sum, h) => sum + h, 0) + CARD_GAP * Math.max(0, rows.length - 1);
   const OW = contentW + FRAME_PAD * 2;
   // Same "don't let it read as a square" floor the single-task share uses,
   // applied to the whole frame this time (not each card) -- with very few
@@ -4230,7 +4239,7 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   // card rather than stretching anything. Only applied in the single-column
   // case: once there are several columns side by side the frame is already
   // clearly wide-format, and stretching it taller on top of that would just
-  // leave a lot of empty space below the shortest columns.
+  // leave a lot of empty space below the shortest row.
   const naturalOH = brandBlockH + titleBlockH + cardsH + FRAME_PAD;
   const OH = colCount > 1 ? naturalOH : Math.max(Math.round(OW * 1.3), naturalOH);
   const canvas = document.createElement("canvas");
@@ -4289,16 +4298,16 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   titleLines.forEach((line, i) => {
     ctx.fillText(line, titleX, brandBlockH + (i + 1) * TITLE_LINE_H - 6);
   });
-  // ── the task cards, one stack per column, right to left in Hebrew ──
-  const colStartX = isHe ? OW - FRAME_PAD - CARD_W : FRAME_PAD;
-  const colStep = (CARD_W + SHARE_COL_GAP) * (isHe ? -1 : 1);
-  columnsOfCards.forEach((col, i) => {
-    const colX = colStartX + i * colStep;
-    let cy = brandBlockH + titleBlockH;
-    col.forEach(card => {
-      card.draw(ctx, colX, cy);
-      cy += card.height + CARD_GAP;
-    });
+  // ── the task cards, one row at a time, right to left in Hebrew ──
+  // Column x-positions are fixed regardless of how full a row is, so a
+  // shorter last row still starts at the reading-direction edge (the right
+  // in Hebrew, the left otherwise) and simply leaves the far side blank --
+  // the same way a paragraph's last line does.
+  const colX = i => isHe ? OW - FRAME_PAD - CARD_W - i * (CARD_W + SHARE_COL_GAP) : FRAME_PAD + i * (CARD_W + SHARE_COL_GAP);
+  let cy = brandBlockH + titleBlockH;
+  rows.forEach((row, r) => {
+    row.forEach((card, i) => card.draw(ctx, colX(i), cy));
+    cy += rowHeights[r] + CARD_GAP;
   });
   return canvas;
 };
@@ -24444,7 +24453,13 @@ function App() {
   // that type first -- see the comment there. Recomputed each render, same
   // as everything else derived straight from `tasks`.
   if (typeof window !== "undefined") {
-    window.__customTypes = [...new Set(mergeUniqueTasks(tasks, archiveTasks).map(t => t.type).filter(isCustomType))].sort((a, b) => a.localeCompare(b));
+    // Plain code-point ordering (a < b), NOT localeCompare: locale-aware
+    // sorting depends on the browser/OS's own default locale, which isn't
+    // guaranteed to agree between two devices even looking at the exact
+    // same set of names -- and a different order here means a different
+    // color for the same custom type, the one thing this is meant to
+    // prevent in the first place.
+    window.__customTypes = [...new Set(mergeUniqueTasks(tasks, archiveTasks).map(t => t.type).filter(isCustomType))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   }
   const [, setRenderTick] = useState(0);
   if (typeof window !== "undefined") window.__appForceRender = () => setRenderTick(n => n + 1);
@@ -24460,6 +24475,15 @@ function App() {
   const setPaletteAndSave = () => {}; // no-op: nothing left to switch between
   // Expose palette globally so custom-type color helpers can read it without prop-drilling
   if (typeof window !== "undefined") window.__palette = palette;
+  // Set synchronously during render, not in an effect: palette never
+  // actually changes (see setPaletteAndSave above), so the DOM attribute it
+  // drives has to be correct from the very first paint. Setting it in an
+  // effect below the dark/color-caching one meant, on first mount, that
+  // cache resolved var(--bg) etc. against the CSS rules for the WRONG
+  // (non-boldest) palette variant for one render -- and since dark rarely
+  // changes again after that, a share's loading spinner could be stuck
+  // reading that one-time-wrong cached color for the rest of the session.
+  if (typeof document !== "undefined") document.documentElement.setAttribute("data-palette", palette);
 
   // Apply dark + RTL
   useEffect(() => {
@@ -24486,9 +24510,6 @@ function App() {
     document.documentElement.dir = lang === "he" ? "rtl" : "ltr";
     document.documentElement.lang = lang;
   }, [lang]);
-  useEffect(() => {
-    document.documentElement.setAttribute("data-palette", palette);
-  }, [palette]);
   const views = [{
     id: "home",
     icon: "home",
