@@ -769,17 +769,18 @@ const TYPE_META = {
 // Each hue below therefore gets its own explicit accent/bg/border trio per
 // theme, matching the built-ins' recipe instead of deriving bg/border from
 // the accent via alpha.
-// 15 slots: the original 8 (pink, red, orange, lime, emerald, violet, cyan,
-// fuchsia) plus gold, brown, slate, wine, green, olive, plum -- chosen to stay
-// clear of both each other and the built-in types' blue/indigo/teal/sky/amber.
-// Order matters only for which alphabetical rank gets which hue; the first 8
-// are unchanged so existing setups with <=8 custom types look exactly the same.
-const CUSTOM_COLORS_LIGHT = ["#BE185D", "#B91C1C", "#C2410C", "#4D7C0F", "#047857", "#6D28D9", "#0E7490", "#86198F", "#A16207", "#7C3F1D", "#475569", "#881337", "#15803D", "#5F5F15", "#7E3A6E"];
-const CUSTOM_BG_LIGHT = ["#FFD3E8", "#FFD6D6", "#FFDAB8", "#D9F5A8", "#AEEEDD", "#DED2FF", "#B9EAF5", "#F5C6F5", "#FDEFA0", "#EED9C8", "#DDE3EB", "#F7C9D6", "#C6F0D2", "#E8E6B8", "#EBD3E6"];
-const CUSTOM_BORDER_LIGHT = ["#E85FA0", "#F87171", "#FB9550", "#A3D65C", "#34D399", "#A78BFA", "#5FD0E0", "#E29FE2", "#EAB308", "#B07A55", "#94A3B8", "#C2415F", "#4ADE80", "#A8A548", "#B874A8"];
-const CUSTOM_COLORS_DARK = ["#FF4FA3", "#FF6B6B", "#FF9540", "#A3E635", "#34EAAE", "#B69CFF", "#3EE0F5", "#E27BFA", "#FACC15", "#D6A079", "#B4C2D4", "#F0708F", "#4ADE80", "#D4D16A", "#DA9BCB"];
-const CUSTOM_BG_DARK = ["#4A1233", "#4A1616", "#4A2A08", "#33420C", "#0B3D2E", "#2E2166", "#0A3A47", "#3E1250", "#423508", "#3B2416", "#243040", "#3F0D1C", "#0F3A1E", "#33320E", "#3A1834"];
-const CUSTOM_BORDER_DARK = ["#C23B76", "#D9534F", "#C2660C", "#7CA829", "#1E9E77", "#5B48B8", "#157C93", "#8A2FA8", "#B8930C", "#8C5A3A", "#5E6F85", "#A3304F", "#22963F", "#8A8733", "#93508A"];
+// 15 custom-type slots, most vivid first so a handful of custom types get
+// the most distinct colors: orange, violet, gold, cyan, fuchsia, lime, brown, slate, plum, olive, denim, sand, sage, lavender, graphite.
+// Deliberately NO red/rose/pink (reads as a cancelled task) and NO pure or
+// mint green (reads as a completed task) -- lime is yellow-green and sage is
+// a muted gray-green, both clearly apart from the completed green. Also kept
+// clear of the built-in types' blue/indigo/teal/sky/amber.
+const CUSTOM_COLORS_LIGHT = ["#C2570C", "#6D28D9", "#A16207", "#0E7490", "#86198F", "#4D7C0F", "#7C3F1D", "#475569", "#7E3A6E", "#5F5F15", "#34557A", "#7D6A45", "#4F6B52", "#6B5B95", "#3F3F46"];
+const CUSTOM_BG_LIGHT = ["#FFDAB8", "#DED2FF", "#FDEFA0", "#B9EAF5", "#F5C6F5", "#D9F5A8", "#EED9C8", "#DDE3EB", "#EBD3E6", "#E8E6B8", "#D3DFEE", "#EDE3CF", "#D8E5D6", "#E3DDF2", "#E4E4E7"];
+const CUSTOM_BORDER_LIGHT = ["#FB9550", "#A78BFA", "#EAB308", "#5FD0E0", "#E29FE2", "#A3D65C", "#B07A55", "#94A3B8", "#B874A8", "#A8A548", "#7F9DC2", "#BFA97A", "#93AE93", "#A898CF", "#A1A1AA"];
+const CUSTOM_COLORS_DARK = ["#FF9540", "#B69CFF", "#FACC15", "#3EE0F5", "#E27BFA", "#A3E635", "#D6A079", "#B4C2D4", "#DA9BCB", "#D4D16A", "#9DB8DA", "#D9C59A", "#A9C4A6", "#B9ABE0", "#D4D4D8"];
+const CUSTOM_BG_DARK = ["#4A2A08", "#2E2166", "#423508", "#0A3A47", "#3E1250", "#33420C", "#3B2416", "#243040", "#3A1834", "#33320E", "#1C2B3F", "#352C1B", "#1F2D21", "#2A2340", "#27272A"];
+const CUSTOM_BORDER_DARK = ["#C2660C", "#5B48B8", "#B8930C", "#157C93", "#8A2FA8", "#7CA829", "#8C5A3A", "#5E6F85", "#93508A", "#8A8733", "#4D6D94", "#8F7B52", "#5F7D60", "#6E5E9A", "#71717A"];
 const isDarkNow = () => typeof window !== "undefined" && !!window.__dark;
 const getCustomColors = () => isDarkNow() ? CUSTOM_COLORS_DARK : CUSTOM_COLORS_LIGHT;
 // Assigns each custom type's color by its alphabetical rank among every
@@ -3723,7 +3724,8 @@ const buildTaskShareCard = ({
   type,
   note,
   recur,
-  status
+  status,
+  hideType = false
 }, colors, W, cardRadius, minHeight = 0) => {
   const isHe = getLang() === "he";
   const m = getTypeMeta(type);
@@ -3827,7 +3829,7 @@ const buildTaskShareCard = ({
       }
     };
   };
-  const chipItems = [makeChip({
+  const chipItems = hideType ? [] : [makeChip({
     label: (m.label || "").toUpperCase(),
     icon: "dot",
     color: resolveCssColor(m.color),
@@ -3873,8 +3875,10 @@ const buildTaskShareCard = ({
   };
   const runLayout = ctx => {
     let cy = PAD;
-    // ── type tag + completed / cancelled / late tag
-    cy += flowRow(ctx, chipItems, cy, chipH, 8) + 18;
+    // ── type tag + completed / cancelled / late tag (skipped, no gap
+    // reserved either, when there's nothing to show -- hideType, or a task
+    // with neither a type nor a completed/cancelled/overdue mark)
+    if (chipItems.length) cy += flowRow(ctx, chipItems, cy, chipH, 8) + 18;
     if (ctx) {
       ctx.font = nameFont;
       ctx.fillStyle = textColor;
@@ -4079,8 +4083,17 @@ const copyOrDownloadShareCanvas = async (canvas, filename) => {
 // rather than just a count). Date+time together beat either alone; after
 // that, a shared name, then a shared type. Falls back to the plain count
 // title when nothing is common.
+// Builds the bulk-share title AND says which fields it drew on, so the
+// individual cards below can leave those back out (see renderBulkShareCanvas)
+// rather than repeating the exact same date/time/type on every single card
+// right underneath a title that already says it. Unlike the old version,
+// which stopped at the first common field it found (date+time, OR date, OR
+// time, OR name, OR type), this combines every field that's actually common
+// to every selected task -- so five tasks that share both a type and a date
+// get both in the title, not just whichever came first.
 const computeShareTitle = (tasksRaw, n) => {
-  if (!tasksRaw.length) return t("bulkShareTitle", n);
+  const common = { date: false, time: false, type: false };
+  if (!tasksRaw.length) return { title: t("bulkShareTitle", n), common };
   const allSame = key => {
     const first = tasksRaw[0][key];
     if (!first) return null;
@@ -4088,14 +4101,18 @@ const computeShareTitle = (tasksRaw, n) => {
   };
   const commonDate = allSame("date");
   const commonTime = allSame("time");
-  if (commonDate && commonTime) return `${fmtDate(commonDate)}  •  ${commonTime}`;
-  if (commonDate) return fmtDate(commonDate);
-  if (commonTime) return commonTime;
+  const commonType = allSame("type");
+  const parts = [];
+  if (commonDate) { parts.push(fmtDate(commonDate)); common.date = true; }
+  if (commonTime) { parts.push(commonTime); common.time = true; }
+  if (commonType) { parts.push(getTypeMeta(commonType).label); common.type = true; }
+  if (parts.length) return { title: parts.join("   •   "), common };
+  // Nothing schedule- or type-related lines up -- fall back to a shared name
+  // (distinct tasks practically never share one, but recurring-task
+  // occurrences selected together often do), or just the plain count.
   const names = tasksRaw.map(tk => (taskDisplayName(tk) || "").trim());
-  if (names.every(nm => nm && nm === names[0])) return names[0];
-  const types = tasksRaw.map(tk => tk.type || "");
-  if (types.every(tp => tp === types[0])) return getTypeMeta(types[0]).label;
-  return t("bulkShareTitle", n);
+  if (names.every(nm => nm && nm === names[0])) return { title: names[0], common };
+  return { title: t("bulkShareTitle", n), common };
 };
 // Builds a PNG-ready canvas for the bulk-select "Share" action -- the same
 // branding frame and the same per-task card style as the single-task share
@@ -4108,7 +4125,6 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   const markCompleted = !options || options.showCompletedMark !== false;
   const showDetails = !options || options.showDetails !== false;
   const scale = 2;
-  const W = 420;
   const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
   const brandFont = `750 19px ${FONT}`;
   const taglineFont = `500 12px ${FONT}`;
@@ -4120,12 +4136,35 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
     text3Color: resolveCssColor("var(--text3)"),
     borderColor: resolveCssColor("var(--border)")
   };
-  const title = computeShareTitle(tasksRaw, tasksRaw.length);
+  // The title is now every field that's common to every selected task, not
+  // just the first one found (see computeShareTitle) -- and `common` says
+  // which those were, so none of them gets repeated on every card below too.
+  const { title, common } = computeShareTitle(tasksRaw, tasksRaw.length);
   const CARD_GAP = 12;
+  // Spread across up to 8 columns using the exact same formula the "by type"
+  // share uses (shareColumnCount) -- more tasks, more (and slightly
+  // narrower) columns. Unlike "by type", there's no grouping to preserve
+  // here (an arbitrary bulk selection isn't sectioned by anything), so this
+  // just splits the already-sorted flat list into that many even-as-possible
+  // runs, left to right (right to left in Hebrew).
+  const shareColumns = shareColumnCount(tasksRaw.length);
+  const CARD_W = shareColumns > 1 ? 280 : 420;
+  const SHARE_COL_GAP = 16;
+  const target = Math.max(1, Math.ceil(tasksRaw.length / shareColumns));
+  const colCount = Math.max(1, Math.ceil(tasksRaw.length / target));
+  const base = Math.floor(tasksRaw.length / colCount);
+  const rem = tasksRaw.length % colCount;
+  const taskColumns = [];
+  let cursor = 0;
+  for (let i = 0; i < colCount; i++) {
+    const size = base + (i < rem ? 1 : 0);
+    taskColumns.push(tasksRaw.slice(cursor, cursor + size));
+    cursor += size;
+  }
   // Rounded corners since several of these sit stacked in one frame and each
   // needs to read as its own distinct card -- unlike the single-task share,
   // where the one card is flush with the frame's own inset.
-  const cards = tasksRaw.map(task => {
+  const buildCard = task => {
     const doneT = markCompleted && isDone(task);
     const cancelledT = markCompleted && isCancelled(task);
     // A done/cancelled task is never "overdue"; with the mark off it is
@@ -4134,16 +4173,22 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
     const status = doneT ? "done" : cancelledT ? "cancelled" : overdueT ? "late" : null;
     const payload = {
       name: taskDisplayName(task),
-      date: showDetails ? task.date : null,
-      time: showDetails ? task.time : null,
-      length: showDetails ? task.length : null,
+      // Whatever's already common to every task lives in the title above --
+      // repeating the exact same date/time/type on every single card
+      // underneath it would just be noise. The name always stays: it's each
+      // card's own identity, not a detail duplicated from elsewhere.
+      date: showDetails && !common.date ? task.date : null,
+      time: showDetails && !common.time ? task.time : null,
+      length: showDetails && !common.time ? task.length : null,
       type: task.type,
+      hideType: common.type,
       note: showDetails ? task.note : null,
       recur: showDetails ? task.recur : null,
       status
     };
-    return buildTaskShareCard(payload, colors, W, 14);
-  });
+    return buildTaskShareCard(payload, colors, CARD_W, 14);
+  };
+  const columnsOfCards = taskColumns.map(col => col.map(buildCard));
   const BRAND = 30;
   const tagline = "Just Task It.";
   const bgColor = resolveCssColor("var(--bg)");
@@ -4151,18 +4196,23 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   const brandBlockH = FRAME_PAD + BRAND + 14 /* gap */ + 1 /* divider */ + 16 /* gap */;
   const meas = document.createElement("canvas").getContext("2d");
   meas.font = titleFont;
-  const titleLines = truncateCanvasLines(wrapCanvasText(meas, title, W), 2);
+  const contentW = colCount * CARD_W + (colCount - 1) * SHARE_COL_GAP;
+  const titleLines = truncateCanvasLines(wrapCanvasText(meas, title, contentW), 2);
   const TITLE_LINE_H = 25;
   const titleBlockH = titleLines.length * TITLE_LINE_H + 18;
-  const cardsH = cards.reduce((sum, c) => sum + c.height, 0) + CARD_GAP * Math.max(0, cards.length - 1);
-  const OW = W + FRAME_PAD * 2;
+  const columnHeights = columnsOfCards.map(col => col.reduce((sum, c) => sum + c.height, 0) + CARD_GAP * Math.max(0, col.length - 1));
+  const cardsH = Math.max(0, ...columnHeights);
+  const OW = contentW + FRAME_PAD * 2;
   // Same "don't let it read as a square" floor the single-task share uses,
   // applied to the whole frame this time (not each card) -- with very few
   // short tasks selected, the natural height could otherwise land close to
   // the width. Extra room (if any) becomes breathing room below the last
-  // card rather than stretching anything.
+  // card rather than stretching anything. Only applied in the single-column
+  // case: once there are several columns side by side the frame is already
+  // clearly wide-format, and stretching it taller on top of that would just
+  // leave a lot of empty space below the shortest columns.
   const naturalOH = brandBlockH + titleBlockH + cardsH + FRAME_PAD;
-  const OH = Math.max(Math.round(OW * 1.3), naturalOH);
+  const OH = colCount > 1 ? naturalOH : Math.max(Math.round(OW * 1.3), naturalOH);
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(OW * scale);
   canvas.height = Math.round(OH * scale);
@@ -4210,7 +4260,7 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   ctx.moveTo(FRAME_PAD, dy);
   ctx.lineTo(OW - FRAME_PAD, dy);
   ctx.stroke();
-  // ── title (the common attribute across every selected task, or a plain count) ──
+  // ── title (every field common to every selected task, or a plain count) ──
   ctx.font = titleFont;
   ctx.fillStyle = colors.textColor;
   ctx.textAlign = isHe ? "right" : "left";
@@ -4219,11 +4269,16 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
   titleLines.forEach((line, i) => {
     ctx.fillText(line, titleX, brandBlockH + (i + 1) * TITLE_LINE_H - 6);
   });
-  // ── the task cards, stacked ──
-  let cy = brandBlockH + titleBlockH;
-  cards.forEach(card => {
-    card.draw(ctx, FRAME_PAD, cy);
-    cy += card.height + CARD_GAP;
+  // ── the task cards, one stack per column, right to left in Hebrew ──
+  const colStartX = isHe ? OW - FRAME_PAD - CARD_W : FRAME_PAD;
+  const colStep = (CARD_W + SHARE_COL_GAP) * (isHe ? -1 : 1);
+  columnsOfCards.forEach((col, i) => {
+    const colX = colStartX + i * colStep;
+    let cy = brandBlockH + titleBlockH;
+    col.forEach(card => {
+      card.draw(ctx, colX, cy);
+      cy += card.height + CARD_GAP;
+    });
   });
   return canvas;
 };
@@ -5394,11 +5449,17 @@ const drawRewindCanvas = (stats, subtitle, pixelRatio) => {
 // Builds and shares a Rewind card for whatever task list the caller passes
 // in (e.g. a search's current filtered results) -- always rendered in light
 // mode regardless of the person's actual theme, since it's meant to read
-// the same wherever it ends up.
-const shareRewindImage = async (tasks, subtitle, filename) => {
+// the same wherever it ends up. onReveal, if given, fires only once the
+// forced theme has actually been applied (and settled) -- callers use it to
+// flip on their own loading overlay so that overlay never appears, however
+// briefly, still painted in the site's own (different) theme first. Showing
+// it any earlier is exactly what used to make the loader itself flash from
+// one theme to the other mid-spin.
+const shareRewindImage = async (tasks, subtitle, filename, onReveal) => {
   try {
-    appToast(t("sharePreparing"));
     await withForcedShareTheme(true, async () => {
+      if (onReveal) onReveal();
+      appToast(t("sharePreparing"));
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const stats = computeRewindStats(tasks || []);
       const pixelRatio = Math.max(2, Math.min(3, (window.devicePixelRatio || 1) * 2));
@@ -7406,10 +7467,10 @@ const MonthView = ({
   const shareMonthImage = async options => {
     if (sharingMonth) return;
     setShareOptions(options || null);
-    setSharingMonth(true);
     try {
-      appToast(t("sharePreparing"));
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        setSharingMonth(true);
+        appToast(t("sharePreparing"));
         // Always flip captureWide before snapshotting -- not just on a narrow
         // phone screen. This is what forces the landscape capture width, hides
         // off-month task chips, and switches off the "today" highlight, and
@@ -9072,10 +9133,10 @@ const WeekView = ({
   const shareWeekImage = async options => {
     if (sharingWeek) return;
     setShareOptions(options || null);
-    setSharingWeek(true);
     try {
-      appToast(t("sharePreparing"));
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        setSharingWeek(true);
+        appToast(t("sharePreparing"));
         // Always flip captureWide before snapshotting -- not just on a narrow
         // phone screen. Besides forcing the wide (desktop) layout when needed,
         // this is also what switches off the "today" blue header highlight and
@@ -10551,10 +10612,10 @@ const ListByType = ({
   const shareByTypeImage = async options => {
     if (sharingType) return;
     setShareOptions(options || null);
-    setSharingType(true);
     try {
-      appToast(t("sharePreparing"));
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        setSharingType(true);
+        appToast(t("sharePreparing"));
         // Wait a couple of frames for the capture-only expansion (every
         // section forced open) and padding/background below -- plus the
         // loading overlay covering the screen -- to actually paint before
@@ -14788,10 +14849,10 @@ const Dashboard = ({
   const shareUpNextImage = async options => {
     if (sharingUpNext) return;
     setShareOptions(options || null);
-    setSharingUpNext(true);
     try {
-      appToast(t("sharePreparing"));
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        setSharingUpNext(true);
+        appToast(t("sharePreparing"));
         // Wait a couple of frames for the capture-only padding/background
         // above (and the loading overlay covering the screen) to actually
         // paint before snapshotting.
@@ -18885,13 +18946,14 @@ const SearchView = ({
   // whatever the current filters turn up (see computeRewindStats /
   // drawRewindCanvas) rather than screenshotting the results screen --
   // chartTitle already describes the active filters in one line, reused
-  // here as the card's subtitle. The brief busy flag just masks the
-  // forced-light-mode flip shareRewindImage does while it renders.
+  // here as the card's subtitle. The busy overlay only switches on once
+  // shareRewindImage's forced-light-mode flip has already landed (see
+  // onReveal there), so it never itself flashes from the site's own theme
+  // into the forced one.
   const shareSearchImage = async () => {
     if (sharingSearch) return;
-    setSharingSearch(true);
     try {
-      await shareRewindImage(filtered, chartTitle, "rewind.png");
+      await shareRewindImage(filtered, chartTitle, "rewind.png", () => setSharingSearch(true));
     } finally {
       setSharingSearch(false);
     }
@@ -22014,10 +22076,10 @@ function App() {
   const shareSelectedTasksImage = async options => {
     if (bulkSharing || selectedIds.size === 0) return;
     setBulkShareOptions(options || null);
-    setBulkSharing(true);
     try {
-      appToast(t("sharePreparing"));
       await withForcedShareTheme(!options || options.brightMode !== false, async () => {
+        setBulkSharing(true);
+        appToast(t("sharePreparing"));
         // Same beat every other share gives the forced theme to actually
         // apply (a re-render updates the CSS variables the canvas reads)
         // before drawing.
