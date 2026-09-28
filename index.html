@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "12";
+const APP_VERSION = "12.5";
 
 const {
   useState,
@@ -316,7 +316,6 @@ const T = {
     delete: "Delete",
     set: "Set",
     close: "Close",
-    delay: "Delay 1 day",
     calendarType: "Calendar",
     copyJson: "📋 Copy JSON",
     loadJson: "📂 Load JSON",
@@ -363,7 +362,6 @@ const T = {
     bulkPickTime: "Set time for selected tasks",
     bulkPickType: "Set type for selected tasks",
     bulkShare: "Share",
-    bulkTapAgain: (label, v) => `${label}${v ? ": " + v : ""} — tap again to confirm`,
     bulkDone: n => `Done · ${n} task${n === 1 ? "" : "s"}`,
     bulkContinue: "Continue",
     bulkShareTitle: n => `${n} selected task${n === 1 ? "" : "s"}`,
@@ -446,7 +444,6 @@ const T = {
     more: n => `+${n} more`,
     cancelTask: "Cancel task",
     edit: "Edit",
-    delay: "Delay 1 day",
     uncancel: "Restore",
     uncomplete: "Restore",
     dir: "ltr"
@@ -540,7 +537,6 @@ const T = {
     bulkPickTime: "קבע שעה למשימות שנבחרו",
     bulkPickType: "קבע סוג למשימות שנבחרו",
     bulkShare: "שיתוף",
-    bulkTapAgain: (label, v) => `${label}${v ? ": " + v : ""} — לחץ שוב לאישור`,
     bulkDone: n => `בוצע · ${n} משימות`,
     bulkContinue: "המשך",
     bulkShareTitle: n => `${n} משימות נבחרות`,
@@ -614,7 +610,6 @@ const T = {
     more: n => `+${n} נוספות`,
     cancelTask: "בטל משימה",
     edit: "עריכה",
-    delay: "דחה יום",
     uncancel: "שחזר",
     uncomplete: "שחזר",
     dir: "rtl"
@@ -1020,7 +1015,11 @@ const OUTBOX_KEY = "taskflow_v6_outbox";
 // mix with OUTBOX_KEY (edits Google hasn't confirmed yet) or with the plain
 // local-mode STORAGE_KEY/ARCHIVE_KEY, so a not-yet-synced change can never be
 // mistaken for -- or overwritten by -- a stale confirmed snapshot.
-const SYNC_CACHE_KEY = "taskflow_v6_synccache";
+const SYNC_CACHE_KEY = "taskflow_v7_synccache";
+// v6 could hold duplicate holiday copies that kept piling up across launches
+// (see the holiday clean-up in gcalPullNow). Dropped once so every device
+// starts again from what Google actually has.
+try { localStorage.removeItem("taskflow_v6_synccache"); } catch {}
 const LEGACY_TASK_KEYS = ["taskflow_v5_main", "taskflow_v5_archive", "taskflow_v4_tasks"];
 // GCal is declared further down; this is only ever called at runtime, after
 // the whole script has run. The try/catch covers the (theoretical) case of it
@@ -1167,6 +1166,23 @@ const mergeUniqueTasks = (tasks, archiveTasks) => {
   const extra = (archiveTasks || []).filter(t => !seen.has(t.id));
   return [...(tasks || []), ...extra];
 };
+// Keeps the first copy of every id and drops the rest. Returns the SAME array
+// when there's nothing to drop, so callers can cheaply tell whether anything
+// changed. Two records with one id make the week/month grids lose track of
+// which one to redraw, leaving copies stuck in a day box after changing weeks.
+const uniqueById = list => {
+  const seen = new Set();
+  let dropped = false;
+  const out = [];
+  for (const t of list || []) {
+    if (t && t.id != null) {
+      if (seen.has(t.id)) { dropped = true; continue; }
+      seen.add(t.id);
+    }
+    out.push(t);
+  }
+  return dropped ? out : list;
+};
 // A second, content-based safety net on top of mergeUniqueTasks. That one only
 // catches a task whose *same id* shows up in both `tasks` and `archiveTasks`;
 // it can't help when two genuinely separate local records (different ids)
@@ -1195,16 +1211,24 @@ const dedupeForDisplay = list => {
   const keptHolidays = [];
   const HOLIDAY_WINDOW_MS = 2 * 86400000;
   for (const tk of list) {
-    if (tk._projected || tk._continuation || tk.type === "calendar") {
+    if (tk._projected || tk._continuation) {
       out.push(tk);
       continue;
     }
+    // Checked BEFORE the plain type "calendar" pass-through below: holidays
+    // are type "calendar" too, so checking that first meant holidays never
+    // reached this branch at all, and were the one kind of task whose
+    // duplicates were never hidden.
     if (tk.hebcal || tk.intl) {
       const name = normHolidayNameForDisplay(tk.name) || normHolidayNameForDisplay(tk.nameEn);
       const time = tk.date ? new Date(tk.date + "T00:00:00").getTime() : NaN;
       const isDup = name && !Number.isNaN(time) && keptHolidays.some(h => h.name === name && h.done === !!tk.done && h.cancelled === !!tk.cancelled && Math.abs(h.time - time) <= HOLIDAY_WINDOW_MS);
       if (isDup) continue;
       keptHolidays.push({ name, time, done: !!tk.done, cancelled: !!tk.cancelled });
+      out.push(tk);
+      continue;
+    }
+    if (tk.type === "calendar") {
       out.push(tk);
       continue;
     }
@@ -1410,7 +1434,13 @@ const buildHebcalTasks = (items, existingTasks) => {
   // Build a set of dates to skip from the main loop (we'll generate them manually)
   const hanukkahDates = new Set();
   if (hanukkahItem) {
-    const firstDate = hanukkahItem.date.slice(0, 10);
+    // Counted back to the real first night. The fetch window starts at the
+    // last sync date, so when that falls mid-Hanukkah the earliest item
+    // returned is, say, the 4th candle -- and generating "8 nights" from
+    // there produced a second, shifted set of candle days on top of the
+    // first one.
+    const candleNo = parseInt(((hanukkahItem.title_orig || hanukkahItem.title || "").match(/(\d+)\s*Candle/i) || [])[1], 10);
+    const firstDate = addDaysToDateStr(hanukkahItem.date.slice(0, 10), candleNo > 1 && candleNo <= 8 ? -(candleNo - 1) : 0);
     for (let i = 0; i < 8; i++) {
       const dateStr = addDaysToDateStr(firstDate, i);
       hanukkahDates.add(dateStr);
@@ -1957,7 +1987,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --modal-glass:rgba(20,30,48,0.85);
   --gauge-track:#2E3F55;
 }
-:root[style*="color-scheme: light"]{
+:root[data-theme="light"]{
   --bg:#F0F7FF; --bg2:#FFFFFF; --bg3:#F8FAFF; --bg4:#EFF6FF; --bg5:#F0F9FF;
   --border:#DBEAFE; --border2:#BFDBFE; --border3:#E8F0FE;
   --text:#1E293B; --text2:#475569; --text3:#64748B; --text4:#94A3B8; --text5:#CBD5E1;
@@ -2034,7 +2064,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --cal-other:0.28; --gradient:linear-gradient(160deg,#0B1220 0%,#0B1220 100%);
   --modal-glass:rgba(11,18,32,0.85); --gauge-track:#233A5C;
 }
-:root[style*="color-scheme: light"]:not([data-palette="boldest"]){
+:root[data-theme="light"]:not([data-palette="boldest"]){
   --bg:#E3EEFF; --bg2:#FFFFFF; --bg3:#EAF2FF; --bg4:#DCEAFF; --bg5:#E3F1FF;
   --border:#B9D4FF; --border2:#8FB8FF; --border3:#CFE2FF;
   --text:#0F1B2D; --text2:#33465E; --text3:#5A7189; --text4:#8CA0B3; --text5:#C3D2DF;
@@ -2109,7 +2139,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --cal-other:0.25; --gradient:linear-gradient(160deg,#060C18 0%,#060C18 100%);
   --modal-glass:rgba(6,12,24,0.85); --gauge-track:#1E3A66;
 }
-:root[style*="color-scheme: light"][data-palette="boldest"]{
+:root[data-theme="light"][data-palette="boldest"]{
   --bg:#D2E3FF; --bg2:#FFFFFF; --bg3:#DCEAFF; --bg4:#C9DEFF; --bg5:#D2E8FF;
   --border:#8FB8FF; --border2:#5F9BFF; --border3:#B4D0FF;
   --text:#0A1424; --text2:#22354D; --text3:#485F7A; --text4:#7A92AB; --text5:#B2C4D6;
@@ -2128,7 +2158,7 @@ input,textarea,[contenteditable]{-webkit-user-select:text;user-select:text}
   --gauge-track:#8FB8FF;
 }
 :root{--grid-line:var(--border)}
-@supports (color:color-mix(in srgb,red,blue)){:root{--grid-line:color-mix(in srgb,var(--border) 50%,transparent)}:root[style*="color-scheme: light"]{--grid-line:color-mix(in srgb,var(--border) 28%,transparent)}}
+@supports (color:color-mix(in srgb,red,blue)){:root{--grid-line:color-mix(in srgb,var(--border) 50%,transparent)}:root[data-theme="light"]{--grid-line:color-mix(in srgb,var(--border) 28%,transparent)}}
 html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:4px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -2193,10 +2223,6 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 .task-completing{animation:completeGlow .45s ease forwards,completeShrink .55s ease .35s forwards;pointer-events:none;overflow:hidden;background:#F0FDF4!important;border-color:#BBF7D0!important}
 @keyframes cancelGlow{0%{box-shadow:0 0 0 0 rgba(239,68,68,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(239,68,68,.22),0 2px 20px rgba(239,68,68,.14)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0),0 1px 4px rgba(0,0,0,.04)}}
 @keyframes xBounce{0%{transform:scale(1)}30%{transform:scale(1.4)}55%{transform:scale(0.85)}75%{transform:scale(1.1)}100%{transform:scale(1)}}
-@keyframes delayGlow{0%{box-shadow:0 0 0 0 rgba(217,119,6,0),0 1px 4px rgba(0,0,0,.04)}40%{box-shadow:0 0 0 5px rgba(217,119,6,.25),0 2px 20px rgba(217,119,6,.18)}100%{box-shadow:0 0 0 0 rgba(217,119,6,0),0 1px 4px rgba(0,0,0,.04)}}
-@keyframes clockBounce{0%{transform:scale(1) rotate(0deg)}25%{transform:scale(1.45) rotate(-20deg)}55%{transform:scale(0.85) rotate(10deg)}75%{transform:scale(1.12) rotate(-5deg)}100%{transform:scale(1) rotate(0deg)}}
-.task-delaying{animation:delayGlow .55s ease forwards;background:#FFFBEB!important;border-color:#FDE68A!important}
-.clock-bounce{animation:clockBounce .45s cubic-bezier(.34,1.56,.64,1) forwards}
 .task-cancelling{animation:cancelGlow .45s ease forwards,completeShrink .55s ease .35s forwards;pointer-events:none;overflow:hidden;background:#FEF2F2!important;border-color:#FECACA!important}
 .x-bounce{animation:xBounce .42s cubic-bezier(.34,1.56,.64,1) forwards}
 .check-bounce{animation:checkBounce .42s cubic-bezier(.34,1.56,.64,1) forwards}
@@ -2626,7 +2652,7 @@ const Badge = ({
   matchTone
 }) => {
   const m = getTypeMeta(type);
-  // While the row is mid-animation (completing/cancelling/delaying), the type
+  // While the row is mid-animation (completing/cancelling), the type
   // pill keeps its own color by default and visibly sticks out of the green/
   // rose/amber glow that covers the rest of the card. matchTone swaps the
   // pill's palette for the animation's own tone so it blends in like every
@@ -2786,7 +2812,6 @@ const TaskCard = ({
   onToggle,
   onEdit,
   onCancel,
-  onDelay,
   onRename,
   delay = 0,
   hideTypeBadge = false,
@@ -2805,17 +2830,15 @@ const TaskCard = ({
   const over = isOverdue(task);
   const locked = isSelectLocked(task);
   // On touch screens a tap fires an emulated mouseenter, which "activates" the
-  // card and reveals its edit/cancel/delay buttons. While selecting, taps are
+  // card and reveals its edit/cancel buttons. While selecting, taps are
   // for ticking cards only, so the active state is suppressed entirely.
   const [hoveredRaw, setHovered] = useState(false);
   const hovered = hoveredRaw && !selectMode;
   const [noteOpen, setNoteOpen] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [delaying, setDelaying] = useState(false);
   const [bouncing, setBouncing] = useState(false);
   const [xBouncing, setXBouncing] = useState(false);
-  const [clockBouncing, setClockBouncing] = useState(false);
   const [particles, setParticles] = useState([]);
   const [checkPopped, setCheckPopped] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -2881,9 +2904,18 @@ const TaskCard = ({
     // task.done and task.cancelled change when remote update arrives
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.done, task.cancelled]);
+  // Quick (inline) rename is off for anything that lives on Google -- a
+  // Google-sourced event keeps its title on the Google side. Held in a ref
+  // too because the rename-next listener below is only set up once per id.
+  const canRename = !(done || cancelled || task.hebcal || task.intl || task.type === "calendar" || task.googleShared || task.source === "google" || task.type === "google");
+  const canRenameRef = useRef(canRename);
+  canRenameRef.current = canRename;
   useEffect(() => {
     const handler = e => {
       if (e.detail.fromId === task.id) return;
+      // Not handled -> the sender falls back to its own next step instead of
+      // this card swallowing the Enter press and opening nothing.
+      if (!canRenameRef.current) return;
       const prev = cardRef.current?.previousElementSibling;
       if (prev && prev.dataset.taskid === e.detail.fromId) {
         e.detail.handled = true;
@@ -2929,7 +2961,7 @@ const TaskCard = ({
     }
   };
   const startRename = () => {
-    if (done || cancelled || task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return;
+    if (!canRename) return;
     setRenameVal(taskDisplayName(task));
     setRenaming(true);
     window.dispatchEvent(new CustomEvent("taskflow-rename-start", {
@@ -3021,7 +3053,7 @@ const TaskCard = ({
       if (_noteText) setNoteOpen(v => !v);
     },
     tabIndex: -1,
-    className: (completing ? "task-completing" : cancelling ? "task-cancelling" : delaying ? "task-delaying" : isNew ? "task-new" : "") + (justSynced ? " task-slide-in" : ""),
+    className: (completing ? "task-completing" : cancelling ? "task-cancelling" : isNew ? "task-new" : "") + (justSynced ? " task-slide-in" : ""),
     style: {
       display: "flex",
       alignItems: hideTypeBadge || renaming ? "center" : "flex-start",
@@ -3030,8 +3062,8 @@ const TaskCard = ({
       minHeight: 64,
       borderRadius: 12,
       position: "relative",
-      background: selected ? C.blueBg : cancelled || cancelling ? C.roseBg : completing ? C.greenBg : delaying ? C.amberBg : over ? C.redBg : justSynced || isNew ? "var(--blue-bg)" : C.card,
-      border: `1px solid ${selected ? C.blue : renaming ? C.blue : cancelled || cancelling ? C.roseBorder : completing ? C.greenBorder : delaying ? C.amberBorder : over ? C.redBorder : justSynced || isNew ? C.blueBorder : hovered ? C.border2 : C.border3}`,
+      background: selected ? C.blueBg : cancelled || cancelling ? C.roseBg : completing ? C.greenBg : over ? C.redBg : justSynced || isNew ? "var(--blue-bg)" : C.card,
+      border: `1px solid ${selected ? C.blue : renaming ? C.blue : cancelled || cancelling ? C.roseBorder : completing ? C.greenBorder : over ? C.redBorder : justSynced || isNew ? C.blueBorder : hovered ? C.border2 : C.border3}`,
       // Outward, non-inset box-shadows (esp. combined with the 1px real
       // border above) can end up misaligned by a device pixel on fractional-
       // width flex items -- e.g. two selected cards side by side in the
@@ -3039,10 +3071,10 @@ const TaskCard = ({
       // pixels. An inset ring is painted flush against the same border-box
       // edges the border itself uses, so it can't drift independently and
       // always renders the same width on every side.
-      boxShadow: selected ? `inset 0 0 0 2px ${C.blue}` : completing || cancelling || delaying ? undefined : hovered ? "0 4px 16px rgba(59,130,246,0.08)" : "0 1px 4px rgba(0,0,0,0.04)",
-      transition: completing || cancelling || delaying || justSynced || isNew ? "none" : "all 0.2s ease",
+      boxShadow: selected ? `inset 0 0 0 2px ${C.blue}` : completing || cancelling ? undefined : hovered ? "0 4px 16px rgba(59,130,246,0.08)" : "0 1px 4px rgba(0,0,0,0.04)",
+      transition: completing || cancelling || justSynced || isNew ? "none" : "all 0.2s ease",
       opacity: selectMode && locked ? 0.45 : done ? 0.55 : cancelled ? 0.6 : 1,
-      animation: completing || cancelling || delaying || isNew ? undefined : justSynced ? undefined : `fadeIn 0.3s ease ${delay}s forwards`,
+      animation: completing || cancelling || isNew ? undefined : justSynced ? undefined : `fadeIn 0.3s ease ${delay}s forwards`,
       marginBottom: _showNote ? 0 : 8,
       zIndex: isDragging ? 30 : 1,
       // touch-action:none only needed when focused (hovered) — that is when drag is possible.
@@ -3162,7 +3194,7 @@ const TaskCard = ({
         textDecoration: visualCancelled ? "line-through" : "none",
         marginBottom: hasTags ? 5 : 0,
         lineHeight: 1.4,
-        cursor: visualDone || visualCancelled ? "default" : "text",
+        cursor: visualDone || visualCancelled || !canRename ? "default" : "text",
         userSelect: "none",
         overflow: "hidden",
         textOverflow: hovered ? "ellipsis" : "unset",
@@ -3315,19 +3347,19 @@ const TaskCard = ({
       }
     }
     return null;
-  })(), !task.hebcal && !task.intl && task.type !== "calendar" && !task.googleShared && onDelay && !done && !cancelled && /*#__PURE__*/React.createElement("button", {
+  })(), task.location && /*#__PURE__*/React.createElement("a", {
+    // Opens the task's location in Google Maps. A real link (not a script
+    // call) so iOS/Android can hand it to the Maps app when it's installed.
+    // Yellow, in the slot the (removed) Delay button used to have, just before Edit.
+    href: "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(task.location),
+    target: "_blank",
+    rel: "noopener noreferrer",
     onClick: e => {
       e.stopPropagation();
       setHovered(false);
-      setClockBouncing(true);
-      setDelaying(true);
-      setTimeout(() => setClockBouncing(false), 450);
-      setTimeout(() => {
-        onDelay(task.id);
-        setDelaying(false);
-      }, 600);
     },
-    className: clockBouncing ? "clock-bounce" : "",
+    title: getLang() === "he" ? "פתח במפות גוגל" : "Open in Google Maps",
+    "aria-label": getLang() === "he" ? "פתח במפות גוגל" : "Open in Google Maps",
     style: {
       width: 32,
       height: 32,
@@ -3337,12 +3369,13 @@ const TaskCard = ({
       cursor: "pointer",
       display: "flex",
       alignItems: "center",
-      justifyContent: "center"
-    },
-    title: t("delay")
+      justifyContent: "center",
+      textDecoration: "none",
+      flexShrink: 0
+    }
   }, /*#__PURE__*/React.createElement(Icon, {
-    name: "clock",
-    size: 13,
+    name: "pin",
+    size: 14,
     color: "#D97706"
   })), !task.hebcal && !task.googleShared && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
@@ -3433,8 +3466,8 @@ const TaskCard = ({
     style: { whiteSpace: "pre-wrap", wordBreak: "break-word", userSelect: "text", WebkitUserSelect: "text", textAlign: "start", display: "block" }
   }, _noteText), task.location && /*#__PURE__*/React.createElement("div", {
     // Read-only mirror of whatever Google's own "location" field holds (see
-    // GCal.eventToTaskPatch) -- never editable or removable here, and only
-    // ever shown alongside the note, exactly where the note itself shows.
+    // GCal.eventToTaskPatch) -- never editable or removable here, shown in
+    // the same expandable box as the note.
     style: {
       display: "flex",
       alignItems: "flex-start",
@@ -3443,13 +3476,95 @@ const TaskCard = ({
       color: C.text4,
       fontSize: 11.5
     }
+  }, /*#__PURE__*/React.createElement("span", {
+    // Exactly one text line tall (matches the line-height below), so the
+    // pin sits centered on the FIRST line of the text -- level with it,
+    // not riding high -- and stays on that first line if the text wraps.
+    style: { display: "flex", alignItems: "center", height: 15, flexShrink: 0 }
   }, /*#__PURE__*/React.createElement(Icon, {
     name: "pin",
     size: 11,
     color: C.text4
-  }), /*#__PURE__*/React.createElement("span", {
-    style: { whiteSpace: "pre-wrap", wordBreak: "break-word", textAlign: "start" }
+  })), /*#__PURE__*/React.createElement("span", {
+    style: { whiteSpace: "pre-wrap", wordBreak: "break-word", textAlign: "start", lineHeight: "15px" }
   }, task.location))))));
+};
+
+// A wrapping row of cards where every card in the same visual row ends up
+// exactly the same height, so their top AND bottom borders line up. CSS alone
+// can't do it here: TaskCard renders the card and its expandable note box as
+// two siblings inside one wrapper, so stretching the wrapper would stretch the
+// card by however tall a neighbour's open note happens to be. Instead this
+// measures each row's tallest card (the card itself, note box excluded) and
+// gives the others that as a min-height. Children opt in one of two ways: a
+// wrapper item is measured by its first child (the TaskCard's card div); an
+// item marked data-eq-self (the quick-add row) is measured as itself.
+const EqualRowGrid = ({
+  style,
+  children
+}) => {
+  const boxRef = useRef(null);
+  const roRef = useRef(null);
+  const rafRef = useRef(0);
+  const observed = useRef(new Set());
+  const baseMin = useRef(new WeakMap());
+  const equalize = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    const targets = [];
+    for (const item of box.children) {
+      const target = item.hasAttribute("data-eq-self") ? item : item.firstElementChild;
+      if (target) targets.push({ item, target });
+    }
+    // Watch each card so a change in its own height (a rename, tags
+    // appearing, a font finishing loading) re-runs this; drop the ones gone.
+    const ro = roRef.current;
+    if (ro) {
+      const now = new Set(targets.map(x => x.target));
+      for (const el of [...observed.current]) if (!now.has(el)) { ro.unobserve(el); observed.current.delete(el); }
+      for (const el of now) if (!observed.current.has(el)) { ro.observe(el); observed.current.add(el); }
+    }
+    // Back to each card's own natural height first, so a card that used to
+    // be stretched can shrink again when its row changes.
+    for (const { target } of targets) {
+      if (!baseMin.current.has(target)) baseMin.current.set(target, target.style.minHeight || "");
+      target.style.minHeight = baseMin.current.get(target);
+    }
+    const rows = new Map();
+    for (const x of targets) {
+      if (x.item.offsetHeight === 0) continue; // collapsed / hidden
+      const top = Math.round(x.item.offsetTop);
+      if (!rows.has(top)) rows.set(top, []);
+      rows.get(top).push(x);
+    }
+    for (const row of rows.values()) {
+      if (row.length < 2) continue;
+      const tallest = Math.max(...row.map(x => x.target.offsetHeight));
+      for (const x of row) x.target.style.minHeight = tallest + "px";
+    }
+  };
+  const schedule = () => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(equalize);
+  };
+  React.useLayoutEffect(() => {
+    // The container itself is watched too: a width change re-wraps the cards
+    // into different rows.
+    const ro = new ResizeObserver(schedule);
+    roRef.current = ro;
+    ro.observe(boxRef.current);
+    return () => {
+      ro.disconnect();
+      roRef.current = null;
+      observed.current.clear();
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+  React.useLayoutEffect(equalize);
+  return /*#__PURE__*/React.createElement("div", {
+    ref: boxRef,
+    style
+  }, children);
 };
 
 //  DELETE BUTTON (double-click confirm) 
@@ -3675,6 +3790,17 @@ const drawShareIcon = (ctx, kind, cx, cy, color, s) => {
     ctx.beginPath();
     ctx.arc(cx, cy + s * 0.52, 0.7, 0, Math.PI * 2);
     ctx.fill();
+  } else if (kind === "pin") {
+    // Map-pin: teardrop outline with a hole, centered on (cx, cy).
+    ctx.lineWidth = 1.5;
+    ctx.moveTo(cx, cy + s * 1.05);
+    ctx.bezierCurveTo(cx - s * 0.2, cy + s * 0.8, cx - s * 0.85, cy + s * 0.2, cx - s * 0.85, cy - s * 0.3);
+    ctx.arc(cx, cy - s * 0.3, s * 0.85, Math.PI, 0, false);
+    ctx.bezierCurveTo(cx + s * 0.85, cy + s * 0.2, cx + s * 0.2, cy + s * 0.8, cx, cy + s * 1.05);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy - s * 0.3, s * 0.3, 0, Math.PI * 2);
+    ctx.stroke();
   } else if (kind === "hourglass") {
     const w = s * 0.7;
     ctx.moveTo(cx - w, cy - s * 0.9);
@@ -3746,6 +3872,8 @@ const buildTaskShareCard = ({
   note,
   recur,
   status,
+  location,
+  finishDate,
   hideType = false,
   hideName = false
 }, colors, W, cardRadius, minHeight = 0) => {
@@ -3785,7 +3913,7 @@ const buildTaskShareCard = ({
   // words, unless it's exactly the unset/default 1h, which carries no
   // information either way.
   const metaParts = [];
-  if (date) metaParts.push(fmtDate(date));
+  if (date) metaParts.push(finishDate && finishDate > date ? fmtDate(date) + (isHe ? " עד " : " to ") + fmtDate(finishDate) : fmtDate(date));
   metaParts.push(...shareTimeParts(time, length));
   if (recurLabel) metaParts.push(recurLabel);
   // Each part is drawn on its own (with a separate bullet between) rather than as
@@ -3813,6 +3941,13 @@ const buildTaskShareCard = ({
       metaLines.push(metaCur);
     }
   });
+  const trimmedLocation = (location || "").trim();
+  let locationLines = [];
+  const LOC_ICON_W = 22; // pin + gap; the text sits after it
+  if (trimmedLocation) {
+    meas.font = metaFont;
+    locationLines = truncateCanvasLines(wrapCanvasText(meas, trimmedLocation, contentW - LOC_ICON_W), 3);
+  }
   const trimmedNote = (note || "").trim();
   let noteLines = [];
   if (trimmedNote) {
@@ -3941,6 +4076,20 @@ const buildTaskShareCard = ({
         });
       });
       cy += metaLines.length * 20;
+    }
+    if (locationLines.length) {
+      cy += metaLines.length || nameLines.length ? 8 : 0;
+      if (ctx) {
+        ctx.font = metaFont;
+        ctx.fillStyle = text3Color;
+        ctx.textAlign = align;
+        ctx.textBaseline = "alphabetic";
+        const iconCx = isHe ? xEdge - 7 : xEdge + 7;
+        drawShareIcon(ctx, "pin", iconCx, cy + 11, text3Color, 6);
+        const textX = isHe ? xEdge - LOC_ICON_W : xEdge + LOC_ICON_W;
+        locationLines.forEach((line, i) => ctx.fillText(line, textX, cy + (i + 1) * 20 - 6));
+      }
+      cy += locationLines.length * 20;
     }
     if (noteLines.length) {
       cy += 16;
@@ -4134,7 +4283,12 @@ const computeShareTitle = (tasksRaw, n) => {
     if (!first) return null;
     return tasksRaw.every(tk => tk[key] === first) ? first : null;
   };
-  const commonDate = allSame("date");
+  // A multi-day task's card shows "start to end"; if the shared start date
+  // were pulled up into the title and dropped from the cards, each card's
+  // own end date would have nowhere left to show. So a selection containing
+  // any multi-day task keeps its dates on the cards.
+  const anyMultiDay = tasksRaw.some(tk => tk.finishDate && tk.date && tk.finishDate > tk.date);
+  const commonDate = anyMultiDay ? null : allSame("date");
   const commonTime = allSame("time");
   const commonType = allSame("type");
   const commonRecur = allSame("recur");
@@ -4215,6 +4369,8 @@ const renderBulkShareCanvas = (tasksRaw, options) => {
       hideType: common.type,
       note: showDetails ? task.note : null,
       recur: showDetails && !common.recur ? task.recur : null,
+      location: showDetails ? task.location : null,
+      finishDate: showDetails ? task.finishDate : null,
       status
     };
     return buildTaskShareCard(payload, colors, CARD_W, 14, minHeight);
@@ -4488,24 +4644,30 @@ const loadHtml2Canvas = () => {
 // silence.
 // Temporarily forces the app's color theme for the duration of a share
 // capture, regardless of the person's actual dark/light mode setting, then
-// restores whatever was there before. Light mode is the absence of the
-// data-theme attribute, not an explicit value, so restoring means putting
-// the attribute back exactly as found (present or not) rather than always
-// setting or clearing it.
+// restores whatever was there before. Restoring puts the data-theme attribute
+// back exactly as found (present or not) rather than always setting or
+// clearing it.
+//
+// Deliberately NOT touched while forcing: the root's color-scheme, and the
+// page's own background behind the iOS status bar. Those are what the phone
+// reads to decide the clock/battery text color, so flipping them made the
+// status bar jump to the photo's theme during a share. Colors here follow
+// data-theme alone (the CSS keys light and dark off it), and the page
+// background is pinned, so the status bar stays exactly as it was.
 const withForcedShareTheme = async (bright, fn) => {
   const root = document.documentElement;
   const hadAttr = root.hasAttribute("data-theme");
   const prevValue = root.getAttribute("data-theme");
-  const prevScheme = root.style.colorScheme;
   const prevDark = window.__dark;
+  const prevBg = root.style.background;
+  root.style.background = getComputedStyle(root).backgroundColor;
   // Everything that decides a color has to follow the checkbox, not the
   // site's own mode: the CSS variables (explicit data-theme, so an OS-level
-  // dark preference can't override it), the color-scheme hint, and the hex
-  // colors computed in JS at render time (custom type chips read
-  // window.__dark), which only change once the app re-renders.
+  // dark preference can't override it) and the hex colors computed in JS at
+  // render time (custom type chips read window.__dark), which only change
+  // once the app re-renders.
   const apply = isDark => {
     root.setAttribute("data-theme", isDark ? "dark" : "light");
-    root.style.colorScheme = isDark ? "dark" : "light";
     window.__dark = isDark;
     if (window.__appForceRender) window.__appForceRender();
   };
@@ -4516,7 +4678,7 @@ const withForcedShareTheme = async (bright, fn) => {
     await fn();
   } finally {
     if (hadAttr) root.setAttribute("data-theme", prevValue);else root.removeAttribute("data-theme");
-    root.style.colorScheme = prevScheme;
+    root.style.background = prevBg;
     window.__dark = prevDark;
     if (window.__appForceRender) window.__appForceRender();
   }
@@ -5956,6 +6118,8 @@ const Modal = ({
       type: form.type,
       note: form.note,
       recur: recurParsed === "invalid" ? null : recurParsed,
+      location: editTask ? editTask.location : null,
+      finishDate: form.finishDate,
       status
     });
   };
@@ -5972,6 +6136,8 @@ const Modal = ({
       type: isHoliday ? "calendar" : "google",
       note: editTask.note,
       recur: isRecurring(editTask) ? editTask.recur : null,
+      location: editTask.location,
+      finishDate: editTask.finishDate,
       status
     });
   };
@@ -7757,6 +7923,24 @@ const MonthView = ({
     committed: false
   });
   const calGridRef = useRef(null);
+  // Narrow layout: the calendar cells (the drop zones) sit above a long day
+  // list and scroll out of sight as soon as you go looking for a task. A task
+  // grabbed from that list then had nothing to be dropped on anywhere near the
+  // finger, so the readout said Cancel wherever it was held. When a drag
+  // starts, bring the calendar into view so the cells are there to drop on.
+  const monthDragActive = !!drag;
+  useEffect(() => {
+    if (!monthDragActive || !narrow) return;
+    const grid = calGridRef.current;
+    if (!grid) return;
+    const headerBottom = stickyHeaderRef.current ? stickyHeaderRef.current.getBoundingClientRect().bottom : 106;
+    const r = grid.getBoundingClientRect();
+    if (r.top >= headerBottom - 2 && r.bottom <= window.innerHeight - 8) return; // already fully visible
+    window.scrollTo({
+      top: Math.max(0, r.top + window.scrollY - headerBottom - 4),
+      behavior: "auto"
+    });
+  }, [monthDragActive, narrow]);
   const [swipeDx, setSwipeDx] = useState(0);
   // Shared by the narrow list and the wide calendar grid, so both swipe months.
   const onTouchStart = e => {
@@ -10132,7 +10316,6 @@ const ListByDate = ({
   onToggle,
   onEdit,
   onCancel,
-  onDelay,
   onRename,
   onQuickAdd,
   newlyAddedIds,
@@ -10472,7 +10655,7 @@ const ListByDate = ({
         }
       }, new Date(k + "T00:00:00").toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
         weekday: "long"
-      }))), /*#__PURE__*/React.createElement("div", {
+      }))), /*#__PURE__*/React.createElement(EqualRowGrid, {
         style: {
           // A wrapping row, not CSS multi-column: multi-column fills column
           // A top-to-bottom before starting column B (and does that in
@@ -10512,7 +10695,6 @@ const ListByDate = ({
         onToggle: onToggle,
         onEdit: onEdit,
         onCancel: onCancel,
-        onDelay: onDelay,
         onRename: onRename,
         dragHandlers: dragHandlersFor(task, null, null),
         isDragging: !!drag && drag.id === task.id,
@@ -10637,7 +10819,6 @@ const ListByType = ({
   onToggle,
   onEdit,
   onCancel,
-  onDelay,
   onRename,
   onRenameType,
   onQuickAdd,
@@ -11005,7 +11186,7 @@ const ListByType = ({
         opacity: collapsed_ ? 0 : 1,
         transition: "opacity 0.25s ease"
       }
-    }, /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement(EqualRowGrid, {
       style: {
         paddingTop: 4,
         borderRadius: 12,
@@ -11046,7 +11227,6 @@ const ListByType = ({
       onToggle: onToggle,
       onEdit: onEdit,
       onCancel: onCancel,
-      onDelay: onDelay,
       onRename: onRename,
       dragHandlers: dragHandlersFor(task, null, null),
       isDragging: !!drag && drag.id === task.id,
@@ -11058,10 +11238,15 @@ const ListByType = ({
       onToggleSelect: onToggleSelect
     }))), /*#__PURE__*/React.createElement("div", {
       "data-share-ignore": "true",
+      "data-eq-self": "true",
       style: {
         // Same flex-item sizing as each task card above: grows to fill
         // whatever width is left in its row, or the whole row if it ends up
-        // alone on the last line.
+        // alone on the last line. Not stretched to the row's full height:
+        // each card carries an 8px bottom margin the row's height includes,
+        // so stretching would leave this box's bottom edge 8px below the
+        // cards' -- EqualRowGrid gives it the cards' exact height instead.
+        alignSelf: "flex-start",
         flex: singleColumnList ? "1 1 100%" : "1 1 320px",
         maxWidth: "100%",
         minWidth: 0,
@@ -14859,7 +15044,6 @@ const Dashboard = ({
   onToggle,
   onEdit,
   onCancel,
-  onDelay,
   onRename,
   onDelete,
   onAddTask,
@@ -18753,7 +18937,6 @@ const AllTasksView = ({
   onToggle,
   onEdit,
   onCancel,
-  onDelay,
   onRename,
   newlyAddedIds,
   activeTab,
@@ -18868,7 +19051,6 @@ const AllTasksView = ({
     onToggle: onToggle,
     onEdit: onEdit,
     onCancel: onCancel,
-    onDelay: onDelay,
     onRename: onRename,
     newlyAddedIds: newlyAddedIds,
     onQuickAdd: onQuickAddDate,
@@ -18882,7 +19064,6 @@ const AllTasksView = ({
     onToggle: onToggle,
     onEdit: onEdit,
     onCancel: onCancel,
-    onDelay: onDelay,
     onRename: onRename,
     newlyAddedIds: newlyAddedIds,
     onRenameType: onRenameType,
@@ -21328,11 +21509,11 @@ const GCal = (() => {
   };
 })();
 
-// A normal double-click's pace, shared by every "double-click to confirm"
-// control in the bulk bar (the delete/clear icons AND the date/time/type
-// picker inputs below) so they all feel the same, rather than a fast reflex
-// test.
-const BULK_DBLCLICK_MS = 600;
+// How long delete / clear stay armed waiting for the second press -- the same
+// 2 seconds the delete button on a task uses (see DeleteButton), so removing
+// one task and removing a whole selection feel the same, and it isn't a
+// reflex test.
+const BULK_DBLCLICK_MS = 2000;
 // How long the bar's appear/disappear animation takes. On exit, App keeps
 // the bar mounted (with its content frozen as it was) for exactly this long
 // after Cancel, then actually unmounts it, so it always animates away
@@ -21377,16 +21558,9 @@ const BulkActionBar = ({
     if (pickerKind === "time") setStagedTime("09:00");
     if (pickerKind === "type") setStagedType(null);
   }, [pickerKind]);
-  const labelOf = {
-    date: t("bulkSetDate"),
-    time: t("bulkSetTime"),
-    type: t("bulkSetType"),
-    clear: t("bulkClearDetails"),
-    delete: t("bulkDelete")
-  };
   const pickerTitle = pickerKind === "date" ? t("bulkPickDate") : pickerKind === "time" ? t("bulkPickTime") : pickerKind === "type" ? t("bulkPickType") : pickerKind === "quickselect" ? (isHe ? "בחירה מהירה" : "Quick select") : "";
-  const headline = pickerKind ? pickerTitle : notice ? notice : armed ? t("bulkTapAgain", labelOf[armed.kind] || "", armed.valueLabel || "") : t("selectedCount", count);
-  const headColor = pickerKind ? C.blue : notice ? C.green : armed ? armed.kind === "delete" ? C.red : C.blue : C.text;
+  const headline = pickerKind ? pickerTitle : notice ? notice : t("selectedCount", count);
+  const headColor = pickerKind ? C.blue : notice ? C.green : C.text;
   const btn = (icon, label, action, danger) => /*#__PURE__*/React.createElement("button", {
     key: action,
     onClick: () => onAction(action),
@@ -21432,16 +21606,20 @@ const BulkActionBar = ({
       fontWeight: 600,
       flexShrink: 0
     }),
+      transition: "all 0.2s",
       ...(isArmed(action) ? {
-        background: danger ? C.roseBg : C.blueBg,
-        boxShadow: `inset 0 0 0 1.5px ${danger ? C.red : C.blue}`,
-        color: danger ? C.red : C.blue,
+        background: "#EF4444",
+        color: "#fff",
+        boxShadow: "0 0 0 3px rgba(239,68,68,0.2)",
+        transform: "scale(1.1)",
+        position: "relative",
+        zIndex: 1,
         opacity: 1,
         borderRadius: 12
       } : {})
     }
   }, /*#__PURE__*/React.createElement(Icon, {
-    name: isArmed(action) ? "check" : icon,
+    name: icon,
     size: 18,
     color: "currentColor"
   }), label);
@@ -22053,9 +22231,6 @@ function App() {
   }, [selectedIds]);
   useEffect(() => {
     if (!armedBulk) return;
-    // A normal double-click's pace -- long enough for an ordinary second
-    // tap, not a race against the clock, but not "come back whenever"
-    // either.
     const id = setTimeout(() => setArmedBulk(null), BULK_DBLCLICK_MS);
     return () => clearTimeout(id);
   }, [armedBulk]);
@@ -22641,6 +22816,31 @@ function App() {
             if (isFirstPull) return !initialLocalIds.current.has(t.id);
             return !(t.id in hadBefore);
           });
+          // Holidays are exempt from the removal above (they're generated
+          // locally), which also meant an extra copy of one was never
+          // removed by anything. Keep exactly one per holiday per day,
+          // preferring the copy that's actually on Google.
+          const holidayNames = t => [normHolidayNameForDisplay(t.name), normHolidayNameForDisplay(t.nameEn)].filter(Boolean);
+          const keptByDate = new Map(); // date -> [{ task, names }]
+          const drop = new Set();
+          for (const t of next) {
+            if (!GCal.isHolidayTask(t) || !t.date) continue;
+            const names = holidayNames(t);
+            if (!names.length) continue;
+            const list = keptByDate.get(t.date) || [];
+            const match = list.find(k => k.names.some(n => names.includes(n)));
+            if (!match) {
+              list.push({ task: t, names });
+              keptByDate.set(t.date, list);
+            } else if (!byId[match.task.id] && byId[t.id]) {
+              drop.add(match.task);
+              match.task = t;
+              match.names = names;
+            } else {
+              drop.add(t);
+            }
+          }
+          if (drop.size) next = next.filter(t => !drop.has(t));
         }
         if (legacy && legacy.length) {
           // Keep an old local edit only where Google has the task and the local
@@ -23411,9 +23611,26 @@ function App() {
     setTileClicks({});
   }, [view]);
   useEffect(() => {
+    const uniq = uniqueById(tasks);
+    if (uniq !== tasks) {
+      setTasks(uniq);
+      return;
+    }
     const pruned = persistTasks(tasks, setArchiveTasks);
     if (pruned.length !== tasks.length) setTasks(pruned);
   }, [tasks]);
+  useEffect(() => {
+    const live = new Set(tasks.map(t => t.id));
+    const seen = new Set();
+    let changed = false;
+    const out = (archiveTasks || []).filter(t => {
+      if (!t || t.id == null) return true;
+      if (live.has(t.id) || seen.has(t.id)) { changed = true; return false; }
+      seen.add(t.id);
+      return true;
+    });
+    if (changed) setArchiveTasks(out);
+  }, [tasks, archiveTasks]);
 
   // ── Cloud-mode outbox + automatic clean-up of the old local copy ─────────
   // Runs after every change to the task lists and after every pull/push.
@@ -23835,8 +24052,8 @@ function App() {
   // action except Share: holidays CAN be selected (toggleTaskSelected only
   // refuses a true `isSelectLocked` task, i.e. a read-only shared Google
   // event), but date/time/type/clear/delete must still skip any selected
-  // holiday, the same way the single-task handlers (handleDelay,
-  // handleReschedule, handleDropType...) never trust the caller and always
+  // holiday, the same way the single-task handlers
+  // (handleReschedule, handleDropType...) never trust the caller and always
   // re-check hebcal/intl/calendar/googleShared themselves before doing
   // anything irreversible.
   const handleBulkBarAction = kind => {
@@ -23978,7 +24195,8 @@ function App() {
     // Selection is deliberately kept so several actions can be chained.
   };
   const handleRename = (id, name, andNext = false) => {
-    setTasks(ts => ts.map(t => t.id === id ? {
+    // Never trust the caller: a Google-sourced task can't be quick-renamed.
+    setTasks(ts => ts.map(t => t.id === id && t.source !== "google" && t.type !== "google" ? {
       ...t,
       name
     } : t));
@@ -24077,36 +24295,6 @@ function App() {
     setCleanDelaysMsg(getLang() === "he"
       ? cancelledCount === 0 ? "אין משימות באיחור" : `בוטלו ${cancelledCount} משימות שפג תוקפן`
       : cancelledCount === 0 ? "No overdue tasks found" : `Cancelled ${cancelledCount} overdue task${cancelledCount === 1 ? "" : "s"}`);
-  };
-  const handleDelay = id => {
-    setTasks(ts => {
-      const task = ts.find(t => t.id === id);
-      if (!task) return ts;
-      // Holiday tasks — and untouchable shared Google events — are never delayed
-      if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
-      const todayDs = todayStr();
-      const tomorrow = new Date(TODAY);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowDs = localDs(tomorrow);
-      let newDate;
-      if (!task.date) {
-        // Dateless task → set to tomorrow
-        newDate = tomorrowDs;
-      } else if (task.date < todayDs) {
-        // Overdue task → snap to today (even if +1 would still be in the past)
-        newDate = todayDs;
-      } else {
-        // Due today or future → bump by 1 day
-        const d = new Date(task.date + "T00:00:00");
-        d.setDate(d.getDate() + 1);
-        newDate = localDs(d);
-      }
-      return ts.map(t => t.id === id ? {
-        ...t,
-        date: newDate,
-        updated: Date.now()
-      } : t);
-    });
   };
   // Done/cancelled tasks beyond the newest ARCHIVE_BUFFER live in archiveTasks,
   // not tasks — but every view still shows them and lets you pick them up. The
@@ -25845,7 +26033,6 @@ function App() {
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
-    onDelay: handleDelay,
     onRename: handleRename,
     onDelete: handleDelete,
     onAddTask: openNew,
