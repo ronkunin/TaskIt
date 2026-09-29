@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "13";
+const APP_VERSION = "13.1";
 
 const {
   useState,
@@ -7467,6 +7467,23 @@ const DayChip = ({
     over = markOverdue && !donOnDay && !cancelOnDay && isOverdue(t),
     m = getTypeMeta(t.type);
   const locked = isSelectLocked(t);
+  // Touch: a chip only becomes draggable after a first tap selects it (the
+  // same rule as the task cards). Until then it doesn't claim the gesture,
+  // so a finger swipe that starts on a task scrolls the page natively, with
+  // momentum, instead of the engine's hand-driven scroll that glitched.
+  // Mouse is unchanged: drag straight away, click opens the task.
+  const [armed, setArmed] = useState(false);
+  const chipRef = useRef(null);
+  const pointerRef = useRef({ type: null, wasArmed: false });
+  useEffect(() => {
+    if (!armed) return;
+    const off = e => {
+      if (chipRef.current && !chipRef.current.contains(e.target)) setArmed(false);
+    };
+    document.addEventListener("pointerdown", off, true);
+    return () => document.removeEventListener("pointerdown", off, true);
+  }, [armed]);
+  const canDrag = !selectMode && !!dragHandlers;
   const stateColor = donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : null;
   const stateBg = donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : null;
   const isHe = getLang() === "he";
@@ -7592,15 +7609,33 @@ const DayChip = ({
     points: "20 6 9 17 4 12"
   })));
   return /*#__PURE__*/React.createElement("div", {
-    ...(!selectMode && dragHandlers ? dragHandlers : {}),
+    ref: chipRef,
+    ...(canDrag ? {
+      ...dragHandlers,
+      onPointerDown: e => {
+        const isTouch = e.pointerType === "touch";
+        pointerRef.current = { type: e.pointerType, wasArmed: armed };
+        // Not selected yet on touch: leave the gesture to the browser (scroll
+        // or tap). The tap then selects the chip, see onClick.
+        if (isTouch && !armed) return;
+        // Selected: press and move drags right away (see armNow in the engine).
+        if (isTouch && e.nativeEvent) e.nativeEvent.__taskitArmNow = true;
+        dragHandlers.onPointerDown(e);
+      }
+    } : {}),
     onClick: e => {
       e.stopPropagation();
       if (selectMode) {
         if (!locked) onToggleSelect && onToggleSelect(t.id);
         return;
       }
-      // With drag handlers attached, pointerup decides tap-vs-drag instead.
-      if (dragHandlers) return;
+      if (canDrag) {
+        // First tap on touch selects the chip; a tap on a selected chip (and
+        // any mouse click) is handled by the drag engine's pointerup, which
+        // opens the task.
+        if (pointerRef.current.type === "touch" && !pointerRef.current.wasArmed) setArmed(true);
+        return;
+      }
       onTaskClick(t);
     },
     style: {
@@ -7609,12 +7644,14 @@ const DayChip = ({
       alignItems: "center",
       gap: 4,
       marginBottom: 2,
-      borderRadius: selected ? 4 : 0,
-      boxShadow: selected ? `0 0 0 1.5px ${C.blue}` : "none",
+      borderRadius: selected || armed ? 4 : 0,
+      boxShadow: selected ? `0 0 0 1.5px ${C.blue}` : armed && canDrag ? `0 0 0 1.5px ${C.blue}` : "none",
+      background: armed && canDrag && !selected ? "var(--blue-bg)" : undefined,
       cursor: selectMode ? (locked ? "default" : "pointer") : dragHandlers ? isDragging ? "grabbing" : "grab" : "pointer",
-      // Latched at pointer-down — see the drag engine note.
-      touchAction: !selectMode && dragHandlers ? "none" : undefined,
-      WebkitTouchCallout: !selectMode && dragHandlers ? "none" : undefined,
+      // Latched at pointer-down -- see the drag engine note. Only a selected
+      // chip claims the gesture; every other chip lets the page scroll.
+      touchAction: canDrag && armed ? "none" : undefined,
+      WebkitTouchCallout: canDrag && armed ? "none" : undefined,
       opacity: isDragging ? 0.35 : selectMode && locked ? 0.4 : donOnDay ? 0.75 : cancelOnDay ? 0.65 : 1,
       flexDirection: "row",
       minWidth: 0,
@@ -9655,8 +9692,8 @@ const WeekView = ({
       marginBottom: 20,
       // The card around this view is edge to edge on a phone (see App), so
       // the title and arrows keep their own inset from the screen edge.
-      paddingLeft: phone ? 12 : 0,
-      paddingRight: phone ? 12 : 0
+      paddingLeft: phone ? 8 : 0,
+      paddingRight: phone ? 8 : 0
     }
   }, /*#__PURE__*/React.createElement("h2", {
     style: {
@@ -9931,7 +9968,6 @@ const WeekView = ({
           fontWeight: 500,
           background: donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : m.bg,
           color: donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : m.color,
-          borderInlineStart: `2px solid ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}`,
           boxShadow: isSel ? `0 0 0 1.5px ${C.blue}` : "none",
           opacity: beingDragged ? 0.35 : selectMode && selLocked ? 0.4 : donOnDay ? 0.78 : cancelOnDay ? 0.7 : 1,
           textDecoration: cancelOnDay ? "line-through" : "none",
@@ -10146,7 +10182,6 @@ const WeekView = ({
           overflow: "hidden",
           background: donOnDay ? "var(--green-bg)" : cancelOnDay ? "var(--rose-bg)" : over ? "var(--red-bg)" : m.bg,
           color: donOnDay ? "var(--green)" : cancelOnDay ? "var(--rose)" : over ? "var(--red)" : m.color,
-          borderInlineStart: `2px solid ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}`,
           borderTop: isSpillContinuation ? `1.5px dashed ${donOnDay ? "var(--green-border)" : cancelOnDay ? "var(--rose-border)" : over ? "var(--red)" : m.dot}` : "none",
           // Inset so the ring can't drift a device pixel off from the real
           // border on these fractional-percentage-width blocks (see the
@@ -10542,7 +10577,90 @@ const ListByDate = ({
       inputRefs.current[date]?.blur();
     }
   };
-  const stickyDateIsToday = stickyDate === todayStr();
+  // The date header, shared by each day's section and the sticky bar at the
+  // top, so both always look the same: a tinted bar with a calendar-style day
+  // tile, the date as the main line and the weekday under it.
+  const dateHeaderEl = (k, extraStyle) => {
+    const isTodayK = k === todayStr();
+    const dObj = new Date(k + "T00:00:00");
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "7px 14px",
+        paddingInlineStart: 7,
+        borderRadius: 14,
+        background: isTodayK ? "var(--blue-bg)" : "var(--card2)",
+        border: `1px solid ${isTodayK ? "var(--blue-border)" : "var(--border)"}`,
+        ...extraStyle
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 40,
+        height: 40,
+        borderRadius: 11,
+        flexShrink: 0,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        background: isTodayK ? C.blue : "var(--card)",
+        border: isTodayK ? "none" : "1px solid var(--border2)",
+        boxShadow: isTodayK ? "0 3px 10px rgba(37,99,235,0.35)" : "0 1px 2px rgba(0,0,0,0.05)",
+        lineHeight: 1
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        color: isTodayK ? "rgba(255,255,255,0.85)" : C.blue,
+        marginBottom: 3
+      }
+    }, getDaysShort()[dObj.getDay()]), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 17,
+        fontWeight: 800,
+        color: isTodayK ? "#fff" : C.text
+      }
+    }, dObj.getDate())), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: 2,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 16,
+        fontWeight: 750,
+        color: isTodayK ? C.blue : C.text,
+        lineHeight: 1.2
+      }
+    }, fmtDate(k)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        fontWeight: 600,
+        color: C.text3,
+        lineHeight: 1.2
+      }
+    }, dObj.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
+      weekday: "long"
+    }))), isTodayK && /*#__PURE__*/React.createElement("span", {
+      style: {
+        marginInlineStart: "auto",
+        fontSize: 10,
+        fontWeight: 800,
+        letterSpacing: "0.06em",
+        padding: "4px 10px",
+        borderRadius: 20,
+        background: C.blue,
+        color: "#fff"
+      }
+    }, t("today").toUpperCase()));
+  };
   const getMonthYear = ds => ds ? ds.slice(0, 7) : ""; // "yyyy-mm"
 
   return /*#__PURE__*/React.createElement("div", {
@@ -10558,10 +10676,12 @@ const ListByDate = ({
       marginLeft: -12,
       marginRight: -12,
       overflow: "hidden",
-      maxHeight: stickyDate ? 50 : 0,
+      maxHeight: stickyDate ? 60 : 0,
       opacity: stickyDate ? 1 : 0,
-      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease",
-      background: "var(--card)",
+      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease, background-color 0.18s ease",
+      // The bar itself carries the header's tint, edge to edge -- no white
+      // frame around a rounded header.
+      background: stickyDate === todayStr() ? "var(--blue-bg)" : "var(--card2)",
       backdropFilter: "blur(12px)",
       WebkitBackdropFilter: "blur(12px)",
       borderBottom: stickyDate ? `1px solid ${C.border}` : "none",
@@ -10570,45 +10690,15 @@ const ListByDate = ({
     }
   }, /*#__PURE__*/React.createElement(StickySwap, {
     swapKey: stickyDate,
-    height: 40
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: 40,
-      paddingLeft: 12,
-      paddingRight: 12,
-      display: "flex",
-      alignItems: "center",
-      gap: 10
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "calendar",
-    size: 13,
-    color: "#3B82F6"
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 13,
-      fontWeight: 700,
-      color: stickyDateIsToday ? C.blue : C.text
-    }
-  }, fmtDate(stickyDate)), stickyDateIsToday && /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 10,
-      fontWeight: 700,
-      padding: "1px 7px",
-      borderRadius: 20,
-      background: "#DBEAFE",
-      color: C.blue
-    }
-  }, t("today").toUpperCase()), /*#__PURE__*/React.createElement("span", {
-    style: {
-      marginLeft: getLang() === "he" ? undefined : "auto",
-      marginRight: getLang() === "he" ? "auto" : undefined,
-      fontSize: 11,
-      color: C.text4
-    }
-  }, stickyDate && new Date(stickyDate + "T00:00:00").toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
-    weekday: "long"
-  }))))), (() => {
+    height: 54
+  }, stickyDate ? dateHeaderEl(stickyDate, {
+    height: 54,
+    boxSizing: "border-box",
+    borderRadius: 0,
+    border: "none",
+    background: "transparent",
+    padding: "7px 12px"
+  }) : null)), (() => {
     // Pre-compute total task count per month-year across ALL keys (not just visible slice)
     let lastMonthYear = null;
     return visibleKeys.map((k, idx) => {
@@ -10685,89 +10775,9 @@ const ListByDate = ({
         style: {
           height: 0
         }
-      }), (() => {
-        // The date header: a tinted bar with a calendar-style day tile, so each
-        // day stands out as its own section instead of a faint line of text.
-        const isTodayK = k === todayStr();
-        const dObj = new Date(k + "T00:00:00");
-        return /*#__PURE__*/React.createElement("div", {
-          style: {
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            marginBottom: 12,
-            padding: "7px 14px",
-            paddingInlineStart: 7,
-            borderRadius: 14,
-            background: isTodayK ? "var(--blue-bg)" : "var(--card2)",
-            border: `1px solid ${isTodayK ? "var(--blue-border)" : "var(--border)"}`
-          }
-        }, /*#__PURE__*/React.createElement("div", {
-          style: {
-            width: 40,
-            height: 40,
-            borderRadius: 11,
-            flexShrink: 0,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            background: isTodayK ? C.blue : "var(--card)",
-            border: isTodayK ? "none" : "1px solid var(--border2)",
-            boxShadow: isTodayK ? "0 3px 10px rgba(37,99,235,0.35)" : "0 1px 2px rgba(0,0,0,0.05)",
-            lineHeight: 1
-          }
-        }, /*#__PURE__*/React.createElement("span", {
-          style: {
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-            color: isTodayK ? "rgba(255,255,255,0.85)" : C.blue,
-            marginBottom: 3
-          }
-        }, getDaysShort()[dObj.getDay()]), /*#__PURE__*/React.createElement("span", {
-          style: {
-            fontSize: 17,
-            fontWeight: 800,
-            color: isTodayK ? "#fff" : C.text
-          }
-        }, dObj.getDate())), /*#__PURE__*/React.createElement("div", {
-          style: {
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            minWidth: 0
-          }
-        }, /*#__PURE__*/React.createElement("span", {
-          style: {
-            fontSize: 16,
-            fontWeight: 750,
-            color: isTodayK ? C.blue : C.text,
-            lineHeight: 1.2
-          }
-        }, dObj.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
-          weekday: "long"
-        })), /*#__PURE__*/React.createElement("span", {
-          style: {
-            fontSize: 12,
-            fontWeight: 600,
-            color: C.text3,
-            lineHeight: 1.2
-          }
-        }, fmtDate(k))), isTodayK && /*#__PURE__*/React.createElement("span", {
-          style: {
-            marginInlineStart: "auto",
-            fontSize: 10,
-            fontWeight: 800,
-            letterSpacing: "0.06em",
-            padding: "4px 10px",
-            borderRadius: 20,
-            background: C.blue,
-            color: "#fff"
-          }
-        }, t("today").toUpperCase()));
-      })(), /*#__PURE__*/React.createElement(EqualRowGrid, {
+      }), dateHeaderEl(k, {
+        marginBottom: 12
+      }), /*#__PURE__*/React.createElement(EqualRowGrid, {
         style: {
           // A wrapping row, not CSS multi-column: multi-column fills column
           // A top-to-bottom before starting column B (and does that in
@@ -18153,6 +18163,32 @@ const SettingsModal = ({
       textTransform: "uppercase",
       margin: "20px 0 4px"
     }
+  }, isHe ? "אפליקציה" : "App"), /*#__PURE__*/React.createElement(Row, {
+    icon: "🔄",
+    label: (isHe ? "עדכן אפליקציה" : "Update App") + " (" + APP_VERSION + ")",
+    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload, keeps all your data"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: handleUpdate,
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: C.text4,
+      letterSpacing: "0.08em",
+      textTransform: "uppercase",
+      margin: "20px 0 4px"
+    }
   }, isHe ? "מראה" : "Appearance"), /*#__PURE__*/React.createElement(Row, {
     icon: "🌓",
     label: isHe ? "מצב כהה" : "Dark Mode",
@@ -18726,32 +18762,6 @@ const SettingsModal = ({
       direction: isHe ? "rtl" : "ltr"
     }
   }, icsMsg), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      fontWeight: 700,
-      color: C.text4,
-      letterSpacing: "0.08em",
-      textTransform: "uppercase",
-      margin: "20px 0 4px"
-    }
-  }, isHe ? "אפליקציה" : "App"), /*#__PURE__*/React.createElement(Row, {
-    icon: "🔄",
-    label: (isHe ? "עדכן אפליקציה" : "Update App") + " (" + APP_VERSION + ")",
-    sub: isHe ? "נקה קאש וטען מחדש (נתונים נשמרים)" : "Clear cache & reload, keeps all your data"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: handleUpdate,
-    style: {
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: `1.5px solid ${C.blueBorder}`,
-      background: C.blueBg,
-      color: C.blue,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      flexShrink: 0
-    }
-  }, isHe ? "עדכן" : "Update")), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       fontWeight: 700,
@@ -22503,19 +22513,16 @@ function App() {
     pullY: 0
   });
   const collapseAllTypesRef = useRef(null); // set by ListByType; called when tapping active list-type tab
-  const [allTasksTab, setAllTasksTab] = useState(() => {
+  // The list always opens on By Type. Switching to By Date still works for
+  // the rest of the session; it's just no longer remembered across launches.
+  const [allTasksTab, setAllTasksTab] = useState("type");
+  const setAllTasksTabAndSave = setAllTasksTab;
+  // The old remembered tab would otherwise sit in storage forever unused.
+  useEffect(() => {
     try {
-      return localStorage.getItem("taskflow_alltasks_tab") || "date";
-    } catch {
-      return "date";
-    }
-  });
-  const setAllTasksTabAndSave = v => {
-    setAllTasksTab(v);
-    try {
-      localStorage.setItem("taskflow_alltasks_tab", v);
+      localStorage.removeItem("taskflow_alltasks_tab");
     } catch {}
-  };
+  }, []);
   // Which of the four share-dialog-enabled surfaces (if any) is on screen
   // right now, and the set of types the dialog's type-filter can offer --
   // every distinct type among pending tasks, excluding synced/holiday
@@ -26086,7 +26093,9 @@ function App() {
       // the page's own 16px side padding (the same amount the container adds
       // in narrow mode) to run edge to edge. Top and bottom spacing stay.
       borderRadius: phoneWeek ? 0 : 12,
-      padding: phoneWeek ? "16px 0" : "16px 12px",
+      // A small side gap on phones, so the timetable doesn't touch the
+      // screen edge (it still runs much wider than the normal card).
+      padding: phoneWeek ? "16px 6px" : "16px 12px",
       border: phoneWeek ? "none" : `1px solid ${C.border}`,
       boxShadow: phoneWeek ? "none" : "0 2px 16px rgba(59,130,246,0.06)",
       marginLeft: phoneWeek ? -16 : 0,
