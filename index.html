@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "12.5";
+const APP_VERSION = "13";
 
 const {
   useState,
@@ -782,7 +782,12 @@ const CUSTOM_BORDER_LIGHT = ["#FB9550", "#A78BFA", "#C9A227", "#4FB8D1", "#E29FE
 const CUSTOM_COLORS_DARK = ["#FF9540", "#B69CFF", "#D4A72C", "#67C9DE", "#E27BFA", "#A3E635", "#D6A079", "#B4C2D4", "#DA9BCB", "#D4D16A", "#E08659", "#D9C59A", "#A9C4A6", "#B9ABE0", "#D4D4D8"];
 const CUSTOM_BG_DARK = ["#4A2A08", "#2E2166", "#332705", "#0B2E38", "#3E1250", "#33420C", "#3B2416", "#243040", "#3A1834", "#33320E", "#341207", "#352C1B", "#1F2D21", "#2A2340", "#27272A"];
 const CUSTOM_BORDER_DARK = ["#C2660C", "#5B48B8", "#92650A", "#0E6B82", "#8A2FA8", "#7CA829", "#8C5A3A", "#5E6F85", "#93508A", "#8A8733", "#7C3410", "#8F7B52", "#5F7D60", "#6E5E9A", "#71717A"];
-const isDarkNow = () => typeof window !== "undefined" && !!window.__dark;
+// window.__shareForcedDark is set only while a share photo is being made in a
+// theme other than the site's (see withForcedShareTheme). It wins over
+// window.__dark, which App resets to the REAL theme on every render -- and a
+// share capture has to re-render the whole app, so the plain flag alone got
+// overwritten mid-capture and custom type colors came out in the wrong theme.
+const isDarkNow = () => typeof window !== "undefined" && (window.__shareForcedDark !== undefined ? !!window.__shareForcedDark : !!window.__dark);
 const getCustomColors = () => isDarkNow() ? CUSTOM_COLORS_DARK : CUSTOM_COLORS_LIGHT;
 // Assigns each custom type's color by its alphabetical rank among every
 // custom type currently in use (see window.__customTypes, set by App on
@@ -866,6 +871,11 @@ const ARCHIVE_KEY = "taskflow_v5_archive";
 const CHARTS_KEY = "taskflow_v4_charts";
 const COLLAPSED_KEY = "taskflow_v5_collapsed";
 const ARCHIVE_BUFFER = 100;
+// "Narrow" in this app means portrait (taller than wide), which includes an
+// iPad held upright -- plenty wide enough for the week timetable to keep its
+// side margins. The extra-tight week layout (no side padding or border, a
+// slimmer hour column) is only for screens narrower than this: phones.
+const PHONE_MAX_WIDTH = 600;
 // ── Status marks in titles ────────────────────────────────────────────────
 // A calendar event whose title starts with a check mark (✔ ✅ ☑ ✓) means
 // "completed", one that starts with a cross (✖ ❌ ✗ ✘ 🚫) means "cancelled".
@@ -2226,7 +2236,7 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 .task-cancelling{animation:cancelGlow .45s ease forwards,completeShrink .55s ease .35s forwards;pointer-events:none;overflow:hidden;background:#FEF2F2!important;border-color:#FECACA!important}
 .x-bounce{animation:xBounce .42s cubic-bezier(.34,1.56,.64,1) forwards}
 .check-bounce{animation:checkBounce .42s cubic-bezier(.34,1.56,.64,1) forwards}
-@keyframes tabBounce{0%{transform:scale(1.1)}25%{transform:scale(0.82)}60%{transform:scale(1.22)}80%{transform:scale(1.05)}100%{transform:scale(1.1)}}
+@keyframes glassTabPress{0%{transform:scale(1)}35%{transform:scale(0.86)}70%{transform:scale(1.05)}100%{transform:scale(1)}}
 @keyframes syncPop{0%{opacity:0;transform:scale(0.7) translateY(4px)}55%{opacity:1;transform:scale(1.08) translateY(-2px)}80%{transform:scale(0.97) translateY(0)}100%{opacity:1;transform:scale(1) translateY(0)}}
 @keyframes syncFade{0%{opacity:1}80%{opacity:1}100%{opacity:0}}
 @keyframes syncIconSpin{0%{transform:rotate(-180deg) scale(0.5);opacity:0}60%{transform:rotate(20deg) scale(1.15);opacity:1}80%{transform:rotate(-8deg) scale(0.97)}100%{transform:rotate(0deg) scale(1);opacity:1}}
@@ -2998,6 +3008,9 @@ const TaskCard = ({
   };
   const handleNameClick = () => {
     if (done || cancelled) return;
+    // The tap the phone fires when the finger lifts after a drag isn't a
+    // request to rename -- only a clean tap (no drag) opens quick rename.
+    if (dragActiveFlag.current || Date.now() - (dragActiveFlag.endedAt || 0) < 500) return;
     if (hovered) {
       startRename();
     } else {
@@ -3041,7 +3054,16 @@ const TaskCard = ({
   return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     ref: cardRef,
     "data-taskid": task.id,
-    ...(dragHandlers && hovered && !selectMode ? dragHandlers : {}),
+    ...(dragHandlers && hovered && !selectMode ? {
+      ...dragHandlers,
+      // Already selected: tap once, then press and move to drag right away
+      // (see armNow in the drag engine). A plain tap on the text still
+      // renames (handleNameClick).
+      onPointerDown: e => {
+        if (e.nativeEvent) e.nativeEvent.__taskitArmNow = true;
+        dragHandlers.onPointerDown(e);
+      }
+    } : {}),
     onMouseEnter: activateCard,
     onMouseLeave: () => setHovered(false),
     onClick: () => {
@@ -4658,17 +4680,16 @@ const withForcedShareTheme = async (bright, fn) => {
   const root = document.documentElement;
   const hadAttr = root.hasAttribute("data-theme");
   const prevValue = root.getAttribute("data-theme");
-  const prevDark = window.__dark;
   const prevBg = root.style.background;
   root.style.background = getComputedStyle(root).backgroundColor;
   // Everything that decides a color has to follow the checkbox, not the
   // site's own mode: the CSS variables (explicit data-theme, so an OS-level
   // dark preference can't override it) and the hex colors computed in JS at
-  // render time (custom type chips read window.__dark), which only change
+  // render time (custom type chips read isDarkNow()), which only change
   // once the app re-renders.
   const apply = isDark => {
     root.setAttribute("data-theme", isDark ? "dark" : "light");
-    window.__dark = isDark;
+    window.__shareForcedDark = isDark;
     if (window.__appForceRender) window.__appForceRender();
   };
   const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -4679,7 +4700,7 @@ const withForcedShareTheme = async (bright, fn) => {
   } finally {
     if (hadAttr) root.setAttribute("data-theme", prevValue);else root.removeAttribute("data-theme");
     root.style.background = prevBg;
-    window.__dark = prevDark;
+    delete window.__shareForcedDark;
     if (window.__appForceRender) window.__appForceRender();
   }
 };
@@ -4746,6 +4767,7 @@ const shareElementAsImage = async (el, filename, frameOptions) => {
           n.style.webkitBackdropFilter = "none";
           if (n.style.position === "sticky") n.style.position = "static";
         });
+        fixBrokenWordsForCapture(clonedDoc);
       }
     }), 15000);
     // Frame the raw capture with padding, a light/dark background and the
@@ -4757,6 +4779,41 @@ const shareElementAsImage = async (el, filename, frameOptions) => {
     console.error("shareElementAsImage failed:", captureErr);
     appToast(t("shareFailed"));
   }
+};
+// html2canvas draws text one word at a time. When a word is wider than its
+// box and the browser breaks it across two lines (overflow-wrap: break-word,
+// as the narrow week-column titles do), html2canvas still draws the WHOLE word
+// as one piece on the first line -- straight over the next line's text, which
+// is the "scribbled" title in a share photo. Only in the capture copy: every
+// word too wide for its own box gets invisible break points (zero-width
+// spaces) between its letters, so html2canvas sees each piece on its own line
+// exactly where the browser put it. Words that fit are left alone, so the
+// wrapping looks the same as on screen.
+const fixBrokenWordsForCapture = doc => {
+  const win = doc.defaultView;
+  if (!win) return;
+  const meas = doc.createElement("canvas").getContext("2d");
+  if (!meas) return;
+  const seg = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+  const letters = w => seg ? Array.from(seg.segment(w), x => x.segment) : Array.from(w);
+  doc.querySelectorAll("body *").forEach(el => {
+    const cs = win.getComputedStyle(el);
+    const wraps = cs.overflowWrap === "break-word" || cs.overflowWrap === "anywhere" || cs.wordBreak === "break-word";
+    if (!wraps || cs.whiteSpace === "nowrap") return;
+    const width = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    if (!(width > 0)) return;
+    meas.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    el.childNodes.forEach(node => {
+      if (node.nodeType !== 3 || !node.nodeValue) return;
+      let changed = false;
+      const out = node.nodeValue.split(/(\s+)/).map(tok => {
+        if (!tok || /^\s+$/.test(tok) || meas.measureText(tok).width <= width) return tok;
+        changed = true;
+        return letters(tok).join("\u200B");
+      }).join("");
+      if (changed) node.nodeValue = out;
+    });
+  });
 };
 // ── "Rewind" share card: a generated stats poster (not a screenshot) ──────
 // Built entirely with Canvas 2D instead of capturing DOM, since the layout
@@ -7923,24 +7980,6 @@ const MonthView = ({
     committed: false
   });
   const calGridRef = useRef(null);
-  // Narrow layout: the calendar cells (the drop zones) sit above a long day
-  // list and scroll out of sight as soon as you go looking for a task. A task
-  // grabbed from that list then had nothing to be dropped on anywhere near the
-  // finger, so the readout said Cancel wherever it was held. When a drag
-  // starts, bring the calendar into view so the cells are there to drop on.
-  const monthDragActive = !!drag;
-  useEffect(() => {
-    if (!monthDragActive || !narrow) return;
-    const grid = calGridRef.current;
-    if (!grid) return;
-    const headerBottom = stickyHeaderRef.current ? stickyHeaderRef.current.getBoundingClientRect().bottom : 106;
-    const r = grid.getBoundingClientRect();
-    if (r.top >= headerBottom - 2 && r.bottom <= window.innerHeight - 8) return; // already fully visible
-    window.scrollTo({
-      top: Math.max(0, r.top + window.scrollY - headerBottom - 4),
-      behavior: "auto"
-    });
-  }, [monthDragActive, narrow]);
   const [swipeDx, setSwipeDx] = useState(0);
   // Shared by the narrow list and the wide calendar grid, so both swipe months.
   const onTouchStart = e => {
@@ -8523,10 +8562,24 @@ const MonthView = ({
             if (isOtherMonth) {
               dayRefs.current['o' + ds] = el;
             } else dayRefs.current[d] = el;
+            // The whole day section (header + its tasks) is a drop target,
+            // not only the calendar table above -- so a task can be moved
+            // to another day without having to scroll back up to the table.
+            registerZone("ms:" + ds, ds)(el);
           },
           style: {
-            marginBottom: 12,
-            opacity: isOtherMonth ? 0.7 : 1
+            // Padding with a matching negative margin: always there, so the
+            // section takes exactly the space it did before (nothing shifts
+            // when the highlight turns on), but the highlight border now sits
+            // 8px OUTSIDE the content instead of on top of its edge -- it no
+            // longer cuts through the "+" button at the end of the date header.
+            padding: "6px 8px",
+            margin: "-6px -8px 6px",
+            opacity: isOtherMonth ? 0.7 : 1,
+            borderRadius: 12,
+            background: dragDs === ds ? "var(--blue-bg)" : "transparent",
+            boxShadow: dragDs === ds ? `inset 0 0 0 3px ${C.blue}` : "none",
+            transition: "background 0.12s, box-shadow 0.12s"
           }
         }, weekBreakEl, /*#__PURE__*/React.createElement("div", {
           ref: el => {
@@ -9059,6 +9112,7 @@ function useTaskDragEngine({
     dragActiveFlag.current = false;
     d.active = false;
     d.armed = false;
+    d.armNow = false;
     d.id = null;
     d.task = null;
     d.pointerId = null;
@@ -9110,8 +9164,12 @@ function useTaskDragEngine({
           return;
         }
         const d = dragRef.current;
+        // A card that is already selected (tapped once) asks to be draggable
+        // straight away on touch -- press and move drags it, no long-press.
+        const armNow = isTouch && !!(e.nativeEvent && e.nativeEvent.__taskitArmNow);
         d.active = false;
-        d.armed = !isTouch;
+        d.armed = !isTouch || armNow;
+        d.armNow = armNow;
         d.id = task.id;
         d.task = task;
         d.pointerId = e.pointerId;
@@ -9126,7 +9184,7 @@ function useTaskDragEngine({
         try {
           e.currentTarget.setPointerCapture(e.pointerId);
         } catch (err) {}
-        if (isTouch) {
+        if (isTouch && !armNow) {
           d.lpTimer = setTimeout(() => {
             const cur = dragRef.current;
             if (cur.id !== task.id || cur.moved) return;
@@ -9144,7 +9202,7 @@ function useTaskDragEngine({
         if (d.id !== task.id) return;
         const dist = Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY);
         if (!d.active) {
-          if (d.isTouch) {
+          if (d.isTouch && !d.armNow) {
             // Moved before the hold armed → this is a scroll or a view swipe,
             // not a drag. Stand down (but keep receiving moves, see below).
             //
@@ -9190,7 +9248,9 @@ function useTaskDragEngine({
             }
             return;
           }
-          if (!d.armed || dist <= 4) return;
+          // A selected card on touch: a little more room than the mouse, so a
+          // slightly shaky tap is still a tap (quick rename), not a drag.
+          if (!d.armed || dist <= (d.armNow ? 8 : 4)) return;
           d.active = true;
           beginActive(task, meta, e.clientX, e.clientY);
         }
@@ -9372,6 +9432,9 @@ const WeekView = ({
   // narrow phone screen, since that's the legible version worth sharing.
   const [captureWide, setCaptureWide] = useState(false);
   const narrow = captureWide ? false : rawNarrow;
+  // A phone-width screen, as opposed to any portrait one -- an upright iPad is
+  // "narrow" but wide enough to keep the normal side margins (see App).
+  const phone = narrow && width < PHONE_MAX_WIDTH;
   const scrollRef = useRef();
   const isHe = getLang() === "he";
   const weekCaptureRef = useRef(null);
@@ -9589,7 +9652,11 @@ const WeekView = ({
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
-      marginBottom: 20
+      marginBottom: 20,
+      // The card around this view is edge to edge on a phone (see App), so
+      // the title and arrows keep their own inset from the screen edge.
+      paddingLeft: phone ? 12 : 0,
+      paddingRight: phone ? 12 : 0
     }
   }, /*#__PURE__*/React.createElement("h2", {
     style: {
@@ -9638,7 +9705,7 @@ const WeekView = ({
     const pxPerMin = HOUR_PX / 60;
     const nowD = new Date();
     const nowMinutes = nowD.getHours() * 60 + nowD.getMinutes();
-    const gutterCol = narrow ? "22px" : "50px";
+    const gutterCol = phone ? "15px" : narrow ? "22px" : "50px";
     const gridTemplate = `${gutterCol} repeat(7,minmax(0,1fr))`;
 
     // Share dialog options only take effect while actually capturing --
@@ -9958,7 +10025,7 @@ const WeekView = ({
         alignItems: "flex-start",
         justifyContent: "flex-end",
         paddingTop: 1,
-        paddingInlineEnd: narrow ? 3 : 6,
+        paddingInlineEnd: phone ? 1 : narrow ? 3 : 6,
         pointerEvents: "none"
       }
     }, /*#__PURE__*/React.createElement("span", {
@@ -10618,44 +10685,89 @@ const ListByDate = ({
         style: {
           height: 0
         }
-      }), /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          marginBottom: 10,
-          paddingBottom: 8,
-          borderBottom: `1px solid ${C.border}`
-        }
-      }, /*#__PURE__*/React.createElement(Icon, {
-        name: "calendar",
-        size: 14,
-        color: "#3B82F6"
-      }), /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 15,
-          fontWeight: 700,
-          color: k === todayStr() ? C.blue : C.text
-        }
-      }, fmtDate(k)), k === todayStr() && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 10,
-          fontWeight: 700,
-          padding: "1px 7px",
-          borderRadius: 20,
-          background: "#DBEAFE",
-          color: C.blue
-        }
-      }, t("today").toUpperCase()), /*#__PURE__*/React.createElement("span", {
-        style: {
-          marginLeft: getLang() === "he" ? undefined : "auto",
-          marginRight: getLang() === "he" ? "auto" : undefined,
-          fontSize: 11,
-          color: C.text4
-        }
-      }, new Date(k + "T00:00:00").toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
-        weekday: "long"
-      }))), /*#__PURE__*/React.createElement(EqualRowGrid, {
+      }), (() => {
+        // The date header: a tinted bar with a calendar-style day tile, so each
+        // day stands out as its own section instead of a faint line of text.
+        const isTodayK = k === todayStr();
+        const dObj = new Date(k + "T00:00:00");
+        return /*#__PURE__*/React.createElement("div", {
+          style: {
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 12,
+            padding: "7px 14px",
+            paddingInlineStart: 7,
+            borderRadius: 14,
+            background: isTodayK ? "var(--blue-bg)" : "var(--card2)",
+            border: `1px solid ${isTodayK ? "var(--blue-border)" : "var(--border)"}`
+          }
+        }, /*#__PURE__*/React.createElement("div", {
+          style: {
+            width: 40,
+            height: 40,
+            borderRadius: 11,
+            flexShrink: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            background: isTodayK ? C.blue : "var(--card)",
+            border: isTodayK ? "none" : "1px solid var(--border2)",
+            boxShadow: isTodayK ? "0 3px 10px rgba(37,99,235,0.35)" : "0 1px 2px rgba(0,0,0,0.05)",
+            lineHeight: 1
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            color: isTodayK ? "rgba(255,255,255,0.85)" : C.blue,
+            marginBottom: 3
+          }
+        }, getDaysShort()[dObj.getDay()]), /*#__PURE__*/React.createElement("span", {
+          style: {
+            fontSize: 17,
+            fontWeight: 800,
+            color: isTodayK ? "#fff" : C.text
+          }
+        }, dObj.getDate())), /*#__PURE__*/React.createElement("div", {
+          style: {
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            minWidth: 0
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            fontSize: 16,
+            fontWeight: 750,
+            color: isTodayK ? C.blue : C.text,
+            lineHeight: 1.2
+          }
+        }, dObj.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
+          weekday: "long"
+        })), /*#__PURE__*/React.createElement("span", {
+          style: {
+            fontSize: 12,
+            fontWeight: 600,
+            color: C.text3,
+            lineHeight: 1.2
+          }
+        }, fmtDate(k))), isTodayK && /*#__PURE__*/React.createElement("span", {
+          style: {
+            marginInlineStart: "auto",
+            fontSize: 10,
+            fontWeight: 800,
+            letterSpacing: "0.06em",
+            padding: "4px 10px",
+            borderRadius: 20,
+            background: C.blue,
+            color: "#fff"
+          }
+        }, t("today").toUpperCase()));
+      })(), /*#__PURE__*/React.createElement(EqualRowGrid, {
         style: {
           // A wrapping row, not CSS multi-column: multi-column fills column
           // A top-to-bottom before starting column B (and does that in
@@ -13443,7 +13555,23 @@ const TreeMap = ({
     }
   };
   squarify(items, 0, 0, W, H);
-  const GAP = 2;
+  // Light mode: solid chart tiles in each type's mid-tone (its border color --
+  // the type's text color is a deep shade meant for text, and painted as a
+  // big tile it looked muddy). Labels are white, or the type's own deep color
+  // on a light tile, whichever reads better. Dark mode keeps its own tiles:
+  // there the type colors are already the bright ones.
+  const light = !isDarkNow();
+  const GAP = light ? 3 : 2;
+  const luminanceOf = c => {
+    const v = String(resolveCssColor(c) || "");
+    let r, g, b;
+    const m = v.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/);
+    if (m) [r, g, b] = [m[1], m[2], m[3]].map(Number);
+    else if (/^#[0-9a-f]{6}$/i.test(v)) [r, g, b] = [1, 3, 5].map(i => parseInt(v.slice(i, i + 2), 16));
+    else return 0;
+    const f = x => (x /= 255) <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
   const tipW = 100,
     tipH = 74;
   return /*#__PURE__*/React.createElement("div", {
@@ -13482,6 +13610,21 @@ const TreeMap = ({
     offset: "100%",
     stopColor: "#000",
     stopOpacity: "0.06"
+  })), /*#__PURE__*/React.createElement("linearGradient", {
+    // Light mode's softer top highlight on the solid tiles.
+    id: `${chartId}-sheen`,
+    x1: "0%",
+    y1: "0%",
+    x2: "0%",
+    y2: "100%"
+  }, /*#__PURE__*/React.createElement("stop", {
+    offset: "0%",
+    stopColor: "#fff",
+    stopOpacity: "0.22"
+  }), /*#__PURE__*/React.createElement("stop", {
+    offset: "60%",
+    stopColor: "#fff",
+    stopOpacity: "0"
   })), /*#__PURE__*/React.createElement("filter", {
     id: `${chartId}-shadow`,
     x: "-40%",
@@ -13501,6 +13644,8 @@ const TreeMap = ({
     const bw = Math.max(item.w - GAP, 1),
       bh = Math.max(item.h - GAP, 1);
     const color = item.meta.color;
+    const lightTile = light && luminanceOf(item.meta.border) >= 0.45;
+    const labelColor = light ? lightTile ? color : "#fff" : "#fff";
     const showLabel = bw > 32 && bh > 18;
     const showCount = bw > 24 && bh > 30;
     const pct = Math.round(item.count / total * 100);
@@ -13543,9 +13688,21 @@ const TreeMap = ({
         transformOrigin: "center",
         transform: isHov ? "scale(1.035)" : "scale(1)",
         transition: "transform 0.18s cubic-bezier(0.34,1.56,0.64,1)",
-        filter: `url(#${chartId}-shadow)`
+        filter: light ? "none" : `url(#${chartId}-shadow)`
       }
-    }, /*#__PURE__*/React.createElement("rect", {
+    }, light ? /*#__PURE__*/React.createElement("rect", {
+      x: bx,
+      y: by,
+      width: bw,
+      height: bh,
+      rx: 7,
+      // As CSS (style), not attributes: several of these are var(--...) values.
+      style: {
+        fill: item.meta.border,
+        filter: isHov ? "brightness(1.06) saturate(1.1)" : "none",
+        transition: "filter 0.15s"
+      }
+    }) : /*#__PURE__*/React.createElement("rect", {
       x: bx,
       y: by,
       width: bw,
@@ -13563,8 +13720,8 @@ const TreeMap = ({
       y: by,
       width: bw,
       height: bh,
-      rx: 6,
-      fill: `url(#${chartId}-gloss)`,
+      rx: light ? 7 : 6,
+      fill: `url(#${chartId}-${light ? "sheen" : "gloss"})`,
       style: {
         pointerEvents: "none"
       }
@@ -13574,8 +13731,12 @@ const TreeMap = ({
       textAnchor: "middle",
       fontSize: Math.min(11, bw / 5, bh / 2.5),
       fontWeight: "700",
-      fill: "#fff",
-      style: {
+      fill: light ? undefined : "#fff",
+      style: light ? {
+        pointerEvents: "none",
+        fill: labelColor,
+        textShadow: lightTile ? "none" : "0 1px 1.5px rgba(0,0,0,0.25)"
+      } : {
         pointerEvents: "none",
         textShadow: "0 1px 2px rgba(0,0,0,0.4)"
       }
@@ -13584,8 +13745,14 @@ const TreeMap = ({
       y: by + bh / 2 + 9,
       textAnchor: "middle",
       fontSize: Math.min(10, bw / 6, bh / 3),
-      fill: "rgba(255,255,255,0.85)",
-      style: {
+      fontWeight: light ? "600" : undefined,
+      fill: light ? undefined : "rgba(255,255,255,0.85)",
+      style: light ? {
+        pointerEvents: "none",
+        fill: labelColor,
+        opacity: 0.85,
+        textShadow: lightTile ? "none" : "0 1px 1.5px rgba(0,0,0,0.2)"
+      } : {
         pointerEvents: "none"
       }
     }, item.count, " · ", pct, "%"));
@@ -17439,150 +17606,6 @@ const WelcomeModal = ({
       cursor: "pointer"
     }
   }, isHe ? "דלג לעת עתה, אמשיך אופליין" : "Skip for now, continue offline"))));
-};
-// ── Holiday calendar offer, as a proper dialog instead of an on-page banner ──
-const HolidayPromptModal = ({
-  open,
-  prefIL,
-  prefIntl,
-  onAcceptIL,
-  onDeclineIL,
-  onAcceptIntl,
-  onDeclineIntl
-}) => {
-  const isHe = getLang() === "he";
-  const [visible, setVisible] = useState(false);
-  const [closing, setClosing] = useState(false);
-  useEffect(() => {
-    if (open) {
-      setVisible(true);
-      setClosing(false);
-    } else if (visible) {
-      setClosing(true);
-      setTimeout(() => {
-        setVisible(false);
-        setClosing(false);
-      }, 220);
-    }
-  }, [open]);
-  if (!visible) return null;
-  const questions = [...(prefIL === null ? [{
-    key: "il",
-    emoji: "✡️",
-    label: isHe ? "חגים וימי זיכרון ישראליים" : "Israeli holidays & memorial days",
-    onYes: onAcceptIL,
-    onNo: onDeclineIL
-  }] : []), ...(prefIntl === null ? [{
-    key: "intl",
-    emoji: "🌍",
-    label: isHe ? "חגים בינלאומיים" : "International holidays",
-    onYes: onAcceptIntl,
-    onNo: onDeclineIntl
-  }] : [])];
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "fixed",
-      inset: 0,
-      zIndex: 2100,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 20,
-      opacity: closing ? 0 : 1,
-      transition: "opacity 0.2s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "absolute",
-      inset: 0,
-      background: "rgba(0,0,0,0.4)",
-      backdropFilter: "blur(6px)",
-      WebkitBackdropFilter: "blur(6px)"
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "relative",
-      background: "var(--card)",
-      borderRadius: 20,
-      padding: 24,
-      width: "100%",
-      maxWidth: 380,
-      boxShadow: "0 24px 64px rgba(0,0,0,0.25)",
-      border: `1px solid ${C.border}`,
-      transform: closing ? "scale(0.96)" : "scale(1)",
-      transition: "transform 0.2s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 18,
-      fontWeight: 750,
-      color: C.text,
-      marginBottom: 4
-    }
-  }, isHe ? "לוח שנה של חגים" : "Holiday calendar"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: C.text3,
-      marginBottom: 18,
-      lineHeight: 1.5
-    }
-  }, isHe ? "להוסיף חגים אוטומטית ללוח השנה? אפשר לשנות את זה בכל שלב מההגדרות." : "Add holidays to your calendar automatically? You can change this later from Settings."), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 10
-    }
-  }, questions.map(q => /*#__PURE__*/React.createElement("div", {
-    key: q.key,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      padding: "12px 14px",
-      borderRadius: 12,
-      background: C.amberBg,
-      border: `1px solid ${C.amberBorder}`
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 18,
-      flexShrink: 0
-    }
-  }, q.emoji), /*#__PURE__*/React.createElement("span", {
-    style: {
-      flex: 1,
-      minWidth: 0,
-      fontSize: 13,
-      fontWeight: 600,
-      color: C.text
-    }
-  }, q.label), /*#__PURE__*/React.createElement("button", {
-    onClick: q.onNo,
-    style: {
-      padding: "6px 12px",
-      borderRadius: 8,
-      border: `1px solid ${C.border2}`,
-      background: "transparent",
-      color: C.text3,
-      fontSize: 12,
-      fontWeight: 600,
-      cursor: "pointer",
-      flexShrink: 0
-    }
-  }, isHe ? "לא" : "No"), /*#__PURE__*/React.createElement("button", {
-    onClick: q.onYes,
-    style: {
-      padding: "6px 12px",
-      borderRadius: 8,
-      border: "none",
-      background: C.amber,
-      color: "#fff",
-      fontSize: 12,
-      fontWeight: 700,
-      cursor: "pointer",
-      flexShrink: 0
-    }
-  }, isHe ? "כן" : "Yes"))))));
 };
 const SettingsModal = ({
   open,
@@ -22404,11 +22427,14 @@ function App() {
     if (!barRef.current) return;
     const btn = barRef.current.querySelector(`[data-tabid="${tabId}"]`);
     if (!btn) return;
-    const barRect = barRef.current.getBoundingClientRect();
-    const btnRect = btn.getBoundingClientRect();
+    // offsetLeft/offsetWidth, not getBoundingClientRect: they're the button's
+    // layout box, unaffected by its tap-bounce scale, and measured from the
+    // bar's inner (padding) edge -- the same edge the absolutely positioned
+    // pill is placed from. The bounding-rect version was off by the bar's
+    // border and by the button's current scale.
     setPillStyle({
-      left: btnRect.left - barRect.left,
-      width: btnRect.width,
+      left: btn.offsetLeft,
+      width: btn.offsetWidth,
       opacity: 1
     });
   };
@@ -22495,19 +22521,22 @@ function App() {
   // every distinct type among pending tasks, excluding synced/holiday
   // entries the person doesn't manage directly.
   const shareDialogSurface = view === "home" ? "upnext" : view === "month" ? "month" : view === "week" ? "week" : view === "all-tasks" && allTasksTab === "type" ? "bytype" : null;
-  const shareAvailableTypes = React.useMemo(() => {
-    const seen = new Map();
-    tasks.filter(tk => isPending(tk) && tk.type !== "calendar" && tk.type !== "google").forEach(tk => {
-      const ty = tk.type || "regular";
-      if (!seen.has(ty)) seen.set(ty, getTypeMeta(ty));
-    });
-    return [...seen.entries()].map(([type, m]) => ({
+  // Which types exist is memoized; their colors are not -- those depend on
+  // the current theme, and a memo keyed only on tasks kept the old theme's.
+  const shareAvailableTypeKeys = React.useMemo(() => {
+    const seen = new Set();
+    tasks.filter(tk => isPending(tk) && tk.type !== "calendar" && tk.type !== "google").forEach(tk => seen.add(tk.type || "regular"));
+    return [...seen];
+  }, [tasks]);
+  const shareAvailableTypes = shareAvailableTypeKeys.map(type => {
+    const m = getTypeMeta(type);
+    return {
       type,
       label: m.label,
       color: m.color,
       bg: m.bg
-    }));
-  }, [tasks]);
+    };
+  });
   const resetMonthViewRef = useRef(null); // set by MonthView; called when tapping active month tab
   const [pullDist, setPullDist] = useState(0);
   const [filteredCharts, setFilteredCharts] = useState(loadCharts);
@@ -22520,8 +22549,10 @@ function App() {
   }, [filteredCharts]);
   const [cleanDelaysMsg, setCleanDelaysMsg] = useState("");
   const [newlyAddedIds, setNewlyAddedIds] = useState(() => new Set());
-  const [prefIL, setPrefIL] = useState(() => getPref(PREF_IL));
-  const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL));
+  // Holidays are simply on: nothing stored yet means shown. Only an explicit
+  // "no" from the Settings switch hides them (and they still sync regardless).
+  const [prefIL, setPrefIL] = useState(() => getPref(PREF_IL) || "yes");
+  const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL) || "yes");
   const [prefLookahead, setPrefLookahead] = useState(() => getPref(PREF_LOOKAHEAD) !== "no"); // default ON
   const [prefGcalForeign, setPrefGcalForeign] = useState(() => getPref(PREF_GCAL_FOREIGN) !== "no"); // default ON
   const [singleColumnLists, setSingleColumnLists] = useState(() => getPref(PREF_SINGLE_COLUMN_LISTS) === "yes"); // default OFF
@@ -23735,17 +23766,6 @@ function App() {
       }
     }
   }, [tasks, archiveTasks, gcalReady, gcalConnected, gcalConfirmTick]);
-  // Auto-detect holidays from loaded tasks on a new device (same account, no prefs yet)
-  useEffect(() => {
-    if (getPref(PREF_IL) === null && tasks.some(tk => tk.hebcal && !tk.intl)) {
-      setPref(PREF_IL, "yes");
-      setPrefIL("yes");
-    }
-    if (getPref(PREF_INTL) === null && tasks.some(tk => tk.intl)) {
-      setPref(PREF_INTL, "yes");
-      setPrefIntl("yes");
-    }
-  }, [tasks]); // eslint-disable-line react-hooks/exhaustive-deps
   const acceptIL = () => {
     setPref(PREF_IL, "yes");
     setPrefIL("yes");
@@ -23763,10 +23783,6 @@ function App() {
       setHebcalSyncedDate(todayDs);
     }).catch(() => {});
   };
-  const declineIL = () => {
-    setPref(PREF_IL, "no");
-    setPrefIL("no");
-  };
   const acceptIntl = () => {
     setPref(PREF_INTL, "yes");
     setPrefIntl("yes");
@@ -23774,10 +23790,6 @@ function App() {
       const newIntl = buildIntlHolidays(prev);
       return newIntl.length > 0 ? [...prev, ...newIntl] : prev;
     });
-  };
-  const declineIntl = () => {
-    setPref(PREF_INTL, "no");
-    setPrefIntl("no");
   };
   const handleToggleLookahead = () => {
     const next = !prefLookahead;
@@ -23791,10 +23803,9 @@ function App() {
   };
   const handleToggleIL = () => {
     if (prefIL === "yes") {
-      // Hide: delete pending hebcal tasks (keep done/cancelled)
+      // Hide only -- the holidays stay, and keep syncing to Google.
       setPref(PREF_IL, "no");
       setPrefIL("no");
-      setTasks(prev => prev.filter(t => !(t.hebcal && !t.intl && isPending(t))));
     } else {
       // Show: re-enable and sync
       acceptIL();
@@ -23802,10 +23813,9 @@ function App() {
   };
   const handleToggleIntl = () => {
     if (prefIntl === "yes") {
-      // Hide: delete pending intl tasks (keep done/cancelled)
+      // Hide only -- the holidays stay, and keep syncing to Google.
       setPref(PREF_INTL, "no");
       setPrefIntl("no");
-      setTasks(prev => prev.filter(t => !(t.intl && isPending(t))));
     } else {
       // Show: re-enable and re-seed
       acceptIntl();
@@ -23815,7 +23825,9 @@ function App() {
 
   // ── Hebcal sync: on mount, fetch holidays and merge into tasks ──────────────
   useEffect(() => {
-    if (prefIL !== "yes") return; // only sync if opted in
+    // Always, whatever the Settings switch says: holidays always exist and
+    // always sync to Google. The switch only decides whether TaskIt SHOWS them
+    // (see holidayHidden) -- that way every device agrees on one set of events.
     const todayDs = todayStr();
     const lastSynced = getHebcalSyncedDate();
     if (lastSynced === todayDs) return;
@@ -23841,7 +23853,7 @@ function App() {
 
   // ── International holidays: seed on mount ────────────────────────────────────
   useEffect(() => {
-    if (prefIntl !== "yes") return;
+    // Always seeded, like the Israeli holidays above: the switch only hides them.
     const INTL_RENAMES = {
       "הלואין": {
         name: "ליל כל הקדושים",
@@ -24567,11 +24579,37 @@ function App() {
 
   // Completed this week (include archiveTasks so previously-dateless tasks that were
   // completed and then archived still count toward this week's total)
-  const weekDone = mergeUniqueTasks(tasks, archiveTasks).filter(t => isDone(t) && t.date && isThisWeek(t.date)).length;
-  const overdueCount = tasks.filter(t => isOverdue(t)).length;
-  const todayTaskCount = tasks.filter(t => isPending(t) && t.date && t.date <= todayStr()).length;
+  // Holidays whose Settings switch is off (or not answered yet) are hidden from
+  // every screen, but still kept and synced. Everything shown on screen comes
+  // from shownTasks/shownArchive; the full lists stay the real data.
+  const holidayHidden = t => !!t && (t.hebcal && !t.intl && prefIL !== "yes" || t.intl && prefIntl !== "yes");
+  const shownTasks = tasks.filter(t => !holidayHidden(t));
+  const shownArchive = archiveTasks.filter(t => !holidayHidden(t));
+  // A hidden holiday that has passed is cancelled automatically (it was never
+  // on screen to be marked done). The cancel syncs to Google like any status
+  // change. Waits for the first real sync when connected, so it acts on what
+  // Google actually has rather than the startup copy.
+  useEffect(() => {
+    if (gcalConnected && !gcalReady) return;
+    const today = todayStr();
+    const due = t => holidayHidden(t) && isPending(t) && !!t.date && (t.finishDate || t.date) < today;
+    if (!tasks.some(due)) return;
+    const now = Date.now();
+    setTasks(ts => ts.map(t => due(t) ? {
+      ...t,
+      cancelled: true,
+      done: false,
+      updated: now
+    } : t));
+  }, [tasks, prefIL, prefIntl, gcalConnected, gcalReady]);
+  const weekDone = mergeUniqueTasks(shownTasks, shownArchive).filter(t => isDone(t) && t.date && isThisWeek(t.date)).length;
+  const overdueCount = shownTasks.filter(t => isOverdue(t)).length;
+  const todayTaskCount = shownTasks.filter(t => isPending(t) && t.date && t.date <= todayStr()).length;
   const appWidth = useWindowWidth();
   const appHeight = useWindowHeight();
+  // Week view on a phone-width screen (see PHONE_MAX_WIDTH): the card around
+  // it drops its padding/border so the timetable gets the full width.
+  const phoneWeek = appHeight > appWidth && appWidth < PHONE_MAX_WIDTH && view === "week";
   const narrow = appHeight > appWidth;
   // Re-position bottom nav pill when narrow/view changes (after narrow is defined)
   useEffect(() => {
@@ -24736,8 +24774,11 @@ function App() {
   // reading that one-time-wrong cached color for the rest of the session.
   if (typeof document !== "undefined") document.documentElement.setAttribute("data-palette", palette);
 
-  // Apply dark + RTL
-  useEffect(() => {
+  // Apply dark + RTL. A layout effect, not a plain one: custom type colors are
+  // worked out during render, and the CSS variables follow data-theme -- both
+  // have to change before the browser paints, or one frame shows the new
+  // custom colors on the old theme.
+  React.useLayoutEffect(() => {
     document.documentElement.style.colorScheme = dark ? "dark" : "light";
     // Always explicit ("light" or "dark"): with the attribute merely absent, a
     // device whose OS is dark falls back to the prefers-color-scheme CSS and
@@ -25600,15 +25641,19 @@ function App() {
         alignItems: "center",
         justifyContent: "space-around",
         position: "relative",
+        boxSizing: "border-box",
         height: 64,
         borderRadius: 32,
         padding: "0 6px",
         gap: 2,
-        background: dark ? "rgba(15,23,42,0.55)" : "rgba(255,255,255,0.55)",
-        backdropFilter: "blur(40px) saturate(180%)",
-        WebkitBackdropFilter: "blur(40px) saturate(180%)",
-        border: dark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(255,255,255,0.7)",
-        boxShadow: dark ? "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)" : "0 8px 32px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.8)",
+        // Liquid glass: a very clear tint over a strong blur + saturation boost
+        // (what lets the colors of the content behind glow through), a hairline
+        // bright rim, and a soft two-layer float shadow.
+        background: dark ? "rgba(30,30,34,0.38)" : "rgba(255,255,255,0.34)",
+        backdropFilter: "blur(22px) saturate(210%) brightness(1.04)",
+        WebkitBackdropFilter: "blur(22px) saturate(210%) brightness(1.04)",
+        border: dark ? "0.5px solid rgba(255,255,255,0.20)" : "0.5px solid rgba(255,255,255,0.75)",
+        boxShadow: dark ? "0 12px 34px rgba(0,0,0,0.50), 0 2px 8px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.16), inset 0 -1px 0 rgba(255,255,255,0.05)" : "0 12px 34px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.95), inset 0 -1px 0 rgba(255,255,255,0.35)",
         // The bulk-select bar lives up near the top now, so the bottom nav
         // just stays put and usable the whole time -- no more crossfade
         // with select mode entering/exiting.
@@ -25620,14 +25665,31 @@ function App() {
         userSelect: "none"
       }
     }, /*#__PURE__*/React.createElement("div", {
+      // Specular sheen: light catching the top of the glass.
       style: {
         position: "absolute",
-        top: "calc(50% - 29px)",
+        inset: 0,
+        borderRadius: "inherit",
+        background: dark ? "linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 48%)" : "linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0) 50%)",
+        pointerEvents: "none",
+        zIndex: 0
+      }
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        // Exactly centered: half the bar's inner height minus half the pill.
+        top: "50%",
+        marginTop: -26,
         height: 52,
         borderRadius: 26,
-        background: dark ? "rgba(255,255,255,0.15)" : "rgba(59,130,246,0.12)",
-        boxShadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.15)" : "inset 0 1px 0 rgba(255,255,255,0.9), 0 2px 8px rgba(59,130,246,0.15)",
-        transition: "left 0.28s cubic-bezier(0.34,1.56,0.64,1), width 0.28s cubic-bezier(0.34,1.56,0.64,1), opacity 0.15s",
+        // The selected tab is its own small glass lens sitting in the bar.
+        background: dark ? "linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.09))" : "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(236,236,242,0.55))",
+        boxShadow: dark ? "inset 0 1px 0 rgba(255,255,255,0.22), inset 0 0 0 0.5px rgba(255,255,255,0.10), 0 2px 10px rgba(0,0,0,0.25)" : "inset 0 1px 0 rgba(255,255,255,1), inset 0 0 0 0.5px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06), 0 4px 14px rgba(0,0,0,0.08)",
+        // The bouncy slide: overshoots the new tab a little and settles back.
+        // While dragging across the tabs the lens also swells a little, like
+        // the liquid glass magnifier.
+        transform: dragHoverTab !== null ? "scale(1.07)" : "scale(1)",
+        transition: "left 0.28s cubic-bezier(0.34,1.56,0.64,1), width 0.28s cubic-bezier(0.34,1.56,0.64,1), transform 0.3s cubic-bezier(0.34,1.56,0.64,1), opacity 0.15s",
         pointerEvents: "none",
         zIndex: 0,
         left: pillStyle.left,
@@ -25665,22 +25727,21 @@ function App() {
           borderRadius: 26,
           position: "relative",
           zIndex: 1,
-          animation: bouncing ? "tabBounce 0.38s cubic-bezier(0.34,1.56,0.64,1) forwards" : undefined,
-          transform: bouncing ? undefined : active ? "scale(1.1)" : "scale(1)",
-          transition: bouncing ? undefined : "transform 0.2s cubic-bezier(0.34,1.56,0.64,1)"
+          animation: bouncing ? "glassTabPress 0.36s cubic-bezier(0.32,0.72,0,1) forwards" : undefined
         }
       }, /*#__PURE__*/React.createElement(Icon, {
         name: v.icon,
         size: 20,
-        color: active ? C.blue : dark ? "rgba(255,255,255,0.5)" : "#94A3B8",
-        strokeWidth: active ? 2.5 : 1.75
+        color: active ? dark ? "#0A84FF" : "#007AFF" : dark ? "rgba(235,235,245,0.62)" : "rgba(60,60,67,0.62)",
+        strokeWidth: active ? 2.3 : 1.8
       }), /*#__PURE__*/React.createElement("span", {
         style: {
-          fontSize: 9,
-          fontWeight: 700,
-          color: active ? C.blue : dark ? "rgba(255,255,255,0.5)" : "#94A3B8",
-          letterSpacing: "0.03em",
-          transition: "color 0.15s"
+          fontSize: 10,
+          fontWeight: active ? 650 : 550,
+          color: active ? dark ? "#0A84FF" : "#007AFF" : dark ? "rgba(235,235,245,0.62)" : "rgba(60,60,67,0.62)",
+          letterSpacing: "0.01em",
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif",
+          transition: "color 0.2s"
         }
       }, v.label));
     }), /*#__PURE__*/React.createElement("div", {
@@ -25694,8 +25755,8 @@ function App() {
       style: {
         position: "absolute",
         inset: 0,
-        borderRadius: 18,
-        border: "2px solid rgba(59,130,246,0.6)",
+        borderRadius: "50%",
+        border: "2px solid rgba(0,122,255,0.55)",
         animation: "shockwave 0.4s ease-out forwards",
         pointerEvents: "none"
       }
@@ -25713,15 +25774,15 @@ function App() {
       style: {
         width: 52,
         height: 52,
-        borderRadius: 18,
-        background: "linear-gradient(135deg,#3B82F6,#2563EB)",
-        border: "none",
+        borderRadius: "50%",
+        background: dark ? "linear-gradient(180deg,#2E95FF 0%,#0A84FF 55%,#0070E6 100%)" : "linear-gradient(180deg,#2B8EFF 0%,#007AFF 55%,#006BE0 100%)",
+        border: "0.5px solid rgba(255,255,255,0.35)",
         cursor: "pointer",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         animation: fabBreathing ? "fabBreathe 2.5s ease-in-out infinite" : undefined,
-        boxShadow: fabBreathing ? undefined : "0 4px 16px rgba(59,130,246,0.5), inset 0 1px 0 rgba(255,255,255,0.25)",
+        boxShadow: fabBreathing ? undefined : "0 6px 18px rgba(0,122,255,0.42), inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -2px 4px rgba(0,0,0,0.12)",
         transition: "none",
         position: "relative",
         zIndex: 1
@@ -25762,22 +25823,21 @@ function App() {
           borderRadius: 26,
           position: "relative",
           zIndex: 1,
-          animation: bouncing ? "tabBounce 0.38s cubic-bezier(0.34,1.56,0.64,1) forwards" : undefined,
-          transform: bouncing ? undefined : active ? "scale(1.1)" : "scale(1)",
-          transition: bouncing ? undefined : "transform 0.2s cubic-bezier(0.34,1.56,0.64,1)"
+          animation: bouncing ? "glassTabPress 0.36s cubic-bezier(0.32,0.72,0,1) forwards" : undefined
         }
       }, /*#__PURE__*/React.createElement(Icon, {
         name: v.icon,
         size: 20,
-        color: active ? C.blue : dark ? "rgba(255,255,255,0.5)" : "#94A3B8",
-        strokeWidth: active ? 2.5 : 1.75
+        color: active ? dark ? "#0A84FF" : "#007AFF" : dark ? "rgba(235,235,245,0.62)" : "rgba(60,60,67,0.62)",
+        strokeWidth: active ? 2.3 : 1.8
       }), /*#__PURE__*/React.createElement("span", {
         style: {
-          fontSize: 9,
-          fontWeight: 700,
-          color: active ? C.blue : dark ? "rgba(255,255,255,0.5)" : "#94A3B8",
-          letterSpacing: "0.03em",
-          transition: "color 0.15s"
+          fontSize: 10,
+          fontWeight: active ? 650 : 550,
+          color: active ? dark ? "#0A84FF" : "#007AFF" : dark ? "rgba(235,235,245,0.62)" : "rgba(60,60,67,0.62)",
+          letterSpacing: "0.01em",
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif",
+          transition: "color 0.2s"
         }
       }, v.label));
     }));
@@ -26021,15 +26081,21 @@ function App() {
     key: slideKey.current,
     style: {
       background: C.card,
-      borderRadius: 12,
-      padding: "16px 12px",
-      border: `1px solid ${C.border}`,
-      boxShadow: "0 2px 16px rgba(59,130,246,0.06)",
+      // Phone-width week: the timetable needs every pixel it can get, so the card
+      // drops its side padding, border, corners and shadow, and pulls out over
+      // the page's own 16px side padding (the same amount the container adds
+      // in narrow mode) to run edge to edge. Top and bottom spacing stay.
+      borderRadius: phoneWeek ? 0 : 12,
+      padding: phoneWeek ? "16px 0" : "16px 12px",
+      border: phoneWeek ? "none" : `1px solid ${C.border}`,
+      boxShadow: phoneWeek ? "none" : "0 2px 16px rgba(59,130,246,0.06)",
+      marginLeft: phoneWeek ? -16 : 0,
+      marginRight: phoneWeek ? -16 : 0,
       marginBottom: 24,
       animation: slideDir === "left" ? "slideInLeft 0.22s cubic-bezier(0.25,1,0.5,1) both" : slideDir === "right" ? "slideInRight 0.22s cubic-bezier(0.25,1,0.5,1) both" : undefined
     }
   }, view === "home" && /*#__PURE__*/React.createElement(Dashboard, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
+    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -26048,7 +26114,7 @@ function App() {
     onSetSelected: setTasksSelected,
     onQuickPicksReady: registerBulkQuickPicks
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
+    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
     curDate: calDate,
     onNav: handleMonthNav,
     onDayClick: ds => {
@@ -26067,7 +26133,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
+    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
     curDate: calDate,
     onNav: handleWeekNav,
     onTaskClick: openEdit,
@@ -26081,7 +26147,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
+    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -26161,7 +26227,7 @@ function App() {
     collapseAllRef: collapseAllTypesRef,
     singleColumnLists: singleColumnLists
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(tasks, archiveTasks)),
+    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
     onEdit: openEdit,
     onShareReady: registerShareAction,
     selectMode: selectMode,
@@ -26206,18 +26272,10 @@ function App() {
     gcalError: gcalError,
     gcalConnected: gcalConnected,
     initialStep: "google"
-  }), /*#__PURE__*/React.createElement(HolidayPromptModal, {
-    open: !showWelcome && (prefIL === null || prefIntl === null),
-    prefIL: prefIL,
-    prefIntl: prefIntl,
-    onAcceptIL: acceptIL,
-    onDeclineIL: declineIL,
-    onAcceptIntl: acceptIntl,
-    onDeclineIntl: declineIntl
   }), /*#__PURE__*/React.createElement(SettingsModal, {
     open: dataModalOpen,
     onClose: () => setDataModalOpen(false),
-    tasks: mergeUniqueTasks(tasks, archiveTasks),
+    tasks: mergeUniqueTasks(shownTasks, shownArchive),
     charts: filteredCharts,
     dark: dark,
     darkOverride: darkOverride,
