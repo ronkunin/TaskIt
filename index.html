@@ -765,8 +765,14 @@ const TYPE_META = {
 // theme, matching the built-ins' recipe instead of deriving bg/border from
 // the accent via alpha.
 // 15 custom-type slots, most vivid first so a handful of custom types get
-// the most distinct colors: orange, violet, mustard, cyan, fuchsia, lime,
+// the most distinct colors: orange, sunflower, mustard, cyan, fuchsia, lime,
 // brown, slate, plum, olive, chestnut, sand, sage, lavender, graphite.
+// Slot 2 used to be a violet (#6D28D9 / #B69CFF on #2E2166) -- practically
+// the same blue-violet as the built-in Repeated type's indigo (#4338CA /
+// #9B8CFF on #30257A), so the second custom type anyone created looked
+// like a Repeated task. It's now a sunflower yellow, a hue no built-in type
+// uses at all. Replaced in place (same slot) so every other custom type
+// keeps exactly the color it already had.
 // Deliberately NO red/rose/pink (reads as a cancelled task) and NO pure or
 // mint green (reads as a completed task) -- lime is yellow-green and sage is
 // a muted gray-green, both clearly apart from the completed green. Also kept
@@ -776,12 +782,12 @@ const TYPE_META = {
 // tightest spots (wedged near amber, and between teal and sky) -- both are
 // pulled noticeably darker/more muted than those built-ins so they read as a
 // different tone, not just a slightly different angle on the same hue.
-const CUSTOM_COLORS_LIGHT = ["#C2570C", "#6D28D9", "#713F12", "#155E75", "#86198F", "#4D7C0F", "#7C3F1D", "#475569", "#7E3A6E", "#5F5F15", "#7C2D12", "#7D6A45", "#4F6B52", "#6B5B95", "#3F3F46"];
-const CUSTOM_BG_LIGHT = ["#FFDAB8", "#DED2FF", "#F3E8C9", "#C9EDF2", "#F5C6F5", "#D9F5A8", "#EED9C8", "#DDE3EB", "#EBD3E6", "#E8E6B8", "#F1DACD", "#EDE3CF", "#D8E5D6", "#E3DDF2", "#E4E4E7"];
-const CUSTOM_BORDER_LIGHT = ["#FB9550", "#A78BFA", "#C9A227", "#4FB8D1", "#E29FE2", "#A3D65C", "#B07A55", "#94A3B8", "#B874A8", "#A8A548", "#C2703F", "#BFA97A", "#93AE93", "#A898CF", "#A1A1AA"];
-const CUSTOM_COLORS_DARK = ["#FF9540", "#B69CFF", "#D4A72C", "#67C9DE", "#E27BFA", "#A3E635", "#D6A079", "#B4C2D4", "#DA9BCB", "#D4D16A", "#E08659", "#D9C59A", "#A9C4A6", "#B9ABE0", "#D4D4D8"];
-const CUSTOM_BG_DARK = ["#4A2A08", "#2E2166", "#332705", "#0B2E38", "#3E1250", "#33420C", "#3B2416", "#243040", "#3A1834", "#33320E", "#341207", "#352C1B", "#1F2D21", "#2A2340", "#27272A"];
-const CUSTOM_BORDER_DARK = ["#C2660C", "#5B48B8", "#92650A", "#0E6B82", "#8A2FA8", "#7CA829", "#8C5A3A", "#5E6F85", "#93508A", "#8A8733", "#7C3410", "#8F7B52", "#5F7D60", "#6E5E9A", "#71717A"];
+const CUSTOM_COLORS_LIGHT = ["#C2570C", "#726A06", "#713F12", "#155E75", "#86198F", "#4D7C0F", "#7C3F1D", "#475569", "#7E3A6E", "#5F5F15", "#7C2D12", "#7D6A45", "#4F6B52", "#6B5B95", "#3F3F46"];
+const CUSTOM_BG_LIGHT = ["#FFDAB8", "#FBF4A0", "#F3E8C9", "#C9EDF2", "#F5C6F5", "#D9F5A8", "#EED9C8", "#DDE3EB", "#EBD3E6", "#E8E6B8", "#F1DACD", "#EDE3CF", "#D8E5D6", "#E3DDF2", "#E4E4E7"];
+const CUSTOM_BORDER_LIGHT = ["#FB9550", "#D4BE1C", "#C9A227", "#4FB8D1", "#E29FE2", "#A3D65C", "#B07A55", "#94A3B8", "#B874A8", "#A8A548", "#C2703F", "#BFA97A", "#93AE93", "#A898CF", "#A1A1AA"];
+const CUSTOM_COLORS_DARK = ["#FF9540", "#F5E625", "#D4A72C", "#67C9DE", "#E27BFA", "#A3E635", "#D6A079", "#B4C2D4", "#DA9BCB", "#D4D16A", "#E08659", "#D9C59A", "#A9C4A6", "#B9ABE0", "#D4D4D8"];
+const CUSTOM_BG_DARK = ["#4A2A08", "#403B08", "#332705", "#0B2E38", "#3E1250", "#33420C", "#3B2416", "#243040", "#3A1834", "#33320E", "#341207", "#352C1B", "#1F2D21", "#2A2340", "#27272A"];
+const CUSTOM_BORDER_DARK = ["#C2660C", "#8F820D", "#92650A", "#0E6B82", "#8A2FA8", "#7CA829", "#8C5A3A", "#5E6F85", "#93508A", "#8A8733", "#7C3410", "#8F7B52", "#5F7D60", "#6E5E9A", "#71717A"];
 // window.__shareForcedDark is set only while a share photo is being made in a
 // theme other than the site's (see withForcedShareTheme). It wins over
 // window.__dark, which App resets to the REAL theme on every render -- and a
@@ -5831,6 +5837,7 @@ const Modal = ({
   const [showNote, setShowNote] = useState(false);
   const noteRef = useRef();
   const dateInputRef = useRef();
+  const [openSeq, setOpenSeq] = useState(0);
   const [suggestions, setSuggestions] = useState([]);
   const [showSugg, setShowSugg] = useState(false);
   const [showTypeSugg, setShowTypeSugg] = useState(false);
@@ -5845,6 +5852,7 @@ const Modal = ({
     if (open) {
       setVisible(true);
       setClosing(false);
+      setOpenSeq(n => n + 1);
       if (editTask) {
         setForm({
           name: editTask.name || "",
@@ -5893,6 +5901,33 @@ const Modal = ({
     ...f,
     [k]: v
   }));
+  // iOS Safari can open its native date picker on a stale month (the last one
+  // it displayed, e.g. July) instead of the month of the date the field holds.
+  // The picker reads the input's value at the moment it opens, so right as
+  // the finger lands the value is re-applied -- cleared and set again, which
+  // is what makes WebKit drop its cached month. Programmatic value changes
+  // fire no events, so nothing else reacts to this. No-op off iOS and for
+  // empty fields.
+  const refreshNativeDate = (el, v) => {
+    if (!IS_IOS || !el || !v) return;
+    try {
+      el.value = "";
+      el.value = v;
+    } catch {}
+  };
+  // A start date moved past the finish date drops that finish date.
+  const applyFormDate = v => {
+    if (form.finishDate && v && form.finishDate < v) {
+      setForm(f => ({
+        ...f,
+        date: v,
+        finishDate: ""
+      }));
+    } else {
+      set("date", v);
+    }
+    setError("");
+  };
   // Keeps the plain Schedule type and the Repeated type in lock-step with
   // the Repeat field, no matter how a mismatch was reached -- typing into
   // Repeat, picking "Repeated" from the type suggestions before filling
@@ -6814,6 +6849,9 @@ const Modal = ({
   }, t("date")), /*#__PURE__*/React.createElement("div", {
     style: { position: "relative" }
   }, /*#__PURE__*/React.createElement("input", {
+    // Fresh element every time the form opens (or switches task), so iOS
+    // never reuses a date picker that was last showing another month.
+    key: "date" + openSeq,
     ref: dateInputRef,
     type: "date",
     className: IS_IOS ? "date-ios" : "date-desktop",
@@ -6828,20 +6866,9 @@ const Modal = ({
       cursor: "pointer"
     }),
     value: form.date,
-    onChange: e => {
-      const v = e.target.value;
-      if (form.finishDate && v && form.finishDate < v) {
-        setForm(f => ({
-          ...f,
-          date: v,
-          finishDate: ""
-        }));
-      } else {
-        set("date", v);
-      }
-      setError("");
-    },
-    onClick: IS_IOS ? e => { try { e.target.showPicker(); } catch {} } : undefined
+    onChange: e => applyFormDate(e.target.value),
+    onTouchStart: e => refreshNativeDate(e.currentTarget, form.date),
+    onPointerDown: e => refreshNativeDate(e.currentTarget, form.date)
   }), form.date && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: e => {
@@ -7148,10 +7175,13 @@ const Modal = ({
     }, /*#__PURE__*/React.createElement("label", {
       style: lbl
     }, isHe ? "תאריך סיום (משימה רב-יומית)" : "Finish date (multi-day task)"), /*#__PURE__*/React.createElement("input", {
+      key: "fin" + openSeq,
       type: "date",
       value: form.finishDate,
       min: form.date || undefined,
       onChange: e => set("finishDate", e.target.value),
+      onTouchStart: e => refreshNativeDate(e.currentTarget, form.finishDate),
+      onPointerDown: e => refreshNativeDate(e.currentTarget, form.finishDate),
       style: inp({
         cursor: "pointer"
       }),
@@ -7191,10 +7221,13 @@ const Modal = ({
     }, o.label)))), hasRecur ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("label", {
       style: lbl
     }, isHe ? "סיום חזרה" : "End Repeat"), /*#__PURE__*/React.createElement("input", {
+      key: "until" + openSeq,
       type: "date",
       value: form.recurUntil,
       min: form.date || undefined,
       onChange: e => set("recurUntil", e.target.value),
+      onTouchStart: e => refreshNativeDate(e.currentTarget, form.recurUntil),
+      onPointerDown: e => refreshNativeDate(e.currentTarget, form.recurUntil),
       style: inp(),
       onFocus: e => e.target.style.borderColor = "#93C5FD",
       onBlur: e => e.target.style.borderColor = "var(--border)"
@@ -7643,7 +7676,16 @@ const DayChip = ({
       display: "flex",
       alignItems: "center",
       gap: 4,
-      marginBottom: 2,
+      // The selection ring is drawn 1.5px OUTSIDE the chip, so with a 2px
+      // gap it ran into the ring of the chip below (and over its edge).
+      // While selecting -- or when a chip is selected/armed -- the gap
+      // widens a touch so neighbouring rings and chips stay apart.
+      marginBottom: selectMode || selected || armed ? 5 : 2,
+      // A chip that is selected/armed on its own (the tap-to-grab ring, no
+      // select mode) needs room ABOVE too, or its ring runs into the chip
+      // before it -- in select mode every chip already carries the bottom
+      // gap, so only the lone ones get this.
+      marginTop: !selectMode && (selected || armed) ? 4 : 0,
       borderRadius: selected || armed ? 4 : 0,
       boxShadow: selected ? `0 0 0 1.5px ${C.blue}` : armed && canDrag ? `0 0 0 1.5px ${C.blue}` : "none",
       background: armed && canDrag && !selected ? "var(--blue-bg)" : undefined,
@@ -20874,6 +20916,19 @@ const GCal = (() => {
   // whatever the current rules say next time a push runs, with no separate
   // migration needed.
   function resolveReminderMinutes(t) {
+    // A completed or cancelled task never rings. This is derived from the
+    // status flags rather than written into t.reminderMinutes, so the
+    // person's own reminder choice is left untouched and simply comes back
+    // the moment the task is restored (done/cancelled cleared) -- as long as
+    // it still has a real date. Every path that completes, cancels or
+    // restores a task (checkbox, task modal, archive, the overdue sweep, a
+    // pull from another device) only flips those flags, and both flags are part
+    // of taskSignature, so each of them re-pushes the event with the right
+    // reminders without needing its own special case. Already-synced
+    // done/cancelled events get cleaned up the same way: their signature
+    // no longer matches the one stored on Google, so the next push clears
+    // their leftover reminder.
+    if (t.done || t.cancelled) return null;
     if (isDateless(t)) return null; // no real date to anchor a reminder to, no exceptions
     if (t.reminderMinutes === "none") return null; // explicit opt-out
     if (t.reminderMinutes != null && t.reminderMinutes !== "") {
@@ -21051,6 +21106,16 @@ const GCal = (() => {
     if (p.hebcal === "1") patch.hebcal = true;
     if (p.intl === "1") patch.intl = true;
     if (p.nameEn) patch.nameEn = p.nameEn;
+    // The person's own reminder choice was written to the event (see
+    // taskToEventBody) but never read back, so any device that learned the
+    // task from Google fell back to the automatic reminder -- and since that
+    // changes the signature, it then pushed the automatic one over the
+    // person's choice. Events written before the field existed don't carry
+    // it at all; those leave whatever the local task has alone.
+    if (Object.prototype.hasOwnProperty.call(p, "reminderMinutes")) {
+      const rm = String(p.reminderMinutes || "");
+      patch.reminderMinutes = rm === "" ? null : rm === "none" ? "none" : Number.isFinite(Number(rm)) ? Number(rm) : null;
+    }
     if (p.noDate === "1") { patch.date = ""; patch.time = ""; return patch; }
     if (event.start?.dateTime) {
       const d = new Date(event.start.dateTime);
@@ -21442,11 +21507,54 @@ const GCal = (() => {
   // edited in place — name, note, date/time, done/cancelled — by patching the
   // original event where it already lives. Shared ones never call this; the
   // UI keeps them read-only, exactly like holidays.
+  // An imported event from the person's own Google calendar carries their
+  // own Google reminders, which TaskIt otherwise never touches -- so marking
+  // one completed/cancelled here used to leave it ringing anyway. Finishing
+  // it now silences it, after first parking the original reminders on the
+  // event itself (a private extended property, invisible in Google's UI);
+  // restoring it puts exactly those reminders back. The parked copy lives on
+  // the event, not on this device, so a restore from any device brings the
+  // same reminders back, and it's only ever written once per finish, so
+  // repeat pushes of an already-finished event can never overwrite the real
+  // reminders with the silenced (empty) ones.
+  const SAVED_REMINDERS_KEY = "taskitSavedReminders";
+  async function applyForeignReminderState(task, body) {
+    const finished = !!(task.done || task.cancelled);
+    const ev = await apiFetch(`/calendars/${enc(task.googleCalendarId)}/events/${enc(task.googleEventId)}`);
+    const priv = { ...((ev && ev.extendedProperties && ev.extendedProperties.private) || {}) };
+    const saved = priv[SAVED_REMINDERS_KEY] || "";
+    if (finished) {
+      if (!saved) {
+        priv[SAVED_REMINDERS_KEY] = JSON.stringify(ev && ev.reminders ? ev.reminders : { useDefault: true }).slice(0, 1000);
+        // The whole private map is sent back (not just the one key), so this
+        // works whether Google merges or replaces it on PATCH.
+        body.extendedProperties = { private: priv };
+      }
+      body.reminders = { useDefault: false, overrides: [] };
+    } else if (saved) {
+      let r = null;
+      try { r = JSON.parse(saved); } catch {}
+      if (r && r.useDefault) {
+        body.reminders = { useDefault: true, overrides: [] };
+      } else {
+        const overrides = (r && Array.isArray(r.overrides) ? r.overrides : [])
+          .filter(o => o && (o.method === "popup" || o.method === "email") && Number.isFinite(Number(o.minutes)))
+          .slice(0, 5)
+          .map(o => ({ method: o.method, minutes: Number(o.minutes) }));
+        body.reminders = { useDefault: false, overrides };
+      }
+      // "" rather than deleting the key: an empty string is cleared state
+      // whether Google merges or replaces the private map.
+      priv[SAVED_REMINDERS_KEY] = "";
+      body.extendedProperties = { private: priv };
+    }
+  }
   async function patchForeignEvent(task) {
     if (!task.googleCalendarId || !task.googleEventId) return;
     const prefix = task.done ? "✔ " : task.cancelled ? "✖ " : "";
     const body = { summary: (prefix + String(task.name || "")).slice(0, 1000) };
     body.description = task.note ? String(task.note).slice(0, 7000) : null;
+    await applyForeignReminderState(task, body);
     if (String(task.date || "").trim()) {
       const time = normTime(task.time);
       // Same reasoning as taskToEventBody: a multi-day (finishDate) task
@@ -21970,6 +22078,7 @@ const BulkActionBar = ({
   };
   if (narrow) {
     return /*#__PURE__*/React.createElement("div", {
+      "data-bulk-bar": "1",
       style: {
         ...shellStyle,
         // 48px clears the narrow-layout sticky logo/icons header (it stays
@@ -22015,6 +22124,7 @@ const BulkActionBar = ({
     }, pickerKind ? pickerRow : actions));
   }
   return /*#__PURE__*/React.createElement("div", {
+    "data-bulk-bar": "1",
     style: {
       ...shellStyle,
       bottom: "calc(14px + env(safe-area-inset-bottom, 0px))",
@@ -22291,6 +22401,9 @@ function App() {
     });
   };
   const toggleTaskSelected = id => {
+    // Any tap that lands on a task (even a refused one) is not an "empty
+    // screen" tap -- see the double-tap-to-exit effect below.
+    selTaskTapRef.current = Date.now();
     // Central refusal: whatever view called this, a task locked out of
     // selection entirely (a Google event shared into the account read-only)
     // can never enter the selection, even if some row's own click-guard was
@@ -22453,6 +22566,68 @@ function App() {
     updatePillToTab(tabId);
   };
   const [modalOpen, setModalOpen] = useState(false);
+  // Double-tap on empty screen (anywhere that isn't a task, a button, the
+  // bulk bar or a dialog) leaves select mode and drops the selection, same
+  // as Cancel. Listens to raw pointer events rather than click: iOS Safari
+  // doesn't fire click for taps on plain, non-clickable areas. Only quick,
+  // still taps count (a scroll or drag never does), the two taps must land
+  // close together in time and place, and a tap that selected/deselected a
+  // task (flagged in toggleTaskSelected) resets the pair. The task flag is
+  // checked after a short wait because the click that toggles a task comes
+  // after the pointer-up.
+  const selTaskTapRef = useRef(0);
+  const lastEmptyTapRef = useRef(null);
+  const exitSelectRef = useRef(null);
+  exitSelectRef.current = exitSelectMode;
+  useEffect(() => {
+    lastEmptyTapRef.current = null;
+    if (!selectMode || bulkBarClosing || modalOpen || bulkPickerKind) return;
+    const INTERACTIVE = 'button, a, input, select, textarea, label, summary, [role="button"], [role="dialog"], [data-bulk-bar]';
+    let down = null;
+    const timers = new Set();
+    const onDown = e => {
+      if (e.pointerType === "mouse" && e.button !== 0) { down = null; return; }
+      down = { x: e.clientX, y: e.clientY, t: Date.now() };
+    };
+    const onUp = e => {
+      const d = down;
+      down = null;
+      if (!d) return;
+      const now = Date.now();
+      if (now - d.t > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10) {
+        lastEmptyTapRef.current = null;
+        return;
+      }
+      const el = e.target;
+      if (el && el.closest && el.closest(INTERACTIVE)) {
+        lastEmptyTapRef.current = null;
+        return;
+      }
+      const x = e.clientX, y = e.clientY;
+      const id = setTimeout(() => {
+        timers.delete(id);
+        if (selTaskTapRef.current >= d.t) { lastEmptyTapRef.current = null; return; }
+        const prev = lastEmptyTapRef.current;
+        if (prev && now - prev.t < 450 && Math.hypot(x - prev.x, y - prev.y) < 40) {
+          lastEmptyTapRef.current = null;
+          exitSelectRef.current && exitSelectRef.current();
+        } else {
+          lastEmptyTapRef.current = { t: now, x, y };
+        }
+      }, 80);
+      timers.add(id);
+    };
+    const onCancel = () => { down = null; };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("pointerup", onUp, true);
+    document.addEventListener("pointercancel", onCancel, true);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("pointerup", onUp, true);
+      document.removeEventListener("pointercancel", onCancel, true);
+      timers.forEach(clearTimeout);
+    };
+  }, [selectMode, bulkBarClosing, modalOpen, bulkPickerKind]);
   const [editTask, setEditTask] = useState(null);
   const [calDate, setCalDate] = useState(new Date());
   const [prefillDate, setPrefillDate] = useState(null);
@@ -24019,6 +24194,10 @@ function App() {
       length: task.length != null ? task.length : null,
       note: task.note || null,
       seriesId: task.seriesId || task.id,
+      // Carry the series' own reminder choice forward: completing or
+      // cancelling one occurrence used to silently reset the next one back
+      // to the automatic reminder.
+      reminderMinutes: task.reminderMinutes != null && task.reminderMinutes !== "" ? task.reminderMinutes : null,
       done: false,
       cancelled: false,
       created: Date.now()
@@ -24031,11 +24210,8 @@ function App() {
       if (!task) return ts;
       const _now = Date.now();
       if (task.done) {
-        // If the date was auto-assigned at completion (task was originally dateless), clear it on restore
-        const dateRestore = task._autoDate ? {
-          date: "",
-          _autoDate: undefined
-        } : {};
+        // A restored task keeps its date (and with it, its reminder)
+        const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
         return ts.map(t => t.id === id ? {
           ...task,
           done: false,
@@ -24245,11 +24421,8 @@ function App() {
       const wasCancelled = task.cancelled;
       let updatedTask;
       if (wasCancelled) {
-        // Restoring: if date was auto-assigned, clear it back
-        const dateRestore = task._autoDate ? {
-          date: "",
-          _autoDate: undefined
-        } : {};
+        // Restoring: the task keeps its date (and with it, its reminder)
+        const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
         updatedTask = {
           ...task,
           ...dateRestore,
@@ -24421,11 +24594,8 @@ function App() {
     if (action === "uncomplete" || action === "uncancel") {
       const isInMain = tasks.some(t => t.id === task.id);
       if (!isInMain) {
-        // If date was auto-assigned at completion, clear it on restore
-        const dateRestore = task._autoDate ? {
-          date: "",
-          _autoDate: undefined
-        } : {};
+        // A restored task keeps its date (and with it, its reminder)
+        const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
         const revived = {
           ...task,
           done: false,
@@ -24462,11 +24632,8 @@ function App() {
         }, updated);
       }
       if (action === "uncomplete") {
-        // If date was auto-assigned at completion, clear it on restore
-        const dateRestore = task._autoDate ? {
-          date: "",
-          _autoDate: undefined
-        } : {};
+        // A restored task keeps its date (and with it, its reminder)
+        const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
         return ts.map(t => t.id === task.id ? {
           ...task,
           done: false,
@@ -24489,11 +24656,8 @@ function App() {
         return upd;
       }
       if (action === "uncancel") {
-        // If date was auto-assigned at cancellation, clear it on restore
-        const dateRestore = task._autoDate ? {
-          date: "",
-          _autoDate: undefined
-        } : {};
+        // A restored task keeps its date (and with it, its reminder)
+        const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
         return ts.map(t => t.id === task.id ? {
           ...task,
           cancelled: false,
