@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "14.8";
+const APP_VERSION = "15.1";
 
 const {
   useState,
@@ -6002,6 +6002,9 @@ const Modal = ({
   const noteRef = useRef();
   const dateInputRef = useRef();
   const [openSeq, setOpenSeq] = useState(0);
+  const dateRebuildTimerRef = useRef(null);
+  // Bumped to rebuild the native date controls (see rebuildDateFields below).
+  const [dateFieldSeq, setDateFieldSeq] = useState(0);
   const [suggestions, setSuggestions] = useState([]);
   const [showSugg, setShowSugg] = useState(false);
   const [showTypeSugg, setShowTypeSugg] = useState(false);
@@ -6053,7 +6056,21 @@ const Modal = ({
       setError("");
       prevRecurRef.current = editTask && editTask.recur != null ? String(editTask.recur) : "";
       setTimeout(() => nameRef.current?.focus(), 100);
+      // The date controls that exist during the sheet's entrance are built
+      // while it's still animating (transformed, not yet laid out where it
+      // will end up), and iOS picks their picker's month from that moment --
+      // which is why the FIRST open still showed the wrong month even though
+      // every open after it was right: those later ones were already running
+      // on a control rebuilt after the sheet had settled. So the same rebuild
+      // is done once here, just after the entrance finishes (280ms) and while
+      // focus is on the name field, so the first open meets exactly the same
+      // freshly built control as every other one.
+      if (IS_IOS) {
+        if (dateRebuildTimerRef.current) clearTimeout(dateRebuildTimerRef.current);
+        dateRebuildTimerRef.current = setTimeout(() => setDateFieldSeq(n => n + 1), 340);
+      }
     } else if (visible) {
+      if (dateRebuildTimerRef.current) clearTimeout(dateRebuildTimerRef.current);
       setClosing(true);
       setTimeout(() => {
         setVisible(false);
@@ -6083,8 +6100,15 @@ const Modal = ({
   // show. `syncNativeDate` keeps the value attribute in step with the
   // property for the same reason -- WebKit builds the control's initial
   // month from the attribute.
-  const [dateFieldSeq, setDateFieldSeq] = useState(0);
-  const rebuildDateFields = () => { if (IS_IOS) setDateFieldSeq(n => n + 1); };
+  // Never while the field itself is focused: its picker is open and the
+  // person is choosing in it, which is the one moment the control must not be
+  // pulled out from under them.
+  const rebuildDateFields = () => {
+    if (!IS_IOS) return;
+    const el = dateInputRef.current;
+    if (el && typeof document !== "undefined" && document.activeElement === el) return;
+    setDateFieldSeq(n => n + 1);
+  };
   const syncNativeDate = (el, v) => {
     if (!el) return;
     try {
@@ -6097,10 +6121,7 @@ const Modal = ({
   // is focused (its picker is open and the person is choosing in it, which is
   // the one moment the control must not be pulled out from under them).
   useEffect(() => {
-    if (!IS_IOS) return;
-    const el = dateInputRef.current;
-    if (el && typeof document !== "undefined" && document.activeElement === el) return;
-    setDateFieldSeq(n => n + 1);
+    rebuildDateFields();
   }, [form.date, form.finishDate, form.recurUntil]);
   // A start date moved past the finish date drops that finish date.
   const applyFormDate = v => {
@@ -10010,6 +10031,12 @@ const WeekView = ({
   }, navBar, (() => {
     const HOUR_PX = narrow ? 32 : 38;
     const pxPerMin = HOUR_PX / 60;
+    // A task starting on the hour would otherwise have its top edge exactly on
+    // that hour's grid line, so the two read as one thick line. Every block
+    // starts a couple of pixels below where its time says, and gives the same
+    // couple back off its height, which leaves the line clear above it without
+    // moving where it ends.
+    const BLOCK_TOP_GAP = 2;
     const nowD = new Date();
     const nowMinutes = nowD.getHours() * 60 + nowD.getMinutes();
     const gutterCol = phone ? "15px" : narrow ? "22px" : "50px";
@@ -10385,11 +10412,12 @@ const WeekView = ({
       // meet reads as one block split across the two columns.
       const isSpillStart = !tk._continuation && taskSpansOvernight(tk);
       const isSpillContinuation = !!tk._continuation;
-      const top = (start - DAY_START * 60) * pxPerMin;
+      const top = (start - DAY_START * 60) * pxPerMin + BLOCK_TOP_GAP;
       const rawHeight = (end - start) * pxPerMin;
       // Shrink slightly so back-to-back tasks (one ending exactly when the next
-      // starts) always show a tiny visible gap instead of touching edges.
-      const height = Math.max(rawHeight - 1, 20);
+      // starts) always show a tiny visible gap instead of touching edges, and
+      // by the gap above as well so the block still ends where its time says.
+      const height = Math.max(rawHeight - 1 - BLOCK_TOP_GAP, 18);
       const widthPct = 100 / laneCount;
       const leftPct = lane * widthPct;
       const vPad = height < 30 ? 4 : 8;
@@ -10520,8 +10548,8 @@ const WeekView = ({
       const dropPreview = isDropTarget ? /*#__PURE__*/React.createElement("div", {
         style: {
           position: "absolute",
-          top: (drag.payload.mins - DAY_START * 60) * pxPerMin,
-          height: Math.max(Math.min(drag.meta && drag.meta.dur || 60, DAY_END * 60 - drag.payload.mins) * pxPerMin - 1, 18),
+          top: (drag.payload.mins - DAY_START * 60) * pxPerMin + BLOCK_TOP_GAP,
+          height: Math.max(Math.min(drag.meta && drag.meta.dur || 60, DAY_END * 60 - drag.payload.mins) * pxPerMin - 1 - BLOCK_TOP_GAP, 18),
           insetInlineStart: 1.5,
           insetInlineEnd: 1.5,
           borderRadius: 6,
@@ -23314,6 +23342,13 @@ function App() {
     gcalQueue.current = gcalQueue.current.then(fn, fn);
     return gcalQueue.current;
   };
+  // The same queue, with the header pill counting the work: anything that
+  // writes to Google is a round-trip like any other and should read as
+  // "Saving…" while it runs, deletions included.
+  const gcalEnqueueCounted = fn => {
+    setGcalPushCount(c => c + 1);
+    return gcalEnqueue(fn).finally(() => setGcalPushCount(c => Math.max(0, c - 1)));
+  };
 
   const gcalRecomputeStats = (taskList, remote) => {
     let synced = 0, pending = 0, skipped = 0;
@@ -23643,7 +23678,7 @@ function App() {
       // it has its own event there -- never before, so nothing is lost if this
       // device closes before that push lands.
       for (const tail of splitTails) {
-        if (byId[splitIdOf(tail)]) gcalEnqueue(() => GCal.deleteForeignEvent(tail.calendarId, tail.event.id)).catch(() => {});
+        if (byId[splitIdOf(tail)]) gcalEnqueueCounted(() => GCal.deleteForeignEvent(tail.calendarId, tail.event.id)).catch(() => {});
       }
 
       // Carry out the deletions that were waiting for Google.
@@ -23651,13 +23686,18 @@ function App() {
         if (localPresent.has(tid)) { outboxRef.current.deleted.delete(tid); continue; }
         if (byId[tid]) {
           const l = loc[tid];
+          // Same counting as every other write to Google, so a batch of
+          // deletions that was waiting for the network shows up in the pill
+          // when it finally goes out.
+          setGcalPushCount(c => c + 1);
           gcalEnqueue(() => GCal.deleteTask(tid, l)).then(() => {
             outboxRef.current.deleted.delete(tid);
             delete gcalRemote.current[tid];
             delete gcalLoc.current[tid];
             delete gcalConfirmed.current[tid];
             setGcalConfirmTick(n => n + 1);
-          }).catch(() => {}); // still offline / failed: stays in the outbox, retried next pull
+          }).catch(() => {}) // still offline / failed: stays in the outbox, retried next pull
+            .finally(() => setGcalPushCount(c => Math.max(0, c - 1)));
         } else if (complete) {
           // Google doesn't have it (never pushed, or already gone) -- nothing left to do.
           outboxRef.current.deleted.delete(tid);
@@ -24061,7 +24101,7 @@ function App() {
           // whatever that derived id happens to collide with.
           if (doomed?.source === "google") {
             if (doomed.googleCalendarId && doomed.googleEventId) {
-              gcalEnqueue(() => GCal.deleteForeignEvent(doomed.googleCalendarId, doomed.googleEventId)).catch(() => {});
+              gcalEnqueueCounted(() => GCal.deleteForeignEvent(doomed.googleCalendarId, doomed.googleEventId)).catch(() => {});
             }
           } else if (loc) {
             gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {});
@@ -24174,12 +24214,19 @@ function App() {
         delete gcalLoc.current[id];
         delete gcalFailed.current[id];
         delete gcalConfirmed.current[id];
-        gcalEnqueue(() => GCal.deleteTask(id, loc)).catch(() => {
-          // Couldn't reach Google (offline, expired token...). Remember the
-          // deletion in the outbox so the next pull doesn't bring it back.
-          outboxRef.current.deleted.add(String(id));
-          setGcalConfirmTick(n => n + 1);
-        });
+        // Counted exactly like a push: removing an event from Google is a
+        // round-trip to Google like any other, so the header pill shows
+        // "Saving…" (with its progress figure when several go at once)
+        // instead of sitting on "Online" while a batch of deletions runs.
+        setGcalPushCount(c => c + 1);
+        gcalEnqueue(() => GCal.deleteTask(id, loc))
+          .catch(() => {
+            // Couldn't reach Google (offline, expired token...). Remember the
+            // deletion in the outbox so the next pull doesn't bring it back.
+            outboxRef.current.deleted.add(String(id));
+            setGcalConfirmTick(n => n + 1);
+          })
+          .finally(() => setGcalPushCount(c => Math.max(0, c - 1)));
       }
     }
     gcalSeenIds.current = combinedIds;
@@ -24701,7 +24748,7 @@ function App() {
       // for its new type, same as any task created by hand.
       const convertingFromGoogle = editTask.source === "google" && form.type !== "google";
       if (convertingFromGoogle && !editTask.googleShared) {
-        gcalEnqueue(() => GCal.deleteForeignEvent(editTask.googleCalendarId, editTask.googleEventId)).catch(() => {});
+        gcalEnqueueCounted(() => GCal.deleteForeignEvent(editTask.googleCalendarId, editTask.googleEventId)).catch(() => {});
         delete gcalForeignPushed.current[editTask.id];
       }
       // An archived task (an old done/cancelled one) isn't in `tasks`, so the map
@@ -24932,7 +24979,7 @@ function App() {
   const handleDelete = id => {
     const task = tasks.find(t => t.id === id);
     if (task && task.source === "google" && !task.googleShared) {
-      gcalEnqueue(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
+      gcalEnqueueCounted(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
       delete gcalForeignPushed.current[id];
     }
     setTasks(ts => ts.filter(t => t.id !== id));
@@ -24985,7 +25032,7 @@ function App() {
     mergeUniqueTasks(tasks, archiveTasks).forEach(tk => {
       if (!ids.has(tk.id) || isBulkEditLocked(tk)) return;
       if (tk.source === "google" && !tk.googleShared) {
-        gcalEnqueue(() => GCal.deleteForeignEvent(tk.googleCalendarId, tk.googleEventId)).catch(() => {});
+        gcalEnqueueCounted(() => GCal.deleteForeignEvent(tk.googleCalendarId, tk.googleEventId)).catch(() => {});
         delete gcalForeignPushed.current[tk.id];
       }
     });
@@ -25033,7 +25080,7 @@ function App() {
       // "repeated" would keep silently recurring forever.
       const convertingFromGoogle = task.source === "google" && value !== "google" && !task.googleShared;
       if (convertingFromGoogle) {
-        gcalEnqueue(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
+        gcalEnqueueCounted(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
         delete gcalForeignPushed.current[task.id];
       }
       const patch = {
@@ -25270,7 +25317,7 @@ function App() {
       // silently reverting the drag on refresh.
       const convertingFromGoogle = task.source === "google" && newType !== "google";
       if (convertingFromGoogle && !task.googleShared) {
-        gcalEnqueue(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
+        gcalEnqueueCounted(() => GCal.deleteForeignEvent(task.googleCalendarId, task.googleEventId)).catch(() => {});
         delete gcalForeignPushed.current[task.id];
       }
       // "repeated" carries a recurrence interval; moving into it needs a sane
@@ -27191,7 +27238,7 @@ function App() {
       mergeUniqueTasks(tasks, archiveTasks).forEach(tk => {
         if (!match(tk)) return;
         if (tk.source === "google" && !tk.googleShared) {
-          gcalEnqueue(() => GCal.deleteForeignEvent(tk.googleCalendarId, tk.googleEventId)).catch(() => {});
+          gcalEnqueueCounted(() => GCal.deleteForeignEvent(tk.googleCalendarId, tk.googleEventId)).catch(() => {});
           delete gcalForeignPushed.current[tk.id];
         }
       });
