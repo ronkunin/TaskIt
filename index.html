@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "14.4";
+const APP_VERSION = "14.8";
 
 const {
   useState,
@@ -365,7 +365,6 @@ const T = {
     bulkShareTitle: n => `${n} selected task${n === 1 ? "" : "s"}`,
     apply: "Apply",
     noSelectableTasks: "Nothing here to select",
-    everyXDays: x => `Every ${x}d`,
     daily2: "Daily",
     weekly2: "Weekly",
     repeated2: "Repeated",
@@ -537,7 +536,6 @@ const T = {
     bulkShareTitle: n => `${n} משימות נבחרות`,
     apply: "החל",
     noSelectableTasks: "אין כאן מה לבחור",
-    everyXDays: x => `כל ${x} ימים`,
     daily2: "יומי",
     weekly2: "שבועי",
     repeated2: "חוזרות",
@@ -1835,7 +1833,7 @@ const renderShareTaskRow = (task, options) => {
   const cancelledT = markCompleted && isCancelled(task);
   const overdueT = markOverdue && !doneT && !cancelledT && isOverdue(task);
   const nameColor = cancelledT ? C.text4 : overdueT ? C.red : doneT ? C.green : C.text;
-  const recurLabel = !task.recur ? "" : task.recur === "month" ? isHe ? "כל חודש" : "Every month" : task.recur === "year" ? isHe ? "כל שנה" : "Every year" : t("everyXDays", task.recur);
+  const recurLabel = recurLabelText(task.recur);
   const metaParts = showDetails ? [task.date ? fmtDate(task.date) : "", task.time || "", recurLabel].filter(Boolean) : [];
   return /*#__PURE__*/React.createElement("div", {
     key: task.id,
@@ -1923,6 +1921,26 @@ const taskDisplayDate = t => isMultiDay(t) ? t.finishDate : taskSpansOvernight(t
 // the modal's "Finish date" field) -- distinct from taskSpansOvernight,
 // which is about a timed task's start+length crossing midnight by a few
 // hours. This is a real multi-day span, day-granular, independent of time.
+// How a repeat reads on a task's tag, in a share photo, anywhere. Whole weeks
+// are said as weeks ("every week", "every 2 weeks") rather than as the day
+// count they're stored as -- "every 7 days" is the same thing said the long
+// way round. Hebrew has its own dual form for two of something (שבועיים,
+// יומיים), so that's spelled out rather than numbered.
+const recurLabelText = recur => {
+  if (!recur) return "";
+  const isHe = getLang() === "he";
+  if (recur === "month") return isHe ? "כל חודש" : "Every month";
+  if (recur === "year") return isHe ? "כל שנה" : "Every year";
+  const n = parseInt(recur, 10);
+  if (!(n > 0)) return "";
+  if (n % 7 === 0) {
+    const w = n / 7;
+    if (isHe) return w === 1 ? "כל שבוע" : w === 2 ? "כל שבועיים" : `כל ${w} שבועות`;
+    return w === 1 ? "Every week" : `Every ${w} weeks`;
+  }
+  if (isHe) return n === 1 ? "כל יום" : n === 2 ? "כל יומיים" : `כל ${n} ימים`;
+  return n === 1 ? "Every day" : `Every ${n} days`;
+};
 const isMultiDay = t => !!(t && t.date && t.finishDate && t.finishDate > t.date);
 // Every calendar date string a multi-day task covers, start through finish
 // inclusive. Capped generously so a bad/huge finishDate can't hang the tab.
@@ -2325,6 +2343,13 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes syncFade{0%{opacity:1}80%{opacity:1}100%{opacity:0}}
 @keyframes syncIconSpin{0%{transform:rotate(-180deg) scale(0.5);opacity:0}60%{transform:rotate(20deg) scale(1.15);opacity:1}80%{transform:rotate(-8deg) scale(0.97)}100%{transform:rotate(0deg) scale(1);opacity:1}}
 @keyframes syncLabelPop{0%{opacity:0;transform:translateY(4px)}60%{opacity:1;transform:translateY(-1px)}100%{opacity:1;transform:translateY(0)}}
+/* The sync pill's label swaps between its word ("Saving…") and a progress
+   figure ("66%") while a batch runs, and the figure itself climbs. Each new
+   label slides in from the direction it's travelling: a figure rises into
+   place, the word drops back down, so the alternation reads as one thing
+   turning over rather than text being replaced. */
+@keyframes syncLabelUp{0%{opacity:0;transform:translateY(7px)}55%{opacity:1;transform:translateY(-1.5px)}100%{opacity:1;transform:translateY(0)}}
+@keyframes syncLabelDown{0%{opacity:0;transform:translateY(-7px)}55%{opacity:1;transform:translateY(1.5px)}100%{opacity:1;transform:translateY(0)}}
 @keyframes taskSlideIn{from{opacity:0;transform:translateY(-10px) scale(0.97)}to{opacity:1;transform:translateY(0) scale(1)}}
 .task-slide-in{animation:taskSlideIn 0.32s cubic-bezier(0.34,1.56,0.64,1) forwards;}
 @keyframes newTaskGlow{0%{box-shadow:0 0 0 0 rgba(59,130,246,0),0 1px 4px rgba(0,0,0,.04)}35%{box-shadow:0 0 0 6px rgba(59,130,246,.22),0 2px 20px rgba(59,130,246,.18)}100%{box-shadow:0 0 0 0 rgba(59,130,246,0),0 1px 4px rgba(0,0,0,.04)}}
@@ -3410,7 +3435,7 @@ const TaskCard = ({
       name: "repeat",
       size: 10,
       color: "#6366F1"
-    }), task.recur === "month" ? getLang() === "he" ? "כל חודש" : "Every month" : task.recur === "year" ? getLang() === "he" ? "כל שנה" : "Every year" : t("everyXDays", task.recur)), _noteText && /*#__PURE__*/React.createElement("span", {
+    }), recurLabelText(task.recur)), _noteText && /*#__PURE__*/React.createElement("span", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -4422,13 +4447,7 @@ const copyOrDownloadShareCanvas = async (canvas, filename) => {
 // or "" for no repeat. Shared by buildTaskShareCard's own detail line and
 // computeShareTitle (when a repeat pattern is common to every selected task)
 // so the wording can never drift between the two.
-const shareRecurLabel = recur => {
-  if (!recur) return "";
-  const isHe = getLang() === "he";
-  if (recur === "month") return isHe ? "כל חודש" : "Every month";
-  if (recur === "year") return isHe ? "כל שנה" : "Every year";
-  return t("everyXDays", recur);
-};
+const shareRecurLabel = recur => recurLabelText(recur);
 // Builds the bulk-share title AND says which fields it drew on, so the
 // individual cards below can leave those back out (see renderBulkShareCanvas)
 // rather than repeating the exact same detail on every single card right
@@ -6046,20 +6065,43 @@ const Modal = ({
     ...f,
     [k]: v
   }));
-  // iOS Safari can open its native date picker on a stale month (the last one
-  // it displayed, e.g. July) instead of the month of the date the field holds.
-  // The picker reads the input's value at the moment it opens, so right as
-  // the finger lands the value is re-applied -- cleared and set again, which
-  // is what makes WebKit drop its cached month. Programmatic value changes
-  // fire no events, so nothing else reacts to this. No-op off iOS and for
-  // empty fields.
-  const refreshNativeDate = (el, v) => {
-    if (!IS_IOS || !el || !v) return;
+  // iOS Safari opens its native date picker on the month its control was last
+  // built with, not necessarily the month the field holds now -- so a field
+  // whose date was set or changed after that reopens on the old month.
+  //
+  // This used to be fought at the moment of the tap, by clearing the field's
+  // value and setting it straight back. That never helped: the value ends up
+  // exactly as it was, so WebKit sees no change and keeps its cached month,
+  // and in the window between the two assignments the field is momentarily
+  // EMPTY -- which is the one state that makes iOS fall back to a default
+  // month and preselect today. Both of the tap handlers (touchstart and
+  // pointerdown) ran it, so it could even land mid-open.
+  //
+  // Instead the control is rebuilt when nothing is being tapped: React is
+  // given a new key once the picker closes, so the next tap always meets a
+  // freshly built input carrying the current date, with no cached month to
+  // show. `syncNativeDate` keeps the value attribute in step with the
+  // property for the same reason -- WebKit builds the control's initial
+  // month from the attribute.
+  const [dateFieldSeq, setDateFieldSeq] = useState(0);
+  const rebuildDateFields = () => { if (IS_IOS) setDateFieldSeq(n => n + 1); };
+  const syncNativeDate = (el, v) => {
+    if (!el) return;
     try {
-      el.value = "";
-      el.value = v;
+      if (v) el.setAttribute("value", v); else el.removeAttribute("value");
     } catch {}
   };
+  // A date can also change without the picker being involved at all -- the
+  // modal opening on a prefilled date, the clear button, a suggestion filling
+  // the field in. Those get the same rebuild, except while the field itself
+  // is focused (its picker is open and the person is choosing in it, which is
+  // the one moment the control must not be pulled out from under them).
+  useEffect(() => {
+    if (!IS_IOS) return;
+    const el = dateInputRef.current;
+    if (el && typeof document !== "undefined" && document.activeElement === el) return;
+    setDateFieldSeq(n => n + 1);
+  }, [form.date, form.finishDate, form.recurUntil]);
   // A start date moved past the finish date drops that finish date.
   const applyFormDate = v => {
     if (form.finishDate && v && form.finishDate < v) {
@@ -7009,8 +7051,11 @@ const Modal = ({
   }, /*#__PURE__*/React.createElement("input", {
     // Fresh element every time the form opens (or switches task), so iOS
     // never reuses a date picker that was last showing another month.
-    key: "date" + openSeq,
-    ref: dateInputRef,
+    key: "date" + openSeq + "." + dateFieldSeq,
+    ref: el => {
+      dateInputRef.current = el;
+      syncNativeDate(el, form.date);
+    },
     type: "date",
     className: IS_IOS ? "date-ios" : "date-desktop",
     style: inp({
@@ -7025,8 +7070,7 @@ const Modal = ({
     }),
     value: form.date,
     onChange: e => applyFormDate(e.target.value),
-    onTouchStart: e => refreshNativeDate(e.currentTarget, form.date),
-    onPointerDown: e => refreshNativeDate(e.currentTarget, form.date)
+    onBlur: rebuildDateFields
   }), form.date && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: e => {
@@ -7333,17 +7377,19 @@ const Modal = ({
     }, /*#__PURE__*/React.createElement("label", {
       style: lbl
     }, isHe ? "תאריך סיום (משימה רב-יומית)" : "Finish date (multi-day task)"), /*#__PURE__*/React.createElement("input", {
-      key: "fin" + openSeq,
+      key: "fin" + openSeq + "." + dateFieldSeq,
+      ref: el => syncNativeDate(el, form.finishDate),
       type: "date",
       value: form.finishDate,
       min: form.date || undefined,
       onChange: e => set("finishDate", e.target.value),
-      onTouchStart: e => refreshNativeDate(e.currentTarget, form.finishDate),
-      onPointerDown: e => refreshNativeDate(e.currentTarget, form.finishDate),
       className: IS_IOS ? "date-ios" : "date-desktop",
       style: dateInp(),
       onFocus: e => e.target.style.borderColor = "#93C5FD",
-      onBlur: e => e.target.style.borderColor = "var(--border)"
+      onBlur: e => {
+        e.target.style.borderColor = "var(--border)";
+        rebuildDateFields();
+      }
     }), form.finishDate && /*#__PURE__*/React.createElement("button", {
       type: "button",
       onClick: () => set("finishDate", ""),
@@ -7385,17 +7431,19 @@ const Modal = ({
     }, /*#__PURE__*/React.createElement("label", {
       style: lbl
     }, isHe ? "סיום חזרה" : "End Repeat"), /*#__PURE__*/React.createElement("input", {
-      key: "until" + openSeq,
+      key: "until" + openSeq + "." + dateFieldSeq,
+      ref: el => syncNativeDate(el, form.recurUntil),
       type: "date",
       value: form.recurUntil,
       min: form.date || undefined,
       onChange: e => set("recurUntil", e.target.value),
-      onTouchStart: e => refreshNativeDate(e.currentTarget, form.recurUntil),
-      onPointerDown: e => refreshNativeDate(e.currentTarget, form.recurUntil),
       className: IS_IOS ? "date-ios" : "date-desktop",
       style: dateInp(),
       onFocus: e => e.target.style.borderColor = "#93C5FD",
-      onBlur: e => e.target.style.borderColor = "var(--border)"
+      onBlur: e => {
+        e.target.style.borderColor = "var(--border)";
+        rebuildDateFields();
+      }
     }), form.recurUntil && /*#__PURE__*/React.createElement("button", {
       type: "button",
       onClick: () => set("recurUntil", ""),
@@ -21597,8 +21645,15 @@ const GCal = (() => {
   // Reads every physical TaskIt calendar (getAllCalendarIds), not just one per name —
   // a task sitting in a non-canonical duplicate calendar must still be found, or it
   // would look deleted the moment "complete" pulls started trusting their own result.
-  async function pullAll() {
+  // `onProgress({ done, total })`, when given, is called once the calendar
+  // list is known and again after each calendar is read. Events arrive up to
+  // 250 at a time, so a calendar is the smallest unit there is to count --
+  // splitting a read into smaller pages purely to report finer progress would
+  // only make loading slower.
+  async function pullAll(onProgress) {
     const raw = (await listAllRaw(true));
+    const report = done => { try { onProgress && onProgress({ done, total: raw.length }); } catch {} };
+    report(0);
     const events = [];
     // Per-occurrence overrides of our repeating events ("calendarId::eventId"
     // -> [{ status, originalStartTime }]): one date moved or deleted in
@@ -21608,6 +21663,7 @@ const GCal = (() => {
     // would "dedupe" them away, deleting real dates).
     const exceptions = {};
     let complete = true;
+    let readCalendars = 0;
     for (const { id: calendarId, type } of raw) {
       let pageToken = null, guard = 0;
       try {
@@ -21637,6 +21693,7 @@ const GCal = (() => {
       } catch (e) {
         complete = false; // never let a partial read look like "these tasks are gone"
       }
+      report(++readCalendars);
     }
     return { events, calendars: raw.length, complete, exceptions };
   }
@@ -23190,6 +23247,26 @@ function App() {
   const [savedFlash, setSavedFlash] = useState(false); // true for 3s after a push batch finishes
   const prevPushCountRef = useRef(0);
   const savedFlashTimerRef = useRef(null);
+  // How much of the current save batch is done. `total` counts every task the
+  // batch has taken on (it grows if more are added while it runs) and `done`
+  // how many have landed, so saving several tasks at once can report its
+  // progress as a percentage instead of an open-ended "Saving…". A batch of
+  // one has no interesting progress to show and never does.
+  const [pushBatch, setPushBatch] = useState({ total: 0, done: 0 });
+  // The same idea for a pull: how many of the calendars being read are done.
+  // A calendar is the smallest unit a pull has (see GCal.pullAll), so this is
+  // calendars, not tasks -- and with only one calendar there's nothing worth
+  // reporting.
+  const [pullProgress, setPullProgress] = useState({ done: 0, total: 0 });
+  // The pill alternates between "Saving…"/"Loading…" and that percentage, two
+  // seconds each; this is which of the two is showing.
+  const [savePhase, setSavePhase] = useState(0);
+  // Held for a moment at the end of a multi-task batch so the count actually
+  // reaches 100% on screen before the pill says "Saved" -- the last task
+  // finishing is also what ends the saving state, so without this the
+  // percentage would stop at whatever the second-to-last one was.
+  const [pushFinishFlash, setPushFinishFlash] = useState(false);
+  const pushFinishTimerRef = useRef(null);
 
   // Everything Google told us in the last pull: taskId -> signature. Rebuilt from
   // Google on every pull, so it is not device state — two devices that pull the same
@@ -23263,8 +23340,9 @@ function App() {
     if (!gcalConnected || gcalSyncing.current) return;
     gcalSyncing.current = true;
     setGcalPulling(true);
+    setPullProgress({ done: 0, total: 0 });
     try {
-      const { events: allEvents, complete, exceptions = {} } = await GCal.pullAll();
+      const { events: allEvents, complete, exceptions = {} } = await GCal.pullAll(setPullProgress);
       // Exactly one event per task. The task's own (canonical) event always
       // wins over any other copy carrying the same taskitId. One kind of copy
       // is special: "Edit > This and following events" on a repeating event
@@ -23596,6 +23674,7 @@ function App() {
     } finally {
       gcalSyncing.current = false;
       setGcalPulling(false);
+      setPullProgress({ done: 0, total: 0 });
     }
   };
 
@@ -24190,15 +24269,43 @@ function App() {
     }
   }, [tasks, gcalConnected, prefGcalForeign, gcalForeignReady]);
 
-  // Flash "Saved" pill for 3 s when a push batch finishes successfully
+  // Flash "Saved" pill for 3 s when a push batch finishes successfully, and
+  // keep the batch's own progress (how many of its tasks have landed) up to
+  // date as pushes start and finish.
   useEffect(() => {
-    if (prevPushCountRef.current > 0 && gcalPushCount === 0 && gcalConnected && gcalStats.failed === 0) {
+    const prev = prevPushCountRef.current;
+    if (gcalPushCount > prev) {
+      // More tasks taken on. A batch that had already finished starts over.
+      const added = gcalPushCount - prev;
+      setPushBatch(b => prev === 0 ? { total: added, done: 0 } : { total: b.total + added, done: b.done });
+      if (prev === 0) setSavePhase(0);
+    } else if (gcalPushCount < prev) {
+      const landed = prev - gcalPushCount;
+      setPushBatch(b => ({ total: Math.max(b.total, b.done + landed + gcalPushCount), done: b.done + landed }));
+    }
+    if (prev > 0 && gcalPushCount === 0 && gcalConnected && gcalStats.failed === 0) {
       if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
       setSavedFlash(true);
       savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 3000);
+      if (pushBatch.total > 1) {
+        if (pushFinishTimerRef.current) clearTimeout(pushFinishTimerRef.current);
+        setPushFinishFlash(true);
+        pushFinishTimerRef.current = setTimeout(() => setPushFinishFlash(false), 1200);
+      }
     }
     prevPushCountRef.current = gcalPushCount;
   }, [gcalPushCount]);
+  // Swap the pill between its word ("Saving…" / "Loading…") and the
+  // percentage every two seconds, for as long as there's progress to report.
+  const pillHasProgress = (gcalPushCount > 0 && pushBatch.total > 1) || (gcalPulling && pullProgress.total > 1);
+  useEffect(() => {
+    if (!pillHasProgress) {
+      setSavePhase(0);
+      return;
+    }
+    const id = setInterval(() => setSavePhase(p => p === 0 ? 1 : 0), 2000);
+    return () => clearInterval(id);
+  }, [pillHasProgress]);
 
   // ── Load Google Fonts asynchronously — never blocks offline render ──
   useEffect(() => {
@@ -25406,9 +25513,28 @@ function App() {
         ? "loading"
         : gcalConnected && (gcalPushCount > 0 || gcalBusy)
           ? "saving"
-          : gcalConnected && savedFlash
-            ? "saved"
-            : "online";
+          : gcalConnected && pushFinishFlash
+            ? "savedFull"
+            : gcalConnected && savedFlash
+              ? "saved"
+              : "online";
+  // How far along a multi-task save is. Null for a single task (nothing worth
+  // reporting) and while nothing has landed yet, so the first thing shown is
+  // a real figure like 33%, never 0%.
+  // How far along a multi-calendar pull is, on the same terms as the save
+  // figure below: nothing for a single calendar, and nothing until at least
+  // one has been read, so the first figure shown is a real one.
+  const syncPillPullPct = pullProgress.total > 1 && pullProgress.done > 0
+    ? Math.min(100, Math.floor(pullProgress.done / pullProgress.total * 100))
+    : null;
+  // Whether the label currently being shown is a progress figure rather than
+  // a word -- which way its entrance animation runs.
+  const pillShowsPct = syncPillState === "savedFull" || (savePhase === 1 && (syncPillState === "saving" || syncPillState === "loading"));
+  const syncPillPct = pushBatch.total > 1 && pushBatch.done > 0
+    // Rounded down, so the figure never claims more progress than there is:
+    // two of three tasks reads 66%, not 67%.
+    ? Math.min(100, Math.floor(pushBatch.done / pushBatch.total * 100))
+    : null;
   const getSyncPillInfo = isHePill => {
     const map = {
       storageError: {
@@ -25428,11 +25554,21 @@ function App() {
       },
       loading: {
         bg: "var(--blue-bg)", border: "var(--blue-border)", color: "var(--blue)",
-        label: isHePill ? "טוען…" : "Loading…", pulse: true
+        label: savePhase === 1 && syncPillPullPct != null
+          ? `${syncPillPullPct}%`
+          : (isHePill ? "טוען…" : "Loading…"),
+        pulse: true
       },
       saving: {
         bg: "var(--blue-bg)", border: "var(--blue-border)", color: "var(--blue)",
-        label: isHePill ? "שומר…" : "Saving…", pulse: true, pop: false
+        label: savePhase === 1 && syncPillPct != null
+          ? `${syncPillPct}%`
+          : (isHePill ? "שומר…" : "Saving…"),
+        pulse: true, pop: false
+      },
+      savedFull: {
+        bg: "var(--green-bg)", border: "var(--green-border)", color: "var(--green)",
+        label: "100%", pulse: false, pop: true
       },
       saved: {
         bg: "var(--green-bg)", border: "var(--green-border)", color: "var(--green)",
@@ -26746,12 +26882,19 @@ function App() {
         animation: pillInfoW.pulse ? "syncPillPulse 1s ease-in-out infinite" : pillInfoW.pop ? "syncSavedPop 0.5s ease-out forwards" : "none"
       }
     }), /*#__PURE__*/React.createElement("span", {
+      // Keyed on the text itself, so every swap -- word to figure, and one
+      // figure to the next -- is a fresh element and actually replays its
+      // animation instead of silently changing in place.
+      key: pillInfoW.label,
       style: {
         fontSize: 11,
         fontWeight: 600,
         color: pillInfoW.color,
         letterSpacing: "0.03em",
-        animation: "syncLabelPop 0.4s ease-out both"
+        // Digits all the same width, so a climbing figure doesn't make the
+        // pill twitch as it changes.
+        fontVariantNumeric: "tabular-nums",
+        animation: `${pillShowsPct ? "syncLabelUp" : "syncLabelDown"} 0.34s cubic-bezier(0.34,1.3,0.64,1) both`
       }
     }, pillInfoW.label));
   })()), (() => {
