@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "13.1";
+const APP_VERSION = "14.4";
 
 const {
   useState,
@@ -270,7 +270,6 @@ const T = {
     home: "Home",
     month: "Month",
     week: "Week",
-    byDate: "Date",
     byType: "Type",
     newTask: "New Task",
     addTask: "Add Task",
@@ -333,7 +332,6 @@ const T = {
     pending: "Pending",
     completed: "Completed",
     // List views
-    tasksByDate: "Tasks by Date",
     tasksByType: "Tasks by Type",
     tasks: "tasks",
     task: "task",
@@ -399,7 +397,6 @@ const T = {
     allTasks: "All tasks",
     allTasksView: "List",
     searchView: "Search",
-    byDateTab: "Date",
     byTypeTab: "Type",
     searchPlaceholder: "Search tasks...",
     noResults: "No matching tasks",
@@ -452,7 +449,6 @@ const T = {
     home: "בית",
     month: "חודש",
     week: "שבוע",
-    byDate: "תאריך",
     byType: "סוג",
     newTask: "משימה חדשה",
     addTask: "הוסף משימה",
@@ -510,7 +506,6 @@ const T = {
     noDate: "ללא תאריך",
     pending: "ממתין",
     completed: "הושלם",
-    tasksByDate: "לפי תאריך",
     tasksByType: "לפי סוג",
     tasks: "משימות",
     task: "משימה",
@@ -573,7 +568,6 @@ const T = {
     allTasks: "כל המשימות",
     allTasksView: "רשימה",
     searchView: "חיפוש",
-    byDateTab: "תאריך",
     byTypeTab: "סוג",
     searchPlaceholder: "חיפוש משימות...",
     noResults: "לא נמצאו משימות",
@@ -940,6 +934,24 @@ const migrateTask = t => {
       const n = parseInt(task.recur);
       task.recur = n > 0 ? n : null;
     }
+  }
+  // No repeat means no End Repeat and no month-end anchor either. Both are
+  // meaningless on their own, and a leftover End Repeat used to come back to
+  // life (ending the series immediately) the moment the task was made
+  // repeating again.
+  if (!task.recur) {
+    if (task.recurUntil) task.recurUntil = null;
+    if (task.recurDay != null) task.recurDay = null;
+  } else {
+    const anchor = parseInt(task.recurDay, 10);
+    task.recurDay = anchor > 28 && anchor <= 31 && (task.recur === "month" || task.recur === "year") ? anchor : null;
+    if (task.recurDay == null) delete task.recurDay;
+  }
+  // Skipped dates (recurSkip): only real dates still ahead of the task's own
+  // date can skip anything, so anything else is dropped on load.
+  if (task.recurSkip !== undefined) {
+    const skips = (Array.isArray(task.recurSkip) ? task.recurSkip : []).map(v => String(v || "")).filter((ds, i, a) => /^\d{4}-\d{2}-\d{2}$/.test(ds) && a.indexOf(ds) === i && (!task.date || ds > task.date) && (!task.recurUntil || ds <= task.recurUntil)).sort().slice(0, 60);
+    if (skips.length && task.recur) task.recurSkip = skips; else delete task.recurSkip;
   }
   // Fix previously mis-renamed or excluded hebcal holidays from old versions:
   if (task.hebcal) {
@@ -1698,14 +1710,103 @@ const localDs = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, 
 // compounds every cycle after. These clamp to the target month/year's actual
 // last valid day instead, same as every mainstream calendar app does for a
 // recurrence anchored on the 29th-31st (or Feb 29 for yearly).
-const addMonthsClamped = (d, n) => {
-  const day = d.getDate();
+// `anchorDay` (optional) is the day-of-month the series was originally set
+// on. Without it, a series anchored on the 31st that once got clamped to the
+// 28th of February would stay on the 28th forever after; with it, March is
+// back on the 31st -- the same thing Google Calendar does for its own
+// month-end repeats, so the two always agree on every date.
+const addMonthsClamped = (d, n, anchorDay) => {
+  const day = anchorDay && anchorDay > d.getDate() ? anchorDay : d.getDate();
   const first = new Date(d.getFullYear(), d.getMonth() + n, 1);
   const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
   first.setDate(Math.min(day, lastDay));
   return first;
 };
-const addYearsClamped = (d, n) => addMonthsClamped(d, n * 12);
+const addYearsClamped = (d, n, anchorDay) => addMonthsClamped(d, n * 12, anchorDay);
+
+// ── Recurrence: one definition of "the next occurrence" for the whole app ──
+// Every place that walks a repeating series (spawning the next occurrence,
+// the look-ahead projections, the charts, the pending counter, and the
+// Google Calendar repeat rule) goes through these, so they can never
+// disagree about which dates a series lands on.
+//
+// The anchor day: a monthly/yearly series started on the 29th-31st is
+// clamped in shorter months (Jan 31 -> Feb 28). `recurDay` remembers the
+// original day so the series returns to it afterwards (-> Mar 31). It's
+// only honoured while the stored date really is a clamped month-end -- a
+// series that was later moved to some other day simply anchors on that new
+// day instead, so a leftover value can never pull dates around.
+const lastDayOfMonth = d => new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+const recurAnchorDay = task => {
+  if (!task || !task.date || (task.recur !== "month" && task.recur !== "year")) return null;
+  const d = new Date(task.date + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.getDate();
+  const want = parseInt(task.recurDay, 10);
+  if (want > day && want <= 31 && day === lastDayOfMonth(d)) return task.recur === "year" ? Math.min(want, d.getMonth() === 1 ? 29 : want) : want;
+  return day;
+};
+// Next occurrence after `d` (a local-midnight Date). Day intervals are
+// counted in calendar days, not 24h blocks of milliseconds -- the old
+// millisecond stepping landed on the wrong date across a daylight-saving
+// change (local midnight + 24h = 23:00 the same day when clocks go back).
+const stepRecurDate = (d, recur, anchorDay) => {
+  if (recur === "month") return addMonthsClamped(d, 1, anchorDay);
+  if (recur === "year") return addYearsClamped(d, 1, anchorDay);
+  const n = parseInt(recur, 10) || 1;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+};
+// ── Skipped dates ──────────────────────────────────────────────────────────
+// A series can have individual dates left out of it (recurSkip): an imported
+// calendar's own exceptions -- the week a weekly class doesn't meet, a
+// holiday in the middle of a daily standup. They are only ever set when the
+// task is created (an .ics import, or a Google event that carries them), are
+// never shown or editable in the app, and do nothing except make the series
+// jump over those dates: no occurrence is projected on them, and completing
+// or cancelling the occurrence before one lands on the next date that isn't
+// skipped. When the task's date or repeat changes, the skipped dates move
+// with it, keeping their place in the series (see remapRecurSkips).
+const MAX_RECUR_SKIPS = 60;
+const recurSkipList = task => {
+  const raw = task && Array.isArray(task.recurSkip) ? task.recurSkip : [];
+  const out = [];
+  for (const v of raw) {
+    const ds = String(v || "");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ds) && !out.includes(ds)) out.push(ds);
+  }
+  return out.sort().slice(0, MAX_RECUR_SKIPS);
+};
+const recurSkipSet = task => new Set(recurSkipList(task));
+// The next date in the series after `d`, leaving out every skipped date.
+// Returns null once that would pass End Repeat (or nothing is left).
+const nextRecurDate = (d, task, anchor, skips) => {
+  let cur = d;
+  for (let i = 0; i < MAX_RECUR_SKIPS + 2; i++) {
+    cur = stepRecurDate(cur, task.recur, anchor);
+    const ds = localDs(cur);
+    if (task.recurUntil && ds > task.recurUntil) return null;
+    if (!skips || !skips.has(ds)) return ds;
+  }
+  return null;
+};
+// Yearly series whose name counts up ("Dana's birthday 30" -> "... 31"):
+// trigger word (day / birthday / יום) plus a standalone number, which is
+// bumped once per year. `times` lets a far-off occurrence get its own
+// number in one go (used for the projected/Google copies of future years).
+const bumpAnnualName = (name, times = 1) => {
+  name = String(name || "");
+  if (!(times > 0)) return name;
+  // Note: \b doesn't work with Hebrew so lookaround is done with spaces/start/end
+  const triggerRe = /(^|[\s])([Dd]ay|[Bb]irthday|יום)([\s]|$)/;
+  if (!triggerRe.test(name)) return name;
+  return name.replace(/(^|[\s])(\d+)([\s]|$)/, (match, pre, n, post) => pre + String(parseInt(n, 10) + times) + post);
+};
+// The name a yearly series carries on a given (future) date.
+const recurNameOn = (task, ds) => {
+  if (!task || task.recur !== "year" || !task.date || !ds) return task ? task.name : "";
+  const k = Number(String(ds).slice(0, 4)) - Number(String(task.date).slice(0, 4));
+  return k > 0 ? bumpAnnualName(task.name, k) : task.name;
+};
 
 // ── Shared by every "share as image" multi-column layout (By Type, Up Next) ──
 // A single long vertical list would make for an extremely tall photo once
@@ -1867,38 +1968,23 @@ const countPendingOccurrences = (task, winStart, winEnd) => {
     const untilD = new Date(task.recurUntil + "T23:59:59");
     if (untilD < we) we.setTime(untilD.getTime());
   }
-  let interval; // interval in ms
-  if (task.recur === "month") interval = null; // handled specially
-  else if (task.recur === "year") interval = null;else interval = (parseInt(task.recur) || 1) * 864e5;
   let count = 0;
   const MAX = 500; // safety cap
+  const anchor = recurAnchorDay(task);
+  const skips = recurSkipSet(task);
+  let d = new Date(taskDate);
   let i = 0;
-  if (task.recur === "month" || task.recur === "year") {
-    // Walk month/year steps from task start date
-    let d = new Date(taskDate);
-    while (d <= we && i < MAX) {
-      if (d >= ws) {
-        const isThisOccurrence = d.toISOString().slice(0, 10) === task.date;
-        if (isThisOccurrence) {
-          if (isPending(task)) count++;
-        } else count++; // future occurrences always pending
-      }
-      if (task.recur === "month") d = addMonthsClamped(d, 1);else d = addYearsClamped(d, 1);
-      i++;
+  while (d <= we && i < MAX) {
+    if (d >= ws && !skips.has(localDs(d))) {
+      // Compared as a local date string (it used to be toISOString(), i.e.
+      // the UTC date, which is the previous day anywhere east of UTC -- so
+      // the stored occurrence was never recognised as itself).
+      if (localDs(d) === task.date) {
+        if (isPending(task)) count++;
+      } else count++; // future occurrences are always pending
     }
-  } else {
-    // Walk fixed-day interval from task start date
-    let d = new Date(taskDate);
-    while (d <= we && i < MAX) {
-      if (d >= ws) {
-        const isThisOccurrence = d.toISOString().slice(0, 10) === task.date;
-        if (isThisOccurrence) {
-          if (isPending(task)) count++;
-        } else count++;
-      }
-      d = new Date(d.getTime() + interval);
-      i++;
-    }
+    d = stepRecurDate(d, task.recur, anchor);
+    i++;
   }
   return count;
 };
@@ -1922,22 +2008,14 @@ const occurrenceDatesInRange = (task, winStart, winEnd) => {
   }
   const dates = [];
   const MAX = 500;
+  const anchor = recurAnchorDay(task);
+  const skips = recurSkipSet(task);
+  let d = new Date(taskDate);
   let i = 0;
-  if (task.recur === "month" || task.recur === "year") {
-    let d = new Date(taskDate);
-    while (d <= we && i < MAX) {
-      if (d >= ws) dates.push(localDs(d));
-      if (task.recur === "month") d = addMonthsClamped(d, 1);else d = addYearsClamped(d, 1);
-      i++;
-    }
-  } else {
-    const interval = (parseInt(task.recur) || 1) * 864e5;
-    let d = new Date(taskDate);
-    while (d <= we && i < MAX) {
-      if (d >= ws) dates.push(localDs(d));
-      d = new Date(d.getTime() + interval);
-      i++;
-    }
+  while (d <= we && i < MAX) {
+    if (d >= ws && !skips.has(localDs(d))) dates.push(localDs(d));
+    d = stepRecurDate(d, task.recur, anchor);
+    i++;
   }
   return dates;
 };
@@ -2573,6 +2651,21 @@ const Icon = ({
     })),
     filter: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polygon", {
       points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+    })),
+    download: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("path", {
+      d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }), /*#__PURE__*/React.createElement("polyline", {
+      points: "7 10 12 15 17 10",
+      strokeLinecap: "round",
+      strokeLinejoin: "round"
+    }), /*#__PURE__*/React.createElement("line", {
+      x1: "12",
+      y1: "15",
+      x2: "12",
+      y2: "3",
+      strokeLinecap: "round"
     })),
     share: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("circle", {
       cx: "18",
@@ -3722,14 +3815,59 @@ if (typeof window !== "undefined") {
 // its live computed value by round-tripping it through a throwaway element's
 // computed style. Canvas fillStyle can't consume var() itself, and this way
 // the exported image always matches the app's current theme (light/dark).
-const resolveCssColor = value => {
-  if (typeof document === "undefined") return value;
+// Resolves a CSS color expression (usually a var()) to a real color string.
+// A var() naming a property that isn't defined yet is invalid at computed-value
+// time, which for an inherited property like `color` means the element simply
+// inherits instead -- there's no error to see, just a plausible-looking color
+// that has nothing to do with the theme. That's what used to be cached as the
+// share loader's colors when a probe ran before the app's own stylesheet was
+// in effect, leaving a light-mode app with a near-black loading screen for the
+// rest of the session. So the probe sits inside a host with a deliberately
+// absurd color: getting that colour back means the var didn't resolve, and the
+// caller gets null (when it passed `strict`) rather than a wrong answer.
+const CSS_PROBE_SENTINEL = "rgb(255, 0, 255)";
+const resolveCssColor = (value, strict = false) => {
+  if (typeof document === "undefined" || !document.body) return strict ? null : value;
+  const host = document.createElement("div");
+  host.style.cssText = "position:absolute;left:-9999px;top:0;width:0;height:0;overflow:hidden;color:#ff00ff";
   const probe = document.createElement("div");
   probe.style.color = value;
-  document.body.appendChild(probe);
-  const resolved = getComputedStyle(probe).color || value;
-  document.body.removeChild(probe);
-  return resolved;
+  host.appendChild(probe);
+  document.body.appendChild(host);
+  const resolved = getComputedStyle(probe).color || "";
+  document.body.removeChild(host);
+  if (resolved && resolved !== CSS_PROBE_SENTINEL) return resolved;
+  if (strict) return null;
+  // Non-strict callers (the share photos' own canvas colors) just want
+  // something usable, and they only ever run with the stylesheet in place.
+  // Measure again without the sentinel so an unresolved var falls back to the
+  // page's own inherited color, exactly as it did before.
+  const plain = document.createElement("div");
+  plain.style.cssText = "position:absolute;left:-9999px;top:0;width:0;height:0;overflow:hidden";
+  plain.style.color = value;
+  document.body.appendChild(plain);
+  const plainResolved = getComputedStyle(plain).color || value;
+  document.body.removeChild(plain);
+  return plainResolved;
+};
+// The chrome colors the share loader uses: the app's own real theme, never a
+// theme a capture has temporarily forced (see withForcedShareTheme). Refreshed
+// whenever the theme changes AND at the start of every share, so a value that
+// couldn't be resolved early in the app's life can never be the one still in
+// use when a share actually runs. Only a fully resolved set is ever stored.
+const BASE_THEME_LITERALS = {
+  light: { bg: "#D2E3FF", blue: "#1D4ED8", text3: "#485F7A" },
+  dark: { bg: "#060C18", blue: "#4C8DFF", text3: "#9DBAE0" }
+};
+const refreshBaseThemeColors = () => {
+  if (typeof window === "undefined") return null;
+  const probed = {
+    bg: resolveCssColor("var(--bg)", true),
+    blue: resolveCssColor("var(--blue)", true),
+    text3: resolveCssColor("var(--text3)", true)
+  };
+  if (probed.bg && probed.blue && probed.text3) window.__baseThemeColors = probed;
+  return window.__baseThemeColors || null;
 };
 const wrapCanvasText = (ctx, text, maxWidth) => {
   const words = String(text || "").split(/\s+/).filter(Boolean);
@@ -4684,6 +4822,9 @@ const loadHtml2Canvas = () => {
 // background is pinned, so the status bar stays exactly as it was.
 const withForcedShareTheme = async (bright, fn) => {
   const root = document.documentElement;
+  // Last chance to read the app's own theme before it's forced: whatever the
+  // loader shows for the rest of this capture comes from here.
+  refreshBaseThemeColors();
   const hadAttr = root.hasAttribute("data-theme");
   const prevValue = root.getAttribute("data-theme");
   const prevBg = root.style.background;
@@ -5771,7 +5912,11 @@ const ShareCaptureOverlay = ({
   active
 }) => {
   if (!active) return null;
-  const base = (typeof window !== "undefined" && window.__baseThemeColors) || { bg: C.bg, blue: C.blue, text3: C.text3 };
+  // C.bg/C.blue/C.text3 are deliberately NOT the fallback: they resolve
+  // against whatever data-theme is live, which during a capture is the photo's
+  // forced theme, not the app's.
+  const base = (typeof window !== "undefined" && window.__baseThemeColors)
+    || BASE_THEME_LITERALS[typeof window !== "undefined" && window.__dark ? "dark" : "light"];
   return /*#__PURE__*/ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
     "data-share-ignore": "true",
     style: {
@@ -6118,6 +6263,19 @@ const Modal = ({
     fontFamily: "'Inter',sans-serif",
     transition: "border-color 0.15s",
     ...extra
+  });
+  // The two native date pickers inside "More settings" (Finish date, End
+  // Repeat). A bare width:100% isn't enough for input[type=date]: on iOS the
+  // native control keeps its own intrinsic width and pushes out of the panel,
+  // so it needs the same treatment the main Date field gets -- the platform
+  // appearance class, and sizing that can actually shrink.
+  const dateInp = () => inp({
+    display: "block",
+    minWidth: 0,
+    width: "100%",
+    maxWidth: "100%",
+    boxSizing: "border-box",
+    cursor: "pointer"
   });
   const lbl = {
     display: "block",
@@ -7182,9 +7340,8 @@ const Modal = ({
       onChange: e => set("finishDate", e.target.value),
       onTouchStart: e => refreshNativeDate(e.currentTarget, form.finishDate),
       onPointerDown: e => refreshNativeDate(e.currentTarget, form.finishDate),
-      style: inp({
-        cursor: "pointer"
-      }),
+      className: IS_IOS ? "date-ios" : "date-desktop",
+      style: dateInp(),
       onFocus: e => e.target.style.borderColor = "#93C5FD",
       onBlur: e => e.target.style.borderColor = "var(--border)"
     }), form.finishDate && /*#__PURE__*/React.createElement("button", {
@@ -7218,7 +7375,14 @@ const Modal = ({
     }, REMINDER_OPTIONS.map(o => /*#__PURE__*/React.createElement("option", {
       key: o.value,
       value: o.value
-    }, o.label)))), hasRecur ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("label", {
+    }, o.label)))), hasRecur ? /*#__PURE__*/React.createElement("div", {
+      // Wrapped like every other field here (it used to be a bare fragment,
+      // so the picker had nothing holding it inside the panel).
+      style: {
+        minWidth: 0,
+        overflow: "hidden"
+      }
+    }, /*#__PURE__*/React.createElement("label", {
       style: lbl
     }, isHe ? "סיום חזרה" : "End Repeat"), /*#__PURE__*/React.createElement("input", {
       key: "until" + openSeq,
@@ -7228,7 +7392,8 @@ const Modal = ({
       onChange: e => set("recurUntil", e.target.value),
       onTouchStart: e => refreshNativeDate(e.currentTarget, form.recurUntil),
       onPointerDown: e => refreshNativeDate(e.currentTarget, form.recurUntil),
-      style: inp(),
+      className: IS_IOS ? "date-ios" : "date-desktop",
+      style: dateInp(),
       onFocus: e => e.target.style.borderColor = "#93C5FD",
       onBlur: e => e.target.style.borderColor = "var(--border)"
     }), form.recurUntil && /*#__PURE__*/React.createElement("button", {
@@ -8862,11 +9027,26 @@ const MonthView = ({
       const map = {};
       const monthStart = new Date(year, month, 1);
       const monthEnd = new Date(year, month + 1, 0);
+      // Dates a stored task of the same series already occupies, so a
+      // projection never doubles up with a real occurrence (two live tasks of
+      // one series can exist after a series is split in Google Calendar).
+      const storedSeriesDates = new Set();
+      tasks.forEach(tk => { if (tk.date) storedSeriesDates.add((tk.seriesId || tk.id) + "|" + tk.date); });
+      // ...and the dates already projected, so two live tasks of one series
+      // don't each project the same future date.
+      const projectedSeriesDates = new Set();
       tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tk => {
         occurrenceDatesInRange(tk, monthStart, monthEnd).forEach(ds => {
           if (ds === tk.date) return; // the real, stored occurrence is added normally
+          const seriesDs = (tk.seriesId || tk.id) + "|" + ds;
+          if (storedSeriesDates.has(seriesDs)) return; // already there for real
+          if (projectedSeriesDates.has(seriesDs)) return;
+          projectedSeriesDates.add(seriesDs);
           (map[ds] || (map[ds] = [])).push({
             ...tk,
+            // A yearly series that counts up ("birthday 30") shows the
+            // number it will actually have on that future date.
+            name: recurNameOn(tk, ds),
             date: ds,
             _projected: true
           });
@@ -9805,11 +9985,26 @@ const WeekView = ({
     // same as the pending-tile/chart look-ahead calculation does elsewhere.
     const wFutureByDate = wShowFutureRepeats ? (() => {
       const map = {};
+      // Dates a stored task of the same series already occupies, so a
+      // projection never doubles up with a real occurrence (two live tasks of
+      // one series can exist after a series is split in Google Calendar).
+      const storedSeriesDates = new Set();
+      tasks.forEach(tk => { if (tk.date) storedSeriesDates.add((tk.seriesId || tk.id) + "|" + tk.date); });
+      // ...and the dates already projected, so two live tasks of one series
+      // don't each project the same future date.
+      const projectedSeriesDates = new Set();
       tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tk => {
         occurrenceDatesInRange(tk, days[0], days[6]).forEach(ds => {
           if (ds === tk.date) return; // the real, stored occurrence is added normally
+          const seriesDs = (tk.seriesId || tk.id) + "|" + ds;
+          if (storedSeriesDates.has(seriesDs)) return; // already there for real
+          if (projectedSeriesDates.has(seriesDs)) return;
+          projectedSeriesDates.add(seriesDs);
           (map[ds] || (map[ds] = [])).push({
             ...tk,
+            // A yearly series that counts up ("birthday 30") shows the
+            // number it will actually have on that future date.
+            name: recurNameOn(tk, ds),
             date: ds,
             _projected: true
           });
@@ -10455,529 +10650,6 @@ const StickySwap = ({
     } : { position: "relative" }
   }, children));
 };
-const ListByDate = ({
-  tasks,
-  onToggle,
-  onEdit,
-  onCancel,
-  onRename,
-  onQuickAdd,
-  newlyAddedIds,
-  onDropDate,
-  selectMode = false,
-  selectedIds = null,
-  onToggleSelect = null,
-  singleColumnList = false
-}) => {
-  // Drag a card onto another date group to move it to that date.
-  const {
-    drag,
-    dragHandlersFor,
-    registerZone,
-    dragPill
-  } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
-    resolve: ds => ({ ds }),
-    commit: (id, p) => onDropDate && onDropDate(id, p.ds),
-    pillLabel: p => {
-      if (!p) return "";
-      const d = new Date(p.ds + "T00:00:00");
-      if (isNaN(d.getTime())) return p.ds;
-      return d.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", { month: "short", day: "numeric" });
-    }
-  });
-  const [quickInputs, setQuickInputs] = useState({});
-  const [activeDate, setActiveDate] = useState(null);
-  const [visibleCount, setVisibleCount] = useState(20);
-  const [stickyDate, setStickyDate] = useState(null);
-  const inputRefs = useRef({});
-  const sentinelRef = useRef();
-  const dateSentinelRefs = useRef({});
-  const stickyBarRef = useRef(null);
-  useEffect(() => {
-    const handler = e => {
-      const task = tasks.find(t => t.id === e.detail.fromId);
-      if (task?.date) {
-        setActiveDate(task.date);
-        setTimeout(() => inputRefs.current[task.date]?.focus(), 50);
-      }
-    };
-    window.addEventListener("taskflow-rename-fallback", handler);
-    return () => window.removeEventListener("taskflow-rename-fallback", handler);
-  }, [tasks]);
-  useEffect(() => {
-    const handler = e => {
-      const task = tasks.find(t => t.id === e.detail.taskId);
-      if (task?.date) setActiveDate(task.date);
-    };
-    window.addEventListener("taskflow-rename-start", handler);
-    return () => window.removeEventListener("taskflow-rename-start", handler);
-  }, [tasks]);
-
-  // IntersectionObserver to load more when sentinel is visible
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const obs = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) setVisibleCount(c => c + 10);
-    }, {
-      threshold: 0.1
-    });
-    obs.observe(sentinel);
-    return () => obs.disconnect();
-  }, []);
-
-  // Reset visible count when tasks change
-  useEffect(() => {
-    setVisibleCount(20);
-  }, [tasks.length]);
-
-  // Sticky date header — synchronous, works on iOS via touchmove + rAF
-  useEffect(() => {
-    const compute = () => {
-      if (window.scrollY < 1) { setStickyDate(null); return; }
-      const barBottom = stickyBarRef.current ? stickyBarRef.current.getBoundingClientRect().bottom : 48;
-      let best = null;
-      for (const [k, el] of Object.entries(dateSentinelRefs.current)) {
-        if (!el) continue;
-        if (el.getBoundingClientRect().top < barBottom) best = k;
-      }
-      setStickyDate(best);
-    };
-    let rafId = null;
-    const onTouch = () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(compute);
-    };
-    document.addEventListener("scroll", compute, {
-      passive: true
-    });
-    document.addEventListener("touchmove", onTouch, {
-      passive: true
-    });
-    setStickyDate(null);
-    return () => {
-      document.removeEventListener("scroll", compute);
-      document.removeEventListener("touchmove", onTouch);
-      if (rafId) cancelAnimationFrame(rafId);
-    };
-  }, [visibleCount, tasks.length]);
-  const groups = {};
-  tasks.filter(t => isPending(t) && t.date).forEach(t => {
-    const k = taskDisplayDate(t);
-    if (!groups[k]) groups[k] = [];
-    groups[k].push(t);
-  });
-  const keys = Object.keys(groups).sort((a, b) => a > b ? 1 : -1);
-  if (!keys.length) return /*#__PURE__*/React.createElement(EmptyState, null);
-
-  // Count tasks across date groups and slice at visibleCount
-  let taskCount = 0;
-  const visibleKeys = [];
-  for (const k of keys) {
-    if (taskCount >= visibleCount) break;
-    visibleKeys.push(k);
-    taskCount += groups[k].length;
-  }
-  const hasMore = visibleKeys.length < keys.length;
-  const sortGroup = arr => [...arr].sort((a, b) => {
-    const overA = isOverdue(a),
-      overB = isOverdue(b);
-    if (overA && !overB) return -1;
-    if (!overA && overB) return 1;
-    const aHasTime = !!a.time,
-      bHasTime = !!b.time;
-    if (!aHasTime && !bHasTime) return (a.name || "").localeCompare(b.name || "");
-    if (!aHasTime) return -1;
-    if (!bHasTime) return 1;
-    if (a.time !== b.time) return a.time < b.time ? -1 : 1;
-    return (a.name || "").localeCompare(b.name || "");
-  });
-  const handleQuickKey = (e, date) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const val = (quickInputs[date] || "").trim();
-      if (val && onQuickAdd) {
-        onQuickAdd({
-          name: val,
-          date
-        });
-        setQuickInputs(q => ({
-          ...q,
-          [date]: ""
-        }));
-        setTimeout(() => inputRefs.current[date]?.focus(), 30);
-      }
-      // empty Enter: just stay focused
-    }
-    if (e.key === "Escape") {
-      setQuickInputs(q => ({
-        ...q,
-        [date]: ""
-      }));
-      setActiveDate(null);
-      inputRefs.current[date]?.blur();
-    }
-  };
-  // The date header, shared by each day's section and the sticky bar at the
-  // top, so both always look the same: a tinted bar with a calendar-style day
-  // tile, the date as the main line and the weekday under it.
-  const dateHeaderEl = (k, extraStyle) => {
-    const isTodayK = k === todayStr();
-    const dObj = new Date(k + "T00:00:00");
-    return /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: "7px 14px",
-        paddingInlineStart: 7,
-        borderRadius: 14,
-        background: isTodayK ? "var(--blue-bg)" : "var(--card2)",
-        border: `1px solid ${isTodayK ? "var(--blue-border)" : "var(--border)"}`,
-        ...extraStyle
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 40,
-        height: 40,
-        borderRadius: 11,
-        flexShrink: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        background: isTodayK ? C.blue : "var(--card)",
-        border: isTodayK ? "none" : "1px solid var(--border2)",
-        boxShadow: isTodayK ? "0 3px 10px rgba(37,99,235,0.35)" : "0 1px 2px rgba(0,0,0,0.05)",
-        lineHeight: 1
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 9,
-        fontWeight: 700,
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
-        color: isTodayK ? "rgba(255,255,255,0.85)" : C.blue,
-        marginBottom: 3
-      }
-    }, getDaysShort()[dObj.getDay()]), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 17,
-        fontWeight: 800,
-        color: isTodayK ? "#fff" : C.text
-      }
-    }, dObj.getDate())), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-        minWidth: 0
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 16,
-        fontWeight: 750,
-        color: isTodayK ? C.blue : C.text,
-        lineHeight: 1.2
-      }
-    }, fmtDate(k)), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 12,
-        fontWeight: 600,
-        color: C.text3,
-        lineHeight: 1.2
-      }
-    }, dObj.toLocaleDateString(T[getLang()]?.dateLocale || "en-US", {
-      weekday: "long"
-    }))), isTodayK && /*#__PURE__*/React.createElement("span", {
-      style: {
-        marginInlineStart: "auto",
-        fontSize: 10,
-        fontWeight: 800,
-        letterSpacing: "0.06em",
-        padding: "4px 10px",
-        borderRadius: 20,
-        background: C.blue,
-        color: "#fff"
-      }
-    }, t("today").toUpperCase()));
-  };
-  const getMonthYear = ds => ds ? ds.slice(0, 7) : ""; // "yyyy-mm"
-
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      animation: "fadeIn 0.25s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    ref: stickyBarRef,
-    style: {
-      position: "sticky",
-      top: "var(--app-header-h, 48px)",
-      zIndex: 90,
-      marginLeft: -12,
-      marginRight: -12,
-      overflow: "hidden",
-      maxHeight: stickyDate ? 60 : 0,
-      opacity: stickyDate ? 1 : 0,
-      transition: "max-height 0.18s ease, opacity 0.18s ease, border-bottom 0.18s ease, background-color 0.18s ease",
-      // The bar itself carries the header's tint, edge to edge -- no white
-      // frame around a rounded header.
-      background: stickyDate === todayStr() ? "var(--blue-bg)" : "var(--card2)",
-      backdropFilter: "blur(12px)",
-      WebkitBackdropFilter: "blur(12px)",
-      borderBottom: stickyDate ? `1px solid ${C.border}` : "none",
-      transform: "translateZ(0)",
-      WebkitTransform: "translateZ(0)"
-    }
-  }, /*#__PURE__*/React.createElement(StickySwap, {
-    swapKey: stickyDate,
-    height: 54
-  }, stickyDate ? dateHeaderEl(stickyDate, {
-    height: 54,
-    boxSizing: "border-box",
-    borderRadius: 0,
-    border: "none",
-    background: "transparent",
-    padding: "7px 12px"
-  }) : null)), (() => {
-    // Pre-compute total task count per month-year across ALL keys (not just visible slice)
-    let lastMonthYear = null;
-    return visibleKeys.map((k, idx) => {
-      const monthYear = getMonthYear(k);
-      const showMonthSep = monthYear !== lastMonthYear && idx > 0;
-      if (monthYear !== lastMonthYear) lastMonthYear = monthYear;
-      const [yr, mo] = monthYear.split("-");
-      const monthLabel = getMonths()[parseInt(mo) - 1];
-      const isCurrentYear = parseInt(yr) === TODAY.getFullYear();
-      const sepLabel = isCurrentYear ? monthLabel : `${monthLabel} ${yr}`;
-      return /*#__PURE__*/React.createElement(React.Fragment, {
-        key: k
-      }, showMonthSep && /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          margin: "6px 0 14px"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          flex: 1,
-          height: 1,
-          background: `linear-gradient(to right, var(--border2), transparent)`
-        }
-      }), /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 11,
-          fontWeight: 700,
-          color: C.blue,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          whiteSpace: "nowrap",
-          padding: "3px 10px",
-          borderRadius: 20,
-          background: "var(--blue-bg)",
-          border: "1px solid var(--blue-border)"
-        }
-      }, sepLabel), /*#__PURE__*/React.createElement("div", {
-        style: {
-          flex: 1,
-          height: 1,
-          background: `linear-gradient(to left, var(--border2), transparent)`
-        }
-      })), /*#__PURE__*/React.createElement("div", {
-        ref: registerZone("d:" + k, k),
-        style: {
-          // The highlight is an overlay drawn BEHIND the group (see the first child),
-          // so targeting a date never changes the group's size or position.
-          position: "relative",
-          isolation: "isolate",
-          marginBottom: 24,
-          animation: "dateGroupReveal 0.32s cubic-bezier(0.34,1.56,0.64,1) both"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        "aria-hidden": true,
-        style: {
-          position: "absolute",
-          top: -10,
-          bottom: -10,
-          left: -10,
-          right: -10,
-          zIndex: -1,
-          borderRadius: 14,
-          pointerEvents: "none",
-          background: "var(--blue-bg)",
-          boxShadow: `inset 0 0 0 2px ${C.blue}`,
-          opacity: !!drag && !drag.outside && !!drag.payload && drag.payload.ds === k ? 1 : 0,
-          transition: "opacity 0.12s"
-        }
-      }), /*#__PURE__*/React.createElement("div", {
-        ref: el => dateSentinelRefs.current[k] = el,
-        "data-date": k,
-        style: {
-          height: 0
-        }
-      }), dateHeaderEl(k, {
-        marginBottom: 12
-      }), /*#__PURE__*/React.createElement(EqualRowGrid, {
-        style: {
-          // A wrapping row, not CSS multi-column: multi-column fills column
-          // A top-to-bottom before starting column B (and does that in
-          // document order regardless of RTL/LTR), which read wrong for
-          // Hebrew and could leave a lone task or two stacked in one narrow
-          // column with the rest of the row empty. A flex-wrap row lays
-          // tasks out left-to-right (or right-to-left in Hebrew) filling
-          // each row before wrapping to the next, and never reserves more
-          // columns than there are tasks to fill them -- one task is just
-          // one card-width, two are two side by side, and so on, wrapping
-          // only once a row is actually full. The browser decides how many
-          // fit from the available width (a narrow phone naturally lands on
-          // 1 per row, same as before this). No flexDirection override here:
-          // <html dir="rtl"> is already set app-wide for Hebrew, so a plain
-          // row already packs right-to-left on its own -- adding
-          // row-reverse on top of that cancels back out to LTR-looking
-          // order, which was the actual bug.
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 12
-        }
-      }, sortGroup(groups[k]).map((task, i) => /*#__PURE__*/React.createElement("div", {
-        key: task.id,
-        style: {
-          // Grows to fill any leftover width in its row (two tasks split
-          // the row's width between them, one task fills the row on its
-          // own) rather than staying pinned to the 320px basis and leaving
-          // a gap -- a row only wraps once there's genuinely no more room.
-          flex: singleColumnList ? "1 1 100%" : "1 1 320px",
-          maxWidth: "100%",
-          minWidth: 0
-        }
-      }, /*#__PURE__*/React.createElement(TaskCard, {
-        task: task,
-        justSynced: !!(window.__newTaskIds && window.__newTaskIds.has(task.id)),
-        isNew: !!(newlyAddedIds && newlyAddedIds.has(task.id)),
-        onToggle: onToggle,
-        onEdit: onEdit,
-        onCancel: onCancel,
-        onRename: onRename,
-        dragHandlers: dragHandlersFor(task, null, null),
-        isDragging: !!drag && drag.id === task.id,
-        delay: i * 0.04,
-        hideDateTag: true,
-        selectMode: selectMode,
-        selected: !!(selectedIds && selectedIds.has(task.id)),
-        onToggleSelect: onToggleSelect
-      })))), /*#__PURE__*/React.createElement("div", {
-        style: {
-          overflow: "hidden",
-          height: activeDate === k || (quickInputs[k] || "").trim() ? "auto" : 0,
-          opacity: activeDate === k || (quickInputs[k] || "").trim() ? 1 : 0,
-          transition: "opacity 0.15s, height 0.15s"
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          marginTop: 4,
-          // Matches TaskCard's own padding/corner radius/min-height, same as
-          // By Type's quick-add row, for visual consistency whenever this
-          // appears next to a task card.
-          padding: "13px 15px",
-          minHeight: 64,
-          borderRadius: 12,
-          border: `1.5px dashed ${C.blue}`,
-          background: C.card
-        }
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          width: 20,
-          height: 20,
-          borderRadius: 6,
-          background: "var(--blue-bg)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0
-        }
-      }, /*#__PURE__*/React.createElement(Icon, {
-        name: "plus",
-        size: 13,
-        color: C.blue,
-        strokeWidth: 2.5
-      })), /*#__PURE__*/React.createElement("input", {
-        ref: el => inputRefs.current[k] = el,
-        value: quickInputs[k] || "",
-        onChange: e => setQuickInputs(q => ({
-          ...q,
-          [k]: e.target.value
-        })),
-        onKeyDown: e => handleQuickKey(e, k),
-        onFocus: () => setActiveDate(k),
-        onBlur: () => {
-          if (!(quickInputs[k] || "").trim()) setActiveDate(null);
-        },
-        placeholder: t("quickAddPlaceholder"),
-        style: {
-          flex: 1,
-          border: "none",
-          background: "transparent",
-          outline: "none",
-          fontSize: 13,
-          color: C.text,
-          fontFamily: "'Inter',sans-serif",
-          fontWeight: 400
-        }
-      }), (quickInputs[k] || "").trim() && /*#__PURE__*/React.createElement("span", {
-        style: {
-          fontSize: 10,
-          fontWeight: 600,
-          color: C.blue,
-          opacity: 0.7,
-          whiteSpace: "nowrap",
-          background: C.blueBg,
-          padding: "2px 7px",
-          borderRadius: 6
-        }
-      }, "Enter")))));
-    });
-  })(), hasMore && /*#__PURE__*/React.createElement("div", {
-    ref: sentinelRef,
-    style: {
-      height: 40,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      color: C.text4,
-      fontSize: 12,
-      gap: 6
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 6,
-      height: 6,
-      borderRadius: "50%",
-      background: C.blue,
-      opacity: 0.5
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 6,
-      height: 6,
-      borderRadius: "50%",
-      background: C.blue,
-      opacity: 0.5
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 6,
-      height: 6,
-      borderRadius: "50%",
-      background: C.blue,
-      opacity: 0.5
-    }
-  })), dragPill);
-};
 const ListByType = ({
   tasks,
   onToggle,
@@ -11143,7 +10815,7 @@ const ListByType = ({
   };
   const getEntries = type => tasks.filter(t => t.type === type && isPending(t));
   const hasAny = allTypes.some(type => getEntries(type).length > 0);
-  // Lets the parent (the byDate/byType switch bar) know whether a
+  // Lets the parent (the list header) know whether a
   // "collapse all" button should be enabled -- only meaningful while at
   // least one visible section (one that actually has tasks) is open.
   useEffect(() => {
@@ -12724,11 +12396,17 @@ const LineChart = ({
     ws.setHours(0, 0, 0, 0);
     const we = new Date(winEnd);
     we.setHours(23, 59, 59, 999);
-    const interval = tk.recur === "month" || tk.recur === "year" ? null : (parseInt(tk.recur) || 1) * 864e5;
+    const anchor = recurAnchorDay(tk);
+    const skips = recurSkipSet(tk);
+    // End Repeat: nothing past it is an occurrence.
+    if (tk.recurUntil) {
+      const untilD = new Date(tk.recurUntil + "T23:59:59");
+      if (untilD < we) we.setTime(untilD.getTime());
+    }
     let d = new Date(tk.date + "T00:00:00");
     let itr = 0;
     while (d <= we && itr < 500) {
-      if (d >= ws) {
+      if (d >= ws && !skips.has(localDs(d))) {
         const ds = localDs(d);
         const k = bucketKey(ds);
         if (!buckets[k]) buckets[k] = {
@@ -12739,7 +12417,7 @@ const LineChart = ({
         buckets[k].pending++;
         // stored occurrence inherits done/cancelled; future ones are always pending (just pending++)
       }
-      if (tk.recur === "month") d = addMonthsClamped(d, 1);else if (tk.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
+      d = stepRecurDate(d, tk.recur, anchor);
       itr++;
     }
   };
@@ -14920,11 +14598,14 @@ const FilteredPieCard = ({
         if (prefLookahead && isRecurring(tk) && isPending(tk) && (timeRange === "today" || timeRange === "week" || timeRange === "month")) {
           const ws = timeRange === "today" ? TODAY : timeRange === "week" ? weekStart : monthStart;
           const we = timeRange === "today" ? TODAY : timeRange === "week" ? new Date(weekStart.getTime() + 6 * 864e5) : new Date(TODAY.getFullYear(), TODAY.getMonth() + 1, 1);
-          const interval = tk.recur === "month" || tk.recur === "year" ? null : (parseInt(tk.recur) || 1) * 864e5;
+          const anchor = recurAnchorDay(tk);
+          const skips = recurSkipSet(tk);
+          // End Repeat: nothing past it is an occurrence.
+          const weCap = tk.recurUntil && new Date(tk.recurUntil + "T23:59:59") < we ? new Date(tk.recurUntil + "T23:59:59") : we;
           let d = new Date(tk.date + "T00:00:00");
           let itr = 0;
-          while (d <= we && itr < 500) {
-            if (d >= ws) {
+          while (d <= weCap && itr < 500) {
+            if (d >= ws && !skips.has(localDs(d))) {
               const ds = localDs(d);
               const key = getKey(ds);
               if (!buckets[key]) buckets[key] = {
@@ -14934,7 +14615,7 @@ const FilteredPieCard = ({
               };
               buckets[key].pending++;
             }
-            if (tk.recur === "month") d = addMonthsClamped(d, 1);else if (tk.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
+            d = stepRecurDate(d, tk.recur, anchor);
             itr++;
           }
         } else {
@@ -16390,6 +16071,10 @@ const parseICS = text => {
     else if (name === "DTEND") { cur.end = val.trim(); cur.endParams = params; }
     else if (name === "DURATION") cur.duration = val.trim();
     else if (name === "RRULE") cur.rrule = val.trim();
+    // Written by this app's own export so a re-import can put every event
+    // back under the type it came from instead of lumping the whole file
+    // under one. Any other calendar simply doesn't have it.
+    else if (name === "X-TASKIT-TYPE") cur.taskitType = icsUnescape(val).toLowerCase();
     else if (name === "EXDATE") {
       cur.exdates = cur.exdates || [];
       val.split(",").forEach(v => {
@@ -16517,9 +16202,11 @@ const icsStableId = seed => {
 // like a repeating task they'd created by hand, rather than a separate task
 // per date. Only patterns plain enough for that model to express qualify:
 // DAILY, WEEKLY on a single weekday (whatever BYDAY/interval that resolves
-// to), MONTHLY/YEARLY on the same day every 1 interval. Anything richer
-// (several weekdays in one RRULE, BYMONTHDAY, a monthly/yearly interval other
-// than 1, ...) returns null so the caller falls back to one task per date.
+// to), MONTHLY/YEARLY on the same day every 1 interval, and the month-end
+// shape ("the last day that exists out of 28..31") this app writes itself for
+// a series anchored on the 29th-31st. Anything richer (several weekdays in
+// one RRULE, "the second Tuesday", a monthly/yearly interval other than 1,
+// ...) returns null so the caller falls back to one task per date.
 const icsRRuleToNativeRecur = (startDate, rrule) => {
   if (!rrule) return null;
   const parts = {};
@@ -16529,7 +16216,26 @@ const icsRRuleToNativeRecur = (startDate, rrule) => {
   });
   const freq = parts.FREQ;
   if (!freq || !["DAILY", "WEEKLY", "MONTHLY", "YEARLY"].includes(freq)) return null;
-  if (parts.BYMONTHDAY || parts.BYSETPOS || parts.BYMONTH || parts.BYYEARDAY || parts.BYWEEKNO) return null;
+  if (parts.BYYEARDAY || parts.BYWEEKNO) return null;
+  const startDay = startDate.getDate();
+  const mdays = parts.BYMONTHDAY ? parts.BYMONTHDAY.split(",").map(x => parseInt(x, 10)) : null;
+  // A month-day list in the "last of 28..N" shape -> N, the day the series is
+  // really anchored on. Anything else monthly/yearly must simply be the
+  // event's own day of the month.
+  let anchor = null;
+  if (freq === "MONTHLY" || freq === "YEARLY") {
+    const lastOfRange = (() => {
+      if (parts.BYSETPOS !== "-1" || !mdays || mdays[0] !== 28) return null;
+      for (let i = 0; i < mdays.length; i++) if (mdays[i] !== 28 + i) return null;
+      return mdays[mdays.length - 1];
+    })();
+    if (!mdays && !parts.BYSETPOS) anchor = startDay;
+    else if (mdays && mdays.length === 1 && !parts.BYSETPOS && (mdays[0] === startDay || mdays[0] === -1)) anchor = mdays[0] === -1 ? 31 : startDay;
+    else if (lastOfRange != null) anchor = lastOfRange;
+    else return null;
+    if (anchor < startDay) return null;
+    if (parts.BYMONTH && parseInt(parts.BYMONTH, 10) !== startDate.getMonth() + 1) return null;
+  } else if (mdays || parts.BYSETPOS || parts.BYMONTH) return null;
   const iv = Math.max(1, parseInt(parts.INTERVAL || "1", 10) || 1);
   const count = parts.COUNT ? Math.max(1, parseInt(parts.COUNT, 10) || 1) : null;
   const untilParsed = parts.UNTIL ? icsParseDT(parts.UNTIL) : null;
@@ -16551,28 +16257,60 @@ const icsRRuleToNativeRecur = (startDate, rrule) => {
   } else if (freq === "MONTHLY") {
     if (iv !== 1) return null; // native "month" repeat has no interval of its own
     recur = "month";
-    if (!untilDate && count) untilDate = addMonthsClamped(startDate, count - 1);
+    if (!untilDate && count) untilDate = addMonthsClamped(startDate, count - 1, anchor);
   } else {
     if (iv !== 1) return null; // native "year" repeat has no interval of its own
     recur = "year";
-    if (!untilDate && count) untilDate = addYearsClamped(startDate, count - 1);
+    if (!untilDate && count) untilDate = addYearsClamped(startDate, count - 1, anchor);
   }
-  return { recur, recurUntil: untilDate ? localDs(untilDate) : null };
+  return {
+    recur,
+    recurUntil: untilDate ? localDs(untilDate) : null,
+    // Only worth remembering when it's past the clamping point; below that
+    // it's just the event's own day of the month (see recurAnchorDay).
+    recurDay: anchor > 28 ? anchor : null
+  };
 };
 
-// Turn raw .ics text into tasks of the given type. `existingIds` is mutated so a
-// re-import of the same file (or a second file sharing UIDs) adds nothing twice.
+// What's in a file, before importing any of it: whether it came from this
+// app's own export (events carrying X-TASKIT-TYPE), which types those events
+// name and how many there are of each, and how many events have no type of
+// their own and so still need one chosen for them.
+const icsScanTypes = text => {
+  const counts = {};
+  let untyped = 0;
+  let total = 0;
+  for (const ev of parseICS(text)) {
+    total++;
+    // "calendar" is the app's own reserved holiday type and is never handed
+    // out to imported events, so such an event counts as untyped.
+    const tp = ev.taskitType && ev.taskitType !== "calendar" ? ev.taskitType : null;
+    if (tp) counts[tp] = (counts[tp] || 0) + 1; else untyped++;
+  }
+  return { counts, untyped, total, fromTaskit: Object.keys(counts).length > 0 };
+};
+// Turn raw .ics text into tasks. Events exported by this app carry their own
+// type and keep it; everything else takes `type`, the one chosen in the import
+// panel. `existingIds` is mutated so a re-import of the same file (or a second
+// file sharing UIDs) adds nothing twice.
 const icsToTasks = (text, type, existingIds) => {
   const events = parseICS(text);
   const out = [];
   let skipped = 0;
   let expanded = 0;
   let repeated = 0;
+  const usedTypes = new Set();
   for (const ev of events) {
     const st = icsParseDT(ev.start);
     const mark = splitStatusMark(ev.summary);
     const name = mark.name;
     if (!st || !name) { skipped++; continue; }
+    // An event this app exported keeps the type it had; "calendar" is the
+    // app's own reserved holiday type, so an event claiming it is treated as
+    // having none. Everything else takes the type chosen for the import.
+    const evType = ev.taskitType && ev.taskitType !== "calendar" ? ev.taskitType : type;
+    if (!evType) { skipped++; continue; }
+    usedTypes.add(evType);
     const isCancelled = ev.status === "CANCELLED" || mark.cancelled;
     const isDoneEv = mark.done && !isCancelled;
     let length = null;
@@ -16590,33 +16328,49 @@ const icsToTasks = (text, type, existingIds) => {
     const excluded = new Set(ev.exdates || []);
     const ds0 = localDs(new Date(st.ms));
     const time0 = st.allDay ? "" : `${String(new Date(st.ms).getHours()).padStart(2, "0")}:${String(new Date(st.ms).getMinutes()).padStart(2, "0")}`;
-    // How many occurrences this series actually has, so a handful of one-off
-    // exceptions (a holiday week off in an otherwise weekly class) don't by
-    // themselves stop the whole thing becoming one repeating task -- the
-    // native model just can't skip those specific dates, so they show up as
-    // a normal occurrence when their turn comes. Only fall back to a
-    // separate task per date once exceptions make up a large share (a third
-    // or more) of the series, where losing that many would be too lossy.
+    // The calendar's own exceptions -- the week a weekly class doesn't meet,
+    // a holiday in the middle of a daily standup -- are kept as the series'
+    // skipped dates (recurSkip), so one repeating task still covers the whole
+    // thing and simply jumps over them. Only an unreasonable number of them
+    // falls back to a separate task per date.
     const occurrences = icsExpandRRule(new Date(st.ms), ev.rrule);
-    const exclusionRatio = occurrences.length ? excluded.size / occurrences.length : 0;
-    const native = (!isCancelled && !isDoneEv && exclusionRatio < 1 / 3)
+    const native = (!isCancelled && !isDoneEv && excluded.size <= MAX_RECUR_SKIPS)
       ? icsRRuleToNativeRecur(new Date(st.ms), ev.rrule)
       : null;
     if (native) {
+      // Which dates the series actually lands on. For a month-end series the
+      // generic expansion above walks 28ths (it has no anchor to clamp back
+      // from), so those dates are rewalked with the real one.
+      const nativeDates = native.recurDay
+        ? (() => {
+          const out = [];
+          let d = new Date(st.ms);
+          for (let i = 0; i < occurrences.length; i++) {
+            out.push(localDs(d));
+            d = stepRecurDate(d, native.recur, native.recurDay);
+          }
+          return out;
+        })()
+        : occurrences.map(localDs);
+      // The series starts on its first date that isn't excluded.
+      const firstDs = nativeDates.find(ds => !excluded.has(ds)) || ds0;
+      const skips = nativeDates.filter(ds => excluded.has(ds) && ds > firstDs && (!native.recurUntil || ds <= native.recurUntil));
       const id = icsStableId(ev.uid ? ev.uid + "|series" : name + "|series|" + ds0 + "|" + time0);
       if (!existingIds.has(id)) {
         existingIds.add(id);
         out.push({
           id,
           name,
-          type,
-          date: ds0,
+          type: evType,
+          date: firstDs,
           time: time0,
           length,
           note,
           location,
           recur: native.recur,
           recurUntil: native.recurUntil,
+          ...(native.recurDay ? { recurDay: native.recurDay } : {}),
+          ...(skips.length ? { recurSkip: skips } : {}),
           done: false,
           cancelled: false,
           created: Date.now(),
@@ -16638,7 +16392,7 @@ const icsToTasks = (text, type, existingIds) => {
       out.push({
         id,
         name,
-        type,
+        type: evType,
         date: ds,
         time,
         length,
@@ -16652,7 +16406,180 @@ const icsToTasks = (text, type, existingIds) => {
       });
     }
   }
-  return { tasks: out, skipped, total: events.length, expanded, repeated };
+  return { tasks: out, skipped, total: events.length, expanded, repeated, types: [...usedTypes].sort() };
+};
+
+// ─── iCalendar (.ics) export ───────────────────────────────────────────────
+// The mirror image of the import above: tasks out as a calendar file any
+// other app can read (Google Calendar, Apple Calendar, Outlook), and that
+// this app can read straight back in.
+//
+// Times are written as local "floating" times -- no UTC conversion, no
+// VTIMEZONE block -- so an event stays at the clock time it has here no
+// matter which time zone the file is opened in. A repeating task goes out as
+// ONE event with its own RRULE (and EXDATE for the dates it skips), so it
+// comes back as one repeating task rather than a pile of copies. Completed
+// and cancelled tasks keep their ✔ / ✖ mark in the title, which the import
+// reads back as the task's status.
+// Local copies of two one-liners that otherwise only exist inside the Google
+// Calendar module: a zero-padded two-digit number, and a clock time
+// normalized to HH:MM (or null when it isn't a real time).
+const icsPad2 = n => String(n).padStart(2, "0");
+const icsNormTime = v => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(v || ""));
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h > 23 || mi > 59) return null;
+  return `${icsPad2(h)}:${icsPad2(mi)}`;
+};
+const icsEscape = v => String(v == null ? "" : v)
+  .replace(/\\/g, "\\\\")
+  .replace(/;/g, "\\;")
+  .replace(/,/g, "\\,")
+  .replace(/\r?\n/g, "\\n");
+// Calendar lines are limited to 75 octets; longer ones continue on the next
+// line starting with a single space. Measured in UTF-8 bytes, not characters,
+// so a Hebrew name (two bytes a letter) folds where a reader expects it to.
+const icsFoldLine = line => {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  let bytes = enc.encode(line);
+  if (bytes.length <= 75) return line;
+  const out = [];
+  let first = true;
+  while (bytes.length > 0) {
+    const limit = first ? 75 : 74; // continuation lines carry a leading space
+    if (bytes.length <= limit) { out.push((first ? "" : " ") + dec.decode(bytes)); break; }
+    // Never split inside a multi-byte character.
+    let cut = limit;
+    while (cut > 1 && (bytes[cut] & 0xC0) === 0x80) cut--;
+    out.push((first ? "" : " ") + dec.decode(bytes.slice(0, cut)));
+    bytes = bytes.slice(cut);
+    first = false;
+  }
+  return out.join("\r\n");
+};
+const icsDs = ds => String(ds).replace(/-/g, "");
+const icsLocalStamp = (ds, time) => icsDs(ds) + "T" + String(time).replace(":", "") + "00";
+// One VEVENT per task. Returns null for anything that can't be an event at
+// all (no date, or a date the app itself wouldn't accept).
+const taskToIcsEvent = task => {
+  const ds = String(task.date || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ds)) return null;
+  const name = String(taskDisplayName(task) || "").trim();
+  if (!name) return null;
+  const time = icsNormTime(task.time);
+  const mark = task.done ? "✔ " : task.cancelled ? "✖ " : "";
+  const lines = [
+    "BEGIN:VEVENT",
+    "UID:" + icsEscape(String(task.id || uid()) + "@taskit"),
+    "DTSTAMP:" + icsLocalStamp(todayStr(), "00:00"),
+    "SUMMARY:" + icsEscape(mark + name)
+  ];
+  if (time) {
+    const startMs = new Date(`${ds}T${time}:00`).getTime();
+    const mins = isMultiDay(task)
+      // A multi-day task runs from its start clock time on day one through
+      // the same clock time (plus its length) on its finish date.
+      ? Math.round((new Date(`${task.finishDate}T${time}:00`).getTime() - startMs) / 60000) + (Number(task.length) > 0 ? Number(task.length) : DEFAULT_TASK_LENGTH)
+      : (Number(task.length) > 0 ? Number(task.length) : DEFAULT_TASK_LENGTH);
+    const end = new Date(startMs + mins * 60000);
+    lines.push("DTSTART:" + icsLocalStamp(ds, time));
+    lines.push("DTEND:" + icsLocalStamp(localDs(end), `${icsPad2(end.getHours())}:${icsPad2(end.getMinutes())}`));
+  } else {
+    // An all-day event's DTEND is the day AFTER the last one it covers.
+    const lastDs = isMultiDay(task) ? task.finishDate : ds;
+    const endD = new Date(lastDs + "T00:00:00");
+    endD.setDate(endD.getDate() + 1);
+    lines.push("DTSTART;VALUE=DATE:" + icsDs(ds));
+    lines.push("DTEND;VALUE=DATE:" + icsDs(localDs(endD)));
+  }
+  // Only a pending series repeats: a finished occurrence is its own one-off
+  // event, exactly as it is in the app and on Google Calendar.
+  if (isRecurring(task) && isPending(task) && !isMultiDay(task)) {
+    let rule = task.recur === "month" ? "FREQ=MONTHLY"
+      : task.recur === "year" ? "FREQ=YEARLY"
+      : (() => {
+        const n = parseInt(task.recur, 10) || 1;
+        return n % 7 === 0 ? (n === 7 ? "FREQ=WEEKLY" : `FREQ=WEEKLY;INTERVAL=${n / 7}`) : (n === 1 ? "FREQ=DAILY" : `FREQ=DAILY;INTERVAL=${n}`);
+      })();
+    // A month-end series (the 29th-31st) lands on the last day that exists in
+    // each shorter month, the same rule the app and Google both follow.
+    const anchor = recurAnchorDay(task);
+    if (task.recur === "month" && anchor > 28) rule = `FREQ=MONTHLY;BYMONTHDAY=${Array.from({ length: anchor - 27 }, (_, i) => 28 + i).join(",")};BYSETPOS=-1`;
+    if (task.recur === "year" && anchor === 29 && new Date(ds + "T00:00:00").getMonth() === 1) rule = "FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=28,29;BYSETPOS=-1";
+    if (task.recurUntil) rule += ";UNTIL=" + (time ? icsLocalStamp(task.recurUntil, "23:59") : icsDs(task.recurUntil));
+    lines.push("RRULE:" + rule);
+    const skips = recurSkipList(task).filter(d => d > ds && (!task.recurUntil || d <= task.recurUntil));
+    if (skips.length) {
+      lines.push(time
+        ? "EXDATE:" + skips.map(d => icsLocalStamp(d, time)).join(",")
+        : "EXDATE;VALUE=DATE:" + skips.map(icsDs).join(","));
+    }
+  }
+  // The task's own type, so re-importing this file into the app restores
+  // each event's type rather than asking for one type for the lot. Other
+  // calendar apps ignore properties they don't know.
+  lines.push("X-TASKIT-TYPE:" + icsEscape(String(task.type || "general").toLowerCase()));
+  if (task.note) lines.push("DESCRIPTION:" + icsEscape(task.note));
+  if (task.location) lines.push("LOCATION:" + icsEscape(task.location));
+  // Deliberately no STATUS:CANCELLED for a cancelled task: several calendars
+  // (Google's import among them) drop a cancelled event on sight, which would
+  // silently lose those tasks. The ✖ in the title carries the status instead,
+  // and this app's own import reads it back from there.
+  lines.push("END:VEVENT");
+  return lines;
+};
+// The whole file. `skipped` counts tasks with no date -- a calendar event
+// has to happen on a day, so those can't be exported.
+const tasksToIcs = list => {
+  const body = [];
+  let skipped = 0;
+  for (const task of list || []) {
+    const ev = taskToIcsEvent(task);
+    if (!ev) { skipped++; continue; }
+    body.push(...ev);
+  }
+  const all = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//TaskIt//Tasks " + APP_VERSION + "//EN",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    ...body,
+    "END:VCALENDAR"
+  ];
+  return {
+    text: all.map(icsFoldLine).join("\r\n") + "\r\n",
+    count: body.filter(l => l === "BEGIN:VEVENT").length,
+    skipped
+  };
+};
+// Hands the finished file to the person. A direct download on anything that
+// supports it; on iOS, where a generated download often goes nowhere, the
+// share sheet is offered first so the file can be saved to Files or sent on.
+const downloadIcsFile = async (text, filename) => {
+  const blob = new Blob([text], { type: "text/calendar;charset=utf-8" });
+  if (IS_IOS && navigator.canShare) {
+    try {
+      const file = new File([blob], filename, { type: "text/calendar" });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file] });
+        return "shared";
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return "cancelled";
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return "downloaded";
 };
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -17272,8 +17199,8 @@ const WelcomeModal = ({
     gradient: "linear-gradient(135deg,#3B82F6,#2563EB)",
     title: isHe ? "המשימות שלך, בדרך שלך" : "Your tasks, your way",
     desc: isHe
-      ? "עקבו לפי תאריך או לפי סוג, ועברו בין בית, שבוע, חודש ורשימה, מה שמתאים לרגע."
-      : "Track by date or by type, and move between Home, Week, Month and List, whichever fits the moment."
+      ? "עקבו אחרי המשימות לפי סוג, ועברו בין בית, שבוע, חודש ורשימה, מה שמתאים לרגע."
+      : "Group your tasks by type, and move between Home, Week, Month and List, whichever fits the moment."
   }, {
     icon: "📊",
     gradient: "linear-gradient(135deg,#8B5CF6,#6D28D9)",
@@ -17721,6 +17648,9 @@ const SettingsModal = ({
   const [icsType, setIcsType] = useState("");
   const [icsMsg, setIcsMsg] = useState("");
   const [icsBusy, setIcsBusy] = useState(false);
+  // What the chosen files hold: the types their events already name (when the
+  // file came from this app's own export) and how many events still need one.
+  const [icsScan, setIcsScan] = useState(null);
   // ── Delete-all-of-a-type state ──
   const [delType, setDelType] = useState("");
   const [delConfirm, setDelConfirm] = useState(false);
@@ -17765,6 +17695,18 @@ const SettingsModal = ({
     try {
       const read = await Promise.all(files.map(f => f.text().then(text => ({ name: f.name, text }))));
       setIcsFiles(read);
+      // A file this app exported names a type on every event, so there's
+      // nothing to ask: those events go straight back to the types they came
+      // from. Anything else (or any event in a mixed file without one) still
+      // needs a type picked for it.
+      const counts = {};
+      let untyped = 0;
+      for (const f of read) {
+        const scan = icsScanTypes(f.text);
+        for (const [tp, n] of Object.entries(scan.counts)) counts[tp] = (counts[tp] || 0) + n;
+        untyped += scan.untyped;
+      }
+      setIcsScan({ counts, untyped, fromTaskit: Object.keys(counts).length > 0 });
     } catch (err) {
       setIcsMsg(isHe ? "לא הצלחתי לקרוא את הקובץ" : "Couldn't read that file");
     }
@@ -17772,7 +17714,10 @@ const SettingsModal = ({
   };
   const runIcsImport = () => {
     const type = icsType.trim().toLowerCase();
-    if (!type) {
+    // Events that carry their own type need nothing chosen; a type is only
+    // required for the ones that don't.
+    const needsType = !icsScan || icsScan.untyped > 0;
+    if (needsType && !type) {
       setIcsMsg(isHe ? "בחר או הקלד סוג קודם" : "Pick or type a type first");
       return;
     }
@@ -17784,6 +17729,7 @@ const SettingsModal = ({
     try {
       const existing = new Set((tasks || []).map(tk => tk.id));
       let added = [], skipped = 0, total = 0, expanded = 0, repeated = 0;
+      const typesUsed = new Set();
       for (const f of icsFiles) {
         const r = icsToTasks(f.text, type, existing);
         added = added.concat(r.tasks);
@@ -17791,6 +17737,7 @@ const SettingsModal = ({
         total += r.total;
         expanded += r.expanded;
         repeated += r.repeated || 0;
+        (r.types || []).forEach(tp => typesUsed.add(tp));
       }
       if (!added.length) {
         setIcsMsg(total === 0
@@ -17798,10 +17745,15 @@ const SettingsModal = ({
           : (isHe ? "כל האירועים כבר מיובאים" : "All of those events are already imported"));
       } else {
         onImportIcs && onImportIcs(added);
+        // One type for everything reads better as "as work"; a file that
+        // restored several of its own types lists them instead.
+        const typeList = [...typesUsed].sort();
+        const asLabel = typeList.length === 1 ? `“${typeList[0]}”` : typeList.map(tp => `“${tp}”`).join(", ");
         setIcsMsg(isHe
-          ? `נוצרו ${added.length} משימות כ־“${type}” מתוך ${total} אירועים${repeated > 0 ? ` · ${repeated} כחוזרות` : ""}${expanded > 0 ? ` · ${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : ""}${skipped > 0 ? ` · ${skipped} דולגו` : ""}`
-          : `Created ${added.length} tasks as "${type}" from ${total} events${repeated > 0 ? ` · ${repeated} imported as repeating` : ""}${expanded > 0 ? ` · ${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates` : ""}${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
+          ? `נוצרו ${added.length} משימות כ־${asLabel} מתוך ${total} אירועים${repeated > 0 ? ` · ${repeated} כחוזרות` : ""}${expanded > 0 ? ` · ${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : ""}${skipped > 0 ? ` · ${skipped} דולגו` : ""}`
+          : `Created ${added.length} tasks as ${asLabel} from ${total} events${repeated > 0 ? ` · ${repeated} imported as repeating` : ""}${expanded > 0 ? ` · ${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates` : ""}${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
         setIcsFiles([]);
+        setIcsScan(null);
       }
     } catch (err) {
       setIcsMsg((isHe ? "שגיאה: " : "Error: ") + (err.message || String(err)));
@@ -17863,11 +17815,19 @@ const SettingsModal = ({
     return m;
   }, [tasks]);
 
+  // ── Export iCalendar: the same type picker as Copy JSON, but the result
+  // is a .ics file rather than clipboard text ──
+  const [icsExportOpen, setIcsExportOpen] = useState(false);
+  const [icsExportTypes, setIcsExportTypes] = useState(null);
+  const [icsExportMsg, setIcsExportMsg] = useState("");
+
   useEffect(() => {
     if (open) {
       setVisible(true);
       setClosing(false);
       setJsonText("");
+      setIcsExportOpen(false);
+      setIcsExportMsg("");
       setCopied(false);
       setPasted(false);
       setLoadError("");
@@ -17912,6 +17872,34 @@ const SettingsModal = ({
         setCopyPickerOpen(false);
       }, 1200);
     });
+  };
+  const openIcsExport = () => {
+    setIcsExportTypes(new Set(copyTypeList)); // default: everything selected
+    setIcsExportOpen(true);
+    setIcsExportMsg("");
+  };
+  const toggleIcsExportType = tp => {
+    setIcsExportTypes(prev => {
+      const n = new Set(prev);
+      if (n.has(tp)) n.delete(tp); else n.add(tp);
+      return n;
+    });
+  };
+  const selectedIcsCount = icsExportTypes ? [...icsExportTypes].reduce((sum, tp) => sum + (copyTypeCounts[tp] || 0), 0) : 0;
+  const allIcsSelected = !!icsExportTypes && copyTypeList.length > 0 && copyTypeList.every(tp => icsExportTypes.has(tp));
+  const handleIcsExport = async () => {
+    const chosen = icsExportTypes || new Set(copyTypeList);
+    const scoped = (tasks || []).filter(tk => chosen.has(tk.type || "general"));
+    const { text, count, skipped } = tasksToIcs(scoped);
+    if (!count) {
+      setIcsExportMsg(isHe ? "אין משימות עם תאריך לייצוא" : "No dated tasks to export");
+      return;
+    }
+    const where = await downloadIcsFile(text, `taskit-${todayStr()}.ics`);
+    if (where === "cancelled") { setIcsExportMsg(""); return; }
+    setIcsExportMsg(isHe
+      ? `יוצאו ${count} משימות${skipped > 0 ? ` · ${skipped} ללא תאריך דולגו` : ""}`
+      : `Exported ${count} task${count === 1 ? "" : "s"}${skipped > 0 ? ` · ${skipped} without a date skipped` : ""}`);
   };
   const handlePaste = () => {
     navigator.clipboard.readText().then(text => {
@@ -18268,7 +18256,7 @@ const SettingsModal = ({
   })), /*#__PURE__*/React.createElement(Row, {
     icon: "📶",
     label: isHe ? "עמודות מרובות ברשימות" : "Multiple columns in lists",
-    sub: isHe ? !singleColumnLists ? "כמה כרטיסים בשורה כשיש מקום (כמו היום)" : "כרטיס אחד בכל שורה ב'לפי תאריך' ו'לפי סוג'" : !singleColumnLists ? "Multiple cards per row when there's room (as today)" : "One card per row in By Date & By Type"
+    sub: isHe ? !singleColumnLists ? "כמה כרטיסים בשורה כשיש מקום (כמו היום)" : "כרטיס אחד בכל שורה ברשימה" : !singleColumnLists ? "Multiple cards per row when there's room (as today)" : "One card per row in the list"
   }, /*#__PURE__*/React.createElement(Toggle, {
     on: !singleColumnLists,
     onToggle: onToggleSingleColumnLists,
@@ -18530,6 +18518,109 @@ const SettingsModal = ({
   }), copied
     ? (isHe ? "הועתק!" : "Copied!")
     : (isHe ? `העתק ${selectedCopyCount} משימות` : `Copy ${selectedCopyCount} task${selectedCopyCount === 1 ? "" : "s"}`)))), /*#__PURE__*/React.createElement(Row, {
+    icon: "📤",
+    label: isHe ? "ייצוא iCalendar (.ics)" : "Export iCalendar (.ics)",
+    sub: icsExportOpen
+      ? (isHe ? "בחר אילו סוגים לכלול" : "Choose which types to include")
+      : (isHe ? "קובץ יומן לגוגל, אפל או אאוטלוק" : "A calendar file for Google, Apple or Outlook")
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: e => deferAfterBlur(e, () => icsExportOpen ? setIcsExportOpen(false) : openIcsExport()),
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: icsExportOpen ? `1.5px solid ${C.blueBorder}` : "none",
+      background: icsExportOpen ? C.blueBg : "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: icsExportOpen ? C.blue : "#fff",
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      transition: "background 0.25s",
+      flexShrink: 0,
+      boxShadow: icsExportOpen ? "none" : "0 2px 8px rgba(59,130,246,0.3)"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "download",
+    size: 13,
+    color: icsExportOpen ? C.blue : "#fff"
+  }), icsExportOpen ? (isHe ? "סגור" : "Close") : (isHe ? "ייצא" : "Export"))), icsExportOpen && /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "-4px 0 12px",
+      padding: "12px",
+      borderRadius: 12,
+      background: C.card2,
+      border: `1px solid ${C.border2}`,
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, fontWeight: 700, color: C.text2 }
+  }, isHe ? "אילו סוגים לכלול?" : "Which types to include?"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setIcsExportTypes(allIcsSelected ? new Set() : new Set(copyTypeList)),
+    style: {
+      fontSize: 11.5,
+      fontWeight: 700,
+      color: C.blue,
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      padding: 0
+    }
+  }, allIcsSelected ? (isHe ? "נקה הכל" : "Deselect all") : (isHe ? "בחר הכל" : "Select all"))), copyTypeList.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, color: C.text4, padding: "4px 0" }
+  }, isHe ? "אין משימות" : "No tasks yet") : /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }
+  }, copyTypeList.map(tp => {
+    const active = !!icsExportTypes && icsExportTypes.has(tp);
+    const m = getTypeMeta(tp);
+    return /*#__PURE__*/React.createElement("button", {
+      key: tp,
+      onClick: () => toggleIcsExportType(tp),
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "5px 10px",
+        borderRadius: 20,
+        border: `1.5px solid ${active ? m.dot : C.border2}`,
+        background: active ? m.bg : "transparent",
+        color: active ? m.color : C.text3,
+        fontSize: 12,
+        fontWeight: 700,
+        cursor: "pointer"
+      }
+    }, m.label, /*#__PURE__*/React.createElement("span", {
+      style: { fontSize: 10.5, opacity: 0.75, fontWeight: 600 }
+    }, `(${copyTypeCounts[tp]})`));
+  })), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: handleIcsExport,
+    disabled: selectedIcsCount === 0,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: "none",
+      background: selectedIcsCount === 0 ? C.border : "linear-gradient(135deg,#3B82F6,#2563EB)",
+      color: "#fff",
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: selectedIcsCount === 0 ? "default" : "pointer",
+      boxShadow: selectedIcsCount === 0 ? "none" : "0 2px 8px rgba(59,130,246,0.3)"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "download",
+    size: 13,
+    color: "#fff"
+  }), isHe ? `ייצא ${selectedIcsCount} משימות` : `Export ${selectedIcsCount} task${selectedIcsCount === 1 ? "" : "s"}`), icsExportMsg && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11.5, fontWeight: 600, color: C.text3 }
+  }, icsExportMsg))), /*#__PURE__*/React.createElement(Row, {
     icon: "📂",
     label: isHe ? "טען JSON" : "Load JSON",
     sub: isHe ? "מוסיף משימות בלי למחוק קיימות, כפילויות ידולגו" : "Adds tasks without deleting existing ones, duplicates are skipped"
@@ -18689,7 +18780,7 @@ const SettingsModal = ({
     label: isHe ? "ייבוא iCalendar (.ics)" : "Import iCalendar (.ics)",
     sub: icsFiles.length
       ? (isHe ? `נבחרו ${icsFiles.length} קבצים` : `${icsFiles.length} file${icsFiles.length > 1 ? "s" : ""} selected`)
-      : (isHe ? "האירועים יקבלו סוג לבחירתך ויסונכרנו ל-Google" : "Events get a type you choose, then sync to Google")
+      : (isHe ? "קובץ מ-TaskIt חוזר לסוגים המקוריים, אחרת תבחר סוג" : "A TaskIt file keeps its own types; otherwise you pick one")
   }, /*#__PURE__*/React.createElement("input", {
     ref: icsFileRef,
     type: "file",
@@ -18722,9 +18813,24 @@ const SettingsModal = ({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11, color: C.text4, marginBottom: 8, wordBreak: "break-all" }
-  }, icsFiles.map(f => f.name).join(" · ")), /*#__PURE__*/React.createElement("div", {
+  }, icsFiles.map(f => f.name).join(" · ")), icsScan && icsScan.fromTaskit && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10,
+      padding: "8px 10px",
+      borderRadius: 9,
+      background: C.blueBg,
+      border: `1px solid ${C.blueBorder}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, fontWeight: 700, color: C.blue, marginBottom: 4 }
+  }, isHe ? "יוצא מ-TaskIt" : "Exported from TaskIt"), /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11.5, color: C.text3, lineHeight: 1.6 }
+  }, (isHe ? "האירועים יחזרו לסוגים שלהם: " : "Events go back to their own types: ")
+    + Object.keys(icsScan.counts).sort().map(tp => `${getTypeMeta(tp).label} (${icsScan.counts[tp]})`).join(" · "))), (!icsScan || icsScan.untyped > 0) && /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 12, fontWeight: 700, color: C.text2, marginBottom: 6 }
-  }, isHe ? "איזה סוג להקצות לאירועים האלה?" : "What type should these events get?"), /*#__PURE__*/React.createElement("input", {
+  }, icsScan && icsScan.fromTaskit
+    ? (isHe ? `איזה סוג לשאר ${icsScan.untyped} האירועים?` : `What type for the other ${icsScan.untyped} event${icsScan.untyped === 1 ? "" : "s"}?`)
+    : (isHe ? "איזה סוג להקצות לאירועים האלה?" : "What type should these events get?")), (!icsScan || icsScan.untyped > 0) && /*#__PURE__*/React.createElement("input", {
     value: icsType,
     onChange: e => setIcsType(e.target.value),
     placeholder: isHe ? "לדוגמה: work, school, gym" : "e.g. work, school, gym",
@@ -18743,9 +18849,9 @@ const SettingsModal = ({
       direction: "ltr",
       textAlign: isHe ? "right" : "left"
     }
-  }), /*#__PURE__*/React.createElement("datalist", {
+  }), (!icsScan || icsScan.untyped > 0) && /*#__PURE__*/React.createElement("datalist", {
     id: "ics-type-options"
-  }, knownTypes.map(tp => /*#__PURE__*/React.createElement("option", { key: tp, value: tp }))), knownTypes.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, knownTypes.map(tp => /*#__PURE__*/React.createElement("option", { key: tp, value: tp }))), (!icsScan || icsScan.untyped > 0) && knownTypes.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }
   }, knownTypes.slice(0, 8).map(tp => {
     const active = icsType.trim().toLowerCase() === tp;
@@ -18781,7 +18887,7 @@ const SettingsModal = ({
       opacity: icsBusy ? 0.6 : 1
     }
   }, icsBusy ? (isHe ? "מייבא…" : "Importing…") : (isHe ? "ייבא וסנכרן" : "Import & sync")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => { setIcsFiles([]); setIcsMsg(""); },
+    onClick: () => { setIcsFiles([]); setIcsScan(null); setIcsMsg(""); },
     style: {
       padding: "7px 16px",
       borderRadius: 20,
@@ -18795,7 +18901,7 @@ const SettingsModal = ({
   }, isHe ? "ביטול" : "Cancel")), /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11, color: C.text4, marginTop: 8, lineHeight: 1.6 }
   }, gcalConnected
-    ? (isHe ? "האירועים ייכנסו ללוח Google בשם הסוג שתבחר." : "Events land in the Google calendar named after that type.")
+    ? (isHe ? "כל אירוע ייכנס ללוח Google בשם הסוג שלו." : "Each event lands in the Google calendar named after its type.")
     : (isHe ? "חבר את Google Calendar כדי שהאירועים יסונכרנו גם לשם." : "Connect Google Calendar above and these will sync there too."))), icsMsg && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
@@ -19006,7 +19112,7 @@ const SettingsModal = ({
   }, isHe ? "בטוח?" : "Sure?"))))))));
 };
 
-// ── AllTasksView: combined By Date / By Type with toggle ─────────────────────
+// ── AllTasksView: the task list, grouped by type ────────────────────────────
 const AllTasksView = ({
   tasks,
   onToggle,
@@ -19014,13 +19120,9 @@ const AllTasksView = ({
   onCancel,
   onRename,
   newlyAddedIds,
-  activeTab,
-  onTabChange,
-  onQuickAddDate,
   onQuickAddType,
   collapseAllRef,
   onRenameType,
-  onDropDate,
   onDropType,
   onShareReady,
   selectMode = false,
@@ -19031,16 +19133,15 @@ const AllTasksView = ({
   singleColumnLists = false
 }) => {
   const isHe = getLang() === "he";
-  const byDate = activeTab === "date";
-  // Quick-pick pool: has to match what the active tab actually displays, not
-  // just "every task" -- By Type only ever renders pending tasks (done and
-  // cancelled ones are excluded there entirely, same filter ListByType gets
-  // below), so offering Completed/Cancelled chips on that tab would let you
-  // "select" tasks you can't see or do anything with on screen.
-  const allTasksQuickPool = React.useMemo(() => {
-    const base = tasks.filter(tk => !(tk.type === "calendar" && !tk.hebcal && !tk.intl));
-    return byDate ? base : base.filter(tk => !isDone(tk) && !isCancelled(tk));
-  }, [tasks, byDate]);
+  // Quick-pick pool: has to match what the list actually displays, not just
+  // "every task" -- done and cancelled tasks are excluded here entirely (the
+  // same filter ListByType gets below), so offering Completed/Cancelled
+  // chips would let you "select" tasks you can't see or do anything with on
+  // screen.
+  const allTasksQuickPool = React.useMemo(
+    () => tasks.filter(tk => !(tk.type === "calendar" && !tk.hebcal && !tk.intl) && !isDone(tk) && !isCancelled(tk)),
+    [tasks]
+  );
   useSelectQuickPicks(allTasksQuickPool, {
     selectMode,
     selectedIds,
@@ -19050,7 +19151,7 @@ const AllTasksView = ({
   const [anyTypeOpen, setAnyTypeOpen] = useState(false);
   const [collapseBounce, setCollapseBounce] = useState(false);
   const handleCollapseAllClick = () => {
-    if (byDate || !anyTypeOpen) return;
+    if (!anyTypeOpen) return;
     collapseAllRef.current && collapseAllRef.current();
     setCollapseBounce(true);
     setTimeout(() => setCollapseBounce(false), 420);
@@ -19068,18 +19169,18 @@ const AllTasksView = ({
     }
   }, /*#__PURE__*/React.createElement("div", {
     onClick: handleCollapseAllClick,
-    title: byDate ? undefined : isHe ? "כווץ הכל" : "Collapse all",
+    title: isHe ? "כווץ הכל" : "Collapse all",
     style: {
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      cursor: !byDate && anyTypeOpen ? "pointer" : "default",
-      opacity: !byDate && !anyTypeOpen ? 0.4 : 1,
+      cursor: anyTypeOpen ? "pointer" : "default",
+      opacity: anyTypeOpen ? 1 : 0.4,
       transition: "opacity 0.15s",
       animation: collapseBounce ? "checkBounce 0.42s cubic-bezier(0.34,1.56,0.64,1)" : "none"
     }
   }, /*#__PURE__*/React.createElement(Icon, {
-    name: byDate ? "list" : "tag",
+    name: "tag",
     size: 16,
     color: "#3B82F6"
   })), /*#__PURE__*/React.createElement("h2", {
@@ -19089,52 +19190,7 @@ const AllTasksView = ({
       color: C.text,
       flex: 1
     }
-  }, byDate ? t("tasksByDate") : t("tasksByType")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => onTabChange(byDate ? "type" : "date"),
-    title: byDate ? t("byTypeTab") : t("byDateTab"),
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      width: 30,
-      height: 30,
-      borderRadius: 8,
-      border: `1px solid ${C.border2}`,
-      background: "transparent",
-      cursor: "pointer",
-      flexShrink: 0,
-      color: C.text4,
-      transition: "background 0.15s,color 0.15s,border-color 0.15s",
-      padding: 0
-    },
-    onMouseEnter: e => {
-      e.currentTarget.style.background = C.blue + "18";
-      e.currentTarget.style.borderColor = C.blue;
-      e.currentTarget.style.color = C.blue;
-    },
-    onMouseLeave: e => {
-      e.currentTarget.style.background = "transparent";
-      e.currentTarget.style.borderColor = C.border2;
-      e.currentTarget.style.color = C.text4;
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: byDate ? "tag" : "list",
-    size: 14,
-    color: "currentColor"
-  }))), byDate ? /*#__PURE__*/React.createElement(ListByDate, {
-    tasks: tasks,
-    onToggle: onToggle,
-    onEdit: onEdit,
-    onCancel: onCancel,
-    onRename: onRename,
-    newlyAddedIds: newlyAddedIds,
-    onQuickAdd: onQuickAddDate,
-    onDropDate: onDropDate,
-    selectMode: selectMode,
-    selectedIds: selectedIds,
-    onToggleSelect: onToggleSelect,
-    singleColumnList: singleColumnLists
-  }) : /*#__PURE__*/React.createElement(ListByType, {
+  }, t("tasksByType"))), /*#__PURE__*/React.createElement(ListByType, {
     tasks: tasks.filter(t => !isDone(t) && !isCancelled(t)),
     onToggle: onToggle,
     onEdit: onEdit,
@@ -20960,7 +21016,242 @@ const GCal = (() => {
     // or 9:00 AM the same day when there isn't one.
     return timeMin != null ? 30 : daysBeforeAt9(0);
   }
+  // ── Repeating tasks as real repeating events ─────────────────────────────
+  // A repeating task used to reach Google as one plain event (only TaskIt
+  // knew it repeated, through a private property). Now the live occurrence
+  // of a series -- the one pending task that carries it -- is pushed as a
+  // genuine repeating Google event (an RRULE), so Google shows every future
+  // date, rings its reminder on each of them, and edits made to "all
+  // events" in Google come back into TaskIt.
+  //
+  // The TaskIt model is unchanged on purpose: completing or cancelling the
+  // current occurrence still turns it into its own finished, single event
+  // (✔ / ✖) and the next occurrence takes over the series from the next date
+  // (with its yearly number bumped where that applies). Editing the task
+  // edits the whole remaining series. So in Google the history is a row of
+  // single ✔/✖ events and the future is one repeating event that always
+  // starts at the next date due.
+  //
+  // Only a pending task with a real date gets a rule. Finished occurrences,
+  // dateless tasks (parked on the anchor date), holidays, and multi-day
+  // tasks stay single events, exactly as before.
+  const ANNUAL_NAME_HORIZON = 10; // years ahead given their own counted-up name
+  const ymd = ds => String(ds).replace(/-/g, "");
+  function recurrenceFor(task) {
+    if (!task || task.done || task.cancelled) return null;
+    if (!isRecurring(task) || isDateless(task) || isHolidayTask(task) || isMultiDay(task)) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(task.date))) return null;
+    if (task.recurUntil && !/^\d{4}-\d{2}-\d{2}$/.test(String(task.recurUntil))) return null;
+    // An End Repeat before the task's own date: the series is already over.
+    if (task.recurUntil && String(task.recurUntil) < String(task.date)) return null;
+    const start = new Date(task.date + "T00:00:00");
+    if (Number.isNaN(start.getTime())) return null;
+    const anchor = recurAnchorDay(task);
+    const daysUpTo = top => Array.from({ length: top - 27 }, (_, i) => 28 + i).join(",");
+    let rule;
+    if (task.recur === "month") {
+      // Day 29-31: the last of 28..anchor that exists in each month -- i.e.
+      // the anchor day, or the month's last day when it's shorter. That is
+      // exactly addMonthsClamped's rule, so both sides agree on every date
+      // (plain FREQ=MONTHLY would skip the short months altogether).
+      rule = anchor > 28 ? `FREQ=MONTHLY;BYMONTHDAY=${daysUpTo(anchor)};BYSETPOS=-1` : "FREQ=MONTHLY";
+    } else if (task.recur === "year") {
+      rule = start.getMonth() === 1 && anchor === 29 ? "FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=28,29;BYSETPOS=-1" : "FREQ=YEARLY";
+    } else {
+      const n = parseInt(task.recur, 10);
+      if (!(n > 0)) return null;
+      rule = n % 7 === 0 ? (n === 7 ? "FREQ=WEEKLY" : `FREQ=WEEKLY;INTERVAL=${n / 7}`) : (n === 1 ? "FREQ=DAILY" : `FREQ=DAILY;INTERVAL=${n}`);
+    }
+    if (task.recurUntil) {
+      // Inclusive of that whole day, like spawnNext's own End Repeat check.
+      // A timed event's UNTIL has to be a UTC date-time; an all-day one's
+      // a plain date.
+      if (normTime(task.time)) {
+        const u = new Date(task.recurUntil + "T23:59:59");
+        rule += ";UNTIL=" + u.toISOString().replace(/\.\d{3}Z$/, "Z").replace(/[-:]/g, "");
+      } else {
+        rule += ";UNTIL=" + ymd(task.recurUntil);
+      }
+    }
+    const out = ["RRULE:" + rule];
+    // Skipped dates (see recurSkip) become real exception dates on the Google
+    // event, so Google leaves those dates out of the series exactly as the app
+    // does. A timed event's exceptions carry the event's own start time and
+    // time zone; an all-day event's are plain dates.
+    const time = normTime(task.time);
+    const skipped = recurSkipList(task).filter(ds => ds > String(task.date) && (!task.recurUntil || ds <= task.recurUntil));
+    if (skipped.length) {
+      if (time) {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        out.push(`EXDATE;TZID=${tz}:` + skipped.map(ds => ymd(ds) + "T" + time.replace(":", "") + "00").join(","));
+      } else {
+        out.push("EXDATE;VALUE=DATE:" + skipped.map(ymd).join(","));
+      }
+    }
+    return out;
+  }
+  // The dates an EXDATE line leaves out, as plain YYYY-MM-DD.
+  function skipsFromRecurrence(lines) {
+    const out = [];
+    for (const line of lines || []) {
+      const raw = String(line);
+      if (!/^EXDATE/i.test(raw)) continue;
+      const colon = raw.indexOf(":");
+      if (colon < 0) continue;
+      for (const v of raw.slice(colon + 1).split(",")) {
+        const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?/.exec(v.trim());
+        if (!m) continue;
+        // Google may hand the same exception back as a UTC moment rather than
+        // the local time it was written with; which calendar day that is
+        // depends on the time zone, so convert rather than read the digits.
+        const ds = m[7] === "Z"
+          ? localDs(new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])))
+          : `${m[1]}-${m[2]}-${m[3]}`;
+        if (!out.includes(ds)) out.push(ds);
+      }
+    }
+    return out.sort().slice(0, MAX_RECUR_SKIPS);
+  }
+  const eventStartDs = event => event?.start?.date || (event?.start?.dateTime ? localDs(new Date(event.start.dateTime)) : "");
+  // Reads a Google recurrence back into TaskIt's model. Understands
+  // everything recurrenceFor writes plus what Google's own "Repeat" menu
+  // produces for the patterns TaskIt can hold (daily / every N days, weekly
+  // on the event's own weekday, monthly on its day, yearly). Returns
+  // { ok: true, recur, recurUntil, anchor } or { ok: false } for anything
+  // richer (several weekdays, "last Friday", exception dates...).
+  function nativeFromRecurrence(startDs, lines) {
+    const fail = { ok: false };
+    if (!Array.isArray(lines) || !lines.length || !/^\d{4}-\d{2}-\d{2}$/.test(String(startDs))) return fail;
+    if (lines.some(l => /^(RDATE|EXRULE)/i.test(String(l)))) return fail;
+    const rr = lines.filter(l => /^RRULE:/i.test(String(l)));
+    if (rr.length !== 1) return fail;
+    const parts = {};
+    for (const p of String(rr[0]).slice(6).split(";")) {
+      const eq = p.indexOf("=");
+      if (eq > 0) parts[p.slice(0, eq).trim().toUpperCase()] = p.slice(eq + 1).trim().toUpperCase();
+    }
+    const known = ["FREQ", "INTERVAL", "UNTIL", "COUNT", "BYDAY", "BYMONTHDAY", "BYSETPOS", "BYMONTH", "WKST"];
+    if (Object.keys(parts).some(k => !known.includes(k))) return fail;
+    const start = new Date(startDs + "T00:00:00");
+    const startDay = start.getDate();
+    const iv = parts.INTERVAL ? parseInt(parts.INTERVAL, 10) : 1;
+    if (!(iv > 0)) return fail;
+    const mdays = parts.BYMONTHDAY ? parts.BYMONTHDAY.split(",").map(x => parseInt(x, 10)) : null;
+    const setpos = parts.BYSETPOS || "";
+    // Month-day list in recurrenceFor's "last of 28..N" shape -> N.
+    const lastOfRange = () => {
+      if (setpos !== "-1" || !mdays || mdays[0] !== 28) return null;
+      for (let i = 0; i < mdays.length; i++) if (mdays[i] !== 28 + i) return null;
+      return mdays[mdays.length - 1];
+    };
+    let recur, anchor = null;
+    if (parts.FREQ === "DAILY") {
+      if (parts.BYDAY || mdays || setpos || parts.BYMONTH) return fail;
+      recur = iv;
+    } else if (parts.FREQ === "WEEKLY") {
+      if (mdays || setpos || parts.BYMONTH) return fail;
+      if (parts.BYDAY) {
+        const codes = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+        const days = parts.BYDAY.split(",");
+        if (days.length !== 1 || codes.indexOf(days[0]) !== start.getDay()) return fail;
+      }
+      recur = iv * 7;
+    } else if (parts.FREQ === "MONTHLY") {
+      if (iv !== 1 || parts.BYDAY || parts.BYMONTH) return fail;
+      if (!mdays && !setpos) anchor = startDay;
+      else if (mdays && mdays.length === 1 && !setpos && (mdays[0] === startDay || mdays[0] === -1)) anchor = mdays[0] === -1 ? 31 : startDay;
+      else if ((anchor = lastOfRange()) == null) return fail;
+      recur = "month";
+    } else if (parts.FREQ === "YEARLY") {
+      if (iv !== 1 || parts.BYDAY) return fail;
+      if (parts.BYMONTH && parseInt(parts.BYMONTH, 10) !== start.getMonth() + 1) return fail;
+      if (!mdays && !setpos) anchor = startDay;
+      else if (mdays && mdays.length === 1 && !setpos && mdays[0] === startDay) anchor = startDay;
+      else if (start.getMonth() === 1 && lastOfRange() === 29) anchor = 29;
+      else return fail;
+      recur = "year";
+    } else return fail;
+    if (anchor != null && anchor < startDay) return fail;
+    let recurUntil = null, untilFuzzy = false;
+    if (parts.UNTIL) {
+      const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z?))?$/.exec(parts.UNTIL);
+      if (!m) return fail;
+      if (m[4] != null && m[7] === "Z") {
+        recurUntil = localDs(new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])));
+        // A UTC moment: which calendar day it falls on depends on the
+        // device's time zone (off by one between far-apart zones).
+        untilFuzzy = true;
+      } else recurUntil = `${m[1]}-${m[2]}-${m[3]}`;
+    } else if (parts.COUNT) {
+      const count = parseInt(parts.COUNT, 10);
+      if (!(count > 0)) return fail;
+      let d = start;
+      for (let i = 1; i < Math.min(count, 5000); i++) d = stepRecurDate(d, recur, anchor);
+      recurUntil = localDs(d);
+    }
+    return { ok: true, recur, recurUntil, untilFuzzy, skips: skipsFromRecurrence(lines), anchor: anchor != null && anchor > startDay ? anchor : null };
+  }
+  // Does Google's copy of this event repeat exactly the way `task` says it
+  // should? Compared by meaning, not by string, so Google re-formatting a
+  // rule can never look like a change (and trigger an endless re-push).
+  function recurrenceMatches(event, task) {
+    const have = Array.isArray(event?.recurrence) ? event.recurrence : [];
+    const want = recurrenceFor(task);
+    if (!want) return have.length === 0;
+    if (!have.length) return false;
+    const ds = eventStartDs(event);
+    if (ds !== task.date) return false;
+    const a = nativeFromRecurrence(task.date, want), b = nativeFromRecurrence(ds, have);
+    return a.ok && b.ok && String(a.recur) === String(b.recur) && sameUntil(a.recurUntil, b.recurUntil, b.untilFuzzy) && (a.anchor || 0) === (b.anchor || 0) && (a.skips || []).join() === (b.skips || []).join();
+  }
+  // End Repeat dates equal -- or, for a rule whose UNTIL is a UTC moment
+  // written on a device in another time zone, at most a day apart.
+  function sameUntil(x, y, fuzzy) {
+    if ((x || "") === (y || "")) return true;
+    if (!fuzzy || !x || !y) return false;
+    return Math.abs(new Date(x + "T00:00:00") - new Date(y + "T00:00:00")) <= 1.5 * 864e5;
+  }
+  // Was the series' own first occurrence -- the task's current date --
+  // deleted in Google ("Delete > This event")? That is TaskIt's "cancel
+  // this one". `exceptions` are the instance-level overrides pullAll
+  // collected for this event.
+  function firstOccurrenceDeleted(event, exceptions) {
+    if (!Array.isArray(event?.recurrence) || !event.recurrence.length || !Array.isArray(exceptions)) return false;
+    const st = event.start || {};
+    return exceptions.some(x => {
+      if (x.status !== "cancelled" || !x.originalStartTime) return false;
+      const o = x.originalStartTime;
+      if (st.date) return o.date === st.date;
+      if (st.dateTime && o.dateTime) return new Date(o.dateTime).getTime() === new Date(st.dateTime).getTime();
+      return false;
+    });
+  }
+  // Yearly series that count up ("birthday 30", "31", ...): a repeating
+  // event can only carry one title, so each of the next few years gets its
+  // own correctly numbered title as a per-occurrence override. Re-run on
+  // every push of the series, so a rename (or removing the number) is
+  // reflected in those years too. Best effort: a failure here never fails
+  // the push itself.
+  async function syncAnnualInstanceNames(calendarId, eventId, task) {
+    try {
+      const params = new URLSearchParams({ maxResults: String(ANNUAL_NAME_HORIZON), showDeleted: "false" });
+      const res = await apiFetch(`/calendars/${enc(calendarId)}/events/${enc(eventId)}/instances?${params}`);
+      for (const inst of res?.items || []) {
+        if (inst.status === "cancelled") continue;
+        const o = inst.originalStartTime || inst.start || {};
+        const ds = o.date || (o.dateTime ? localDs(new Date(o.dateTime)) : "");
+        if (!ds) continue;
+        const want = String(recurNameOn(task, ds) || "").slice(0, 1000);
+        if ((inst.summary || "") === want) continue;
+        await apiFetch(`/calendars/${enc(calendarId)}/events/${enc(inst.id)}`, {
+          method: "PATCH", body: JSON.stringify({ summary: want })
+        }).catch(() => {});
+      }
+    } catch { /* names of future years are cosmetic -- never fail the push over them */ }
+  }
+
   function taskSignature(t) {
+    const rr = recurrenceFor(t);
     return JSON.stringify([
       String(t.name || ""), String(t.note || ""), String(t.type || ""),
       String(t.date || ""), normTime(t.time) || "",
@@ -20968,7 +21259,12 @@ const GCal = (() => {
       t.recur == null ? "" : String(t.recur),
       t.recurUntil || "",
       resolveReminderMinutes(t),
-      t.done ? 1 : 0, t.cancelled ? 1 : 0
+      t.done ? 1 : 0, t.cancelled ? 1 : 0,
+      // Only present for a task that is pushed as a repeating event, so
+      // every other task's signature is exactly what it was before -- and
+      // every already-synced repeating task differs once, which is what
+      // upgrades it from a single event to a repeating one on the next push.
+      ...(rr ? [rr.join("\n")] : [])
     ]);
   }
 
@@ -20987,6 +21283,11 @@ const GCal = (() => {
           type: String(task.type || ""),
           recur: task.recur == null ? "" : String(task.recur),
           recurUntil: task.recurUntil || "",
+          recurDay: task.recurDay != null && task.recurDay !== "" ? String(task.recurDay) : "",
+          // "1" when this event was written as a repeating Google event --
+          // lets a pull tell "someone set it to Does not repeat in Google"
+          // apart from an older event that simply predates repeating events.
+          rrule: recurrenceFor(task) ? "1" : "0",
           seriesId: String(task.seriesId || ""),
           done: task.done ? "1" : "0",
           cancelled: task.cancelled ? "1" : "0",
@@ -21027,6 +21328,10 @@ const GCal = (() => {
     // transparent/free forever, since a PATCH that doesn't mention the field
     // leaves Google's existing value untouched.
     body.transparency = (isHolidayTask(task) || isDateless(task)) ? "transparent" : "opaque";
+    // Explicit either way too: [] turns a series that just got completed,
+    // cancelled or un-repeated back into a single event (a PATCH that left
+    // the field out would keep it repeating forever).
+    body.recurrence = recurrenceFor(task) || [];
     // Google's PATCH endpoint merges the *sub-fields* of start/end rather than
     // replacing the object wholesale: if an event was previously all-day (start =
     // {date}) and we PATCH in start = {dateTime, timeZone} without also clearing
@@ -21103,6 +21408,39 @@ const GCal = (() => {
     };
     if (p.seriesId) patch.seriesId = p.seriesId;
     if (p.recurUntil) patch.recurUntil = p.recurUntil;
+    if (p.recurDay) patch.recurDay = parseInt(p.recurDay, 10) || null;
+    // The repeat itself, read from the real Google rule whenever there is
+    // one -- so "Edit > All events > Repeat" in Google Calendar changes the
+    // TaskIt series too. A rule TaskIt can't hold (several weekdays, "last
+    // Friday", ...) leaves the TaskIt values alone; the pull then flags the
+    // event for repair and the push puts TaskIt's own rule back.
+    const recurrence = Array.isArray(event.recurrence) ? event.recurrence : [];
+    if (p.noDate !== "1" && recurrence.length) {
+      const nat = nativeFromRecurrence(eventStartDs(event), recurrence);
+      if (nat.ok) {
+        patch.recur = nat.recur;
+        patch.recurSkip = nat.skips && nat.skips.length ? nat.skips : null;
+        // The exact End Repeat date TaskIt wrote wins over a UTC UNTIL read
+        // back in a different time zone (see sameUntil).
+        patch.recurUntil = p.recurUntil && sameUntil(p.recurUntil, nat.recurUntil, nat.untilFuzzy) ? p.recurUntil : nat.recurUntil;
+        patch.recurDay = nat.anchor;
+      }
+    } else if (p.rrule === "1" && p.done !== "1" && p.cancelled !== "1") {
+      // Was repeating, and Google now has it as a single event: the repeat
+      // was switched off there.
+      patch.recur = null;
+      patch.recurUntil = null;
+      patch.recurDay = null;
+      patch.recurSkip = null;
+    }
+    if (!patch.recurUntil) patch.recurUntil = null;
+    if (patch.recurDay === undefined) patch.recurDay = null;
+    if (patch.recurSkip === undefined) patch.recurSkip = null;
+    // Same rule the task form applies: the plain Schedule type can't carry a
+    // repeat, and the Repeated type can't exist without one.
+    const repeats = !!patch.recur;
+    if (repeats && patch.type === "regular") patch.type = "repeated";
+    else if (!repeats && patch.type === "repeated") patch.type = "regular";
     if (p.hebcal === "1") patch.hebcal = true;
     if (p.intl === "1") patch.intl = true;
     if (p.nameEn) patch.nameEn = p.nameEn;
@@ -21171,9 +21509,31 @@ const GCal = (() => {
     const calendarId = await ensureCalendarId(task);
     const eventId = eventIdForTask(task.id);
     const body = taskToEventBody(task);
-    const doUpdate = () => apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, {
-      method: "PATCH", body: JSON.stringify({ ...body, status: "confirmed" })
-    });
+    const clearingRepeat = !body.recurrence.length;
+    // Full replace, for the one case a PATCH may not do: turning a repeating
+    // event back into a single one. Unset (null) sub-fields are dropped, since
+    // a full replace takes absence as "not set".
+    const doReplace = () => {
+      const clean = o => o && Object.fromEntries(Object.entries(o).filter(([, v]) => v != null));
+      const full = { ...body, start: clean(body.start), end: clean(body.end), status: "confirmed" };
+      if (full.description == null) delete full.description;
+      return apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, { method: "PUT", body: JSON.stringify(full) });
+    };
+    const doUpdate = async () => {
+      let ev;
+      try {
+        ev = await apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, {
+          method: "PATCH", body: JSON.stringify({ ...body, status: "confirmed" })
+        });
+      } catch (e) {
+        if (!(clearingRepeat && e.status === 400)) throw e;
+        return doReplace();
+      }
+      // Still repeating after a PATCH that should have ended the repeat (a
+      // finished occurrence must never keep spawning dates in Google).
+      if (clearingRepeat && ev && Array.isArray(ev.recurrence) && ev.recurrence.length) return doReplace();
+      return ev;
+    };
     const doInsert = () => apiFetch(`/calendars/${enc(calendarId)}/events`, {
       method: "POST", body: JSON.stringify({ ...body, id: eventId })
     });
@@ -21201,6 +21561,7 @@ const GCal = (() => {
     if (knownLoc && knownLoc !== calendarId) {
       await apiFetch(`/calendars/${enc(knownLoc)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
     }
+    if (body.recurrence.length && task.recur === "year") await syncAnnualInstanceNames(calendarId, eventId, task);
     return { googleEventId: event.id, calendarId, sig: taskSignature(task) };
   }
 
@@ -21239,6 +21600,13 @@ const GCal = (() => {
   async function pullAll() {
     const raw = (await listAllRaw(true));
     const events = [];
+    // Per-occurrence overrides of our repeating events ("calendarId::eventId"
+    // -> [{ status, originalStartTime }]): one date moved or deleted in
+    // Google, or our own counted-up yearly titles. They are never tasks of
+    // their own -- they carry the series' taskitId, so letting them through
+    // would make one occurrence overwrite the whole series (and a repair
+    // would "dedupe" them away, deleting real dates).
+    const exceptions = {};
     let complete = true;
     for (const { id: calendarId, type } of raw) {
       let pageToken = null, guard = 0;
@@ -21251,6 +21619,11 @@ const GCal = (() => {
           if (pageToken) params.set("pageToken", pageToken);
           const res = await apiFetch(`/calendars/${enc(calendarId)}/events?${params}`);
           for (const ev of res?.items || []) {
+            if (ev.recurringEventId) {
+              const k = calendarId + "::" + ev.recurringEventId;
+              (exceptions[k] = exceptions[k] || []).push({ status: ev.status, originalStartTime: ev.originalStartTime || null });
+              continue;
+            }
             if (ev.status === "cancelled") continue;
             if (!ev.extendedProperties?.private?.taskitId) continue;
             events.push({ calendarId, type, event: ev });
@@ -21265,7 +21638,7 @@ const GCal = (() => {
         complete = false; // never let a partial read look like "these tasks are gone"
       }
     }
-    return { events, calendars: raw.length, complete };
+    return { events, calendars: raw.length, complete, exceptions };
   }
 
   // ── Repair ────────────────────────────────────────────────────────────────
@@ -21283,6 +21656,10 @@ const GCal = (() => {
     const byTid = {};
     for (const rec of events) {
       const tid = rec.event.extendedProperties.private.taskitId;
+      // Not a duplicate: the tail of a repeating event split in Google with
+      // "This and following events". The next regular pull turns it into a
+      // task of its own (see gcalPullNow); deleting it here would lose it.
+      if (rec.event.id !== eventIdForTask(tid) && Array.isArray(rec.event.recurrence) && rec.event.recurrence.length && rec.event.extendedProperties.private.rrule === "1") continue;
       (byTid[tid] = byTid[tid] || []).push(rec);
     }
     let removed = 0, migrated = 0;
@@ -21304,6 +21681,8 @@ const GCal = (() => {
           description: src.event.description,
           start: src.event.start,
           end: src.event.end,
+          // A repeating event stays repeating when it's moved to its home calendar.
+          ...(Array.isArray(src.event.recurrence) && src.event.recurrence.length ? { recurrence: src.event.recurrence } : {}),
           extendedProperties: src.event.extendedProperties
         };
         try {
@@ -21633,6 +22012,7 @@ const GCal = (() => {
     taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds,
     listForeignCalendars, pullForeign, patchForeignEvent, deleteForeignEvent, foreignTaskId,
     isHolidayTask, eventMatchesTask,
+    recurrenceFor, recurrenceMatches, firstOccurrenceDeleted,
     // Custom Client ID, for anyone self-hosting this app on an origin the
     // built-in one isn't registered for (see the in-app Google setup guide).
     getClientId: () => CLIENT_ID,
@@ -22434,6 +22814,11 @@ function App() {
   }, []);
   const runShareAction = async options => {
     if (!shareActionRef.current) return;
+    // Read the app's own theme now, while it's still the live one, so the
+    // loading overlay that's about to appear is this theme from its very
+    // first frame (the capture itself refreshes this again, but only once
+    // it's underway).
+    refreshBaseThemeColors();
     setShareBusy(true);
     try {
       await shareActionRef.current(options);
@@ -22488,6 +22873,9 @@ function App() {
   };
   const shareSelectedTasksImage = async options => {
     if (bulkSharing || selectedIds.size === 0) return;
+    // Same as runShareAction: the loading overlay about to appear takes its
+    // colors from the app's own theme, read here while it's still live.
+    refreshBaseThemeColors();
     setBulkShareOptions(options || null);
     setBulkSharing(true);
     try {
@@ -22521,8 +22909,7 @@ function App() {
         top: 0,
         behavior: "smooth"
       });
-      if (nextView === "list-type" && collapseAllTypesRef.current) collapseAllTypesRef.current();
-      if (nextView === "all-tasks" && allTasksTab === "type" && collapseAllTypesRef.current) collapseAllTypesRef.current();
+      if (nextView === "all-tasks" && collapseAllTypesRef.current) collapseAllTypesRef.current();
       if (nextView === "month" && resetMonthViewRef.current) {
         handleMonthNav(0);
         resetMonthViewRef.current();
@@ -22687,12 +23074,10 @@ function App() {
     startY: 0,
     pullY: 0
   });
-  const collapseAllTypesRef = useRef(null); // set by ListByType; called when tapping active list-type tab
-  // The list always opens on By Type. Switching to By Date still works for
-  // the rest of the session; it's just no longer remembered across launches.
-  const [allTasksTab, setAllTasksTab] = useState("type");
-  const setAllTasksTabAndSave = setAllTasksTab;
-  // The old remembered tab would otherwise sit in storage forever unused.
+  const collapseAllTypesRef = useRef(null); // set by ListByType; called when tapping the active List tab
+  // The list is grouped by type, and only by type. The old by-date grouping
+  // (and the tab that remembered which of the two was last used) is gone, so
+  // clear what it left in storage.
   useEffect(() => {
     try {
       localStorage.removeItem("taskflow_alltasks_tab");
@@ -22702,7 +23087,7 @@ function App() {
   // right now, and the set of types the dialog's type-filter can offer --
   // every distinct type among pending tasks, excluding synced/holiday
   // entries the person doesn't manage directly.
-  const shareDialogSurface = view === "home" ? "upnext" : view === "month" ? "month" : view === "week" ? "week" : view === "all-tasks" && allTasksTab === "type" ? "bytype" : null;
+  const shareDialogSurface = view === "home" ? "upnext" : view === "month" ? "month" : view === "week" ? "week" : view === "all-tasks" ? "bytype" : null;
   // Which types exist is memoized; their colors are not -- those depend on
   // the current theme, and a memo keyed only on tasks kept the old theme's.
   const shareAvailableTypeKeys = React.useMemo(() => {
@@ -22879,8 +23264,38 @@ function App() {
     gcalSyncing.current = true;
     setGcalPulling(true);
     try {
-      const { events, complete } = await GCal.pullAll();
+      const { events: allEvents, complete, exceptions = {} } = await GCal.pullAll();
+      // Exactly one event per task. The task's own (canonical) event always
+      // wins over any other copy carrying the same taskitId. One kind of copy
+      // is special: "Edit > This and following events" on a repeating event
+      // in Google splits it in two -- the original keeps the dates up to the
+      // split (it comes back with an End Repeat), and the rest becomes a new
+      // repeating event that still carries the original's taskitId. That tail
+      // is taken in as a series of its own (splitTails, below) instead of
+      // being allowed to overwrite the original.
+      const chosenByTid = new Map();
+      const splitTails = [];
+      for (const rec of allEvents) {
+        const tid = rec.event.extendedProperties?.private?.taskitId;
+        if (!tid) continue;
+        const isCanon = rec.event.id === GCal.eventIdForTask(tid);
+        if (!isCanon && Array.isArray(rec.event.recurrence) && rec.event.recurrence.length && rec.event.extendedProperties.private.rrule === "1") {
+          splitTails.push({ ...rec, tid });
+          continue;
+        }
+        const prev = chosenByTid.get(tid);
+        if (!prev || isCanon || prev.event.id !== GCal.eventIdForTask(tid)) chosenByTid.set(tid, rec);
+      }
+      const events = [...chosenByTid.values()];
+      const splitIdOf = tail => "gs" + tail.event.id;
+      // "Delete > This event" on the series' current date in Google = cancel
+      // this occurrence, same as the ✖ in TaskIt (the next one takes over).
+      const firstDeleted = new Set();
+      for (const { event, calendarId } of events) {
+        if (GCal.firstOccurrenceDeleted(event, exceptions[calendarId + "::" + event.id])) firstDeleted.add(event.extendedProperties.private.taskitId);
+      }
       const remote = {};
+      const realRemote = {}; // the signature Google really holds, never NEEDS_REPAIR
       const byId = {};
       const loc = {};
       // Looked up by id so a holiday event's actual fields can be checked
@@ -22920,9 +23335,23 @@ function App() {
         // (it's not a field the Calendar UI exposes), so it alone would call a
         // drifted event "in sync" forever. Recording a signature that can never
         // match forces the push effect below to restore it instead.
-        remote[tid] = (localTask && GCal.isHolidayTask(localTask) && !GCal.eventMatchesTask(event, localTask))
-          ? NEEDS_REPAIR
-          : (GCal.remoteSigOf(event) || "");
+        let needsRepair = !!(localTask && GCal.isHolidayTask(localTask) && !GCal.eventMatchesTask(event, localTask));
+        // Repeating events: Google's rule has to say exactly what the task
+        // says. When Google's copy is the newer one (someone edited it there),
+        // whatever of it TaskIt can hold is adopted by the merge below; a rule
+        // TaskIt can't express -- or a finished occurrence still repeating --
+        // is flagged so the push puts the right one back. (When the local
+        // task is newer, its pending push already does that.)
+        if (!needsRepair && !(localTask && GCal.isHolidayTask(localTask))) {
+          const pt = GCal.eventToTaskPatch(event);
+          if (!rawLocal || !rawLocal.updated || pt.updated >= rawLocal.updated) {
+            const guess = rawLocal ? { ...rawLocal, ...pt } : { id: tid, ...pt };
+            const hasRule = Array.isArray(event.recurrence) && event.recurrence.length > 0;
+            if ((hasRule || GCal.recurrenceFor(guess)) && !GCal.recurrenceMatches(event, guess)) needsRepair = true;
+          }
+        }
+        realRemote[tid] = GCal.remoteSigOf(event) || "";
+        remote[tid] = needsRepair ? NEEDS_REPAIR : realRemote[tid];
       }
       const hadBefore = gcalRemote.current;
       gcalRemote.current = remote;
@@ -22958,7 +23387,8 @@ function App() {
       const offlineConflicts = new Set();
       if (isFirstPull && complete) {
         for (const [tid, baseSig] of offlineTouchedRef.current) {
-          if (remote[tid] !== baseSig) offlineConflicts.add(tid);
+          // Against what Google really holds -- a repair flag is not a remote edit.
+          if ((tid in realRemote ? realRemote[tid] : remote[tid]) !== baseSig) offlineConflicts.add(tid);
         }
         // A deletion made offline whose base no longer matches is undone --
         // someone changed that task elsewhere since, so Google's fresh copy
@@ -23010,6 +23440,55 @@ function App() {
             // that base remotely, so Google's fresh copy wins instead.
             next = (next === ts ? [...ts] : next).map(t => t.id === tid ? { ...t, ...patch } : t);
           }
+        }
+        // Occurrences deleted in Google on the series' own date: cancel that
+        // occurrence here and let the series move on to its next date, exactly
+        // like cancelling it in TaskIt.
+        for (const tid of firstDeleted) {
+          if (archivedIds.has(tid) || tombstones.has(tid) || offlineTouchedIds.has(tid)) continue;
+          const cur = next.find(t => t.id === tid);
+          const ev = byId[tid];
+          if (!cur || !ev || !isPending(cur) || !isRecurring(cur) || !cur.date || cur.date !== GCal.eventToTaskPatch(ev).date) continue;
+          const cancelledOcc = { ...cur, cancelled: true, done: false, updated: Date.now() };
+          next = spawnNext(cur, (next === ts ? [...ts] : next).map(t => t.id === tid ? cancelledOcc : t));
+        }
+        // The tail of a series split in Google ("This and following events")
+        // becomes its own repeating task, in the same series.
+        for (const tail of splitTails) {
+          const sid2 = splitIdOf(tail);
+          if (archivedIds.has(sid2) || tombstones.has(sid2) || next.some(t => t.id === sid2)) continue;
+          const parent = next.find(t => t.id === tail.tid);
+          const patch = GCal.eventToTaskPatch(tail.event);
+          const createdAt = tail.event.created ? new Date(tail.event.created).getTime() : NaN;
+          next = next === ts ? [...ts] : next;
+          next.push({
+            id: sid2,
+            created: Number.isNaN(createdAt) ? Date.now() : createdAt,
+            ...patch,
+            done: false,
+            cancelled: false,
+            seriesId: parent ? (parent.seriesId || parent.id) : (patch.seriesId || tail.tid)
+          });
+        }
+        // Two devices that completed (or cancelled) the same occurrence each
+        // spawned their own copy of the next one, so the series ends up with
+        // two live occupants of the same date -- which in Google Calendar is
+        // the same future dates twice over. Keep one, by a rule every device
+        // reaches the same answer with (lowest id), and let the push effect
+        // clear the other one's event.
+        {
+          const liveByKey = new Map();
+          const dupes = new Set();
+          for (const t of next) {
+            if (!t.seriesId || !t.date || !isPending(t) || !isRecurring(t) || archivedIds.has(t.id)) continue;
+            const k = t.seriesId + "|" + t.date + "|" + String(t.recur);
+            const rival = liveByKey.get(k);
+            if (!rival) { liveByKey.set(k, t); continue; }
+            const loser = String(t.id) < String(rival.id) ? rival : t;
+            if (loser === rival) liveByKey.set(k, t);
+            dupes.add(loser.id);
+          }
+          if (dupes.size) next = (next === ts ? [...ts] : next).filter(t => !dupes.has(t.id));
         }
         // A task that Google no longer has was deleted on another device.
         // Only a complete pull may conclude this; a partial read never deletes locally.
@@ -23082,6 +23561,12 @@ function App() {
         return next;
       });
       if (legacy) legacyRescueRef.current = null;
+      // A split-off tail is removed from Google only once the task made from
+      // it has its own event there -- never before, so nothing is lost if this
+      // device closes before that push lands.
+      for (const tail of splitTails) {
+        if (byId[splitIdOf(tail)]) gcalEnqueue(() => GCal.deleteForeignEvent(tail.calendarId, tail.event.id)).catch(() => {});
+      }
 
       // Carry out the deletions that were waiting for Google.
       for (const tid of [...outboxRef.current.deleted]) {
@@ -24121,14 +24606,24 @@ function App() {
         cancelled: !!editTask.cancelled,
         ...(convertingFromGoogle ? { source: undefined, googleCalendarId: undefined, googleEventId: undefined, googleCalendarName: undefined, googleShared: undefined } : {})
       });
-      if (!archivedHandled) setTasks(ts => ts.map(t => t.id === editTask.id ? {
+      // Editing the series (its date or its repeat) starts it afresh from the
+      // new settings: a remembered month-end anchor day (recurDay) from
+      // before would otherwise keep steering the new series' dates, and the
+      // skipped dates have to move to their new places in the series.
+      const freshAnchor = (prev, next) => {
+        const changed = prev.date !== next.date || String(prev.recur ?? "") !== String(next.recur ?? "");
+        const c = remapRecurSkips(prev, next);
+        if (prev.recurDay != null && changed) delete c.recurDay;
+        return c;
+      };
+      if (!archivedHandled) setTasks(ts => ts.map(t => t.id === editTask.id ? freshAnchor(t, {
         ...t,
         ...form,
         done: t.done || false,
         cancelled: t.cancelled || false,
         updated: now,
         ...(convertingFromGoogle ? { source: undefined, googleCalendarId: undefined, googleEventId: undefined, googleCalendarName: undefined, googleShared: undefined } : {})
-      } : t));
+      }) : t));
     } else {
       const newTask = {
         id: uid(),
@@ -24156,39 +24651,30 @@ function App() {
   // Spawn next recurring task when completing
   // For yearly tasks with "day"/"יום"/"birthday" in name + a standalone number:
   // increment that number in the spawned task's name
-  const bumpAnnualNumber = name => {
-    // Trigger words: יום, day (any case), birthday
-    // Note: \b doesn't work with Hebrew so we use lookaround with spaces/start/end
-    const triggerRe = /(^|[\s])([Dd]ay|[Bb]irthday|יום)([\s]|$)/;
-    if (!triggerRe.test(name)) return name;
-    // Find a standalone integer (surrounded by spaces or string boundaries) and increment it
-    return name.replace(/(^|[\s])(\d+)([\s]|$)/, (match, pre, n, post) => pre + String(parseInt(n, 10) + 1) + post);
-  };
-  const spawnNext = (task, tasks) => {
-    if (!isRecurring(task) || !task.recur) return tasks;
+  const bumpAnnualNumber = name => bumpAnnualName(name, 1);
+  // What the next occurrence of a series looks like (or null when the series
+  // is over). One definition, shared by completing, cancelling, the overdue
+  // sweep and the "undo" check in restoreOccurrence below.
+  const nextOccurrenceOf = task => {
+    if (!isRecurring(task) || !task.recur) return null;
     // Use task.date if set, otherwise today (for dateless recurring tasks)
     const baseDs = task.date || todayStr();
-    const nextDate = new Date(baseDs + "T00:00:00");
-    if (task.recur === "month") {
-      nextDate.setMonth(nextDate.getMonth() + 1);
-    } else if (task.recur === "year") {
-      nextDate.setFullYear(nextDate.getFullYear() + 1);
-    } else {
-      nextDate.setDate(nextDate.getDate() + task.recur);
-    }
-    const nextDs = localDs(nextDate);
-    // End Repeat: once the next occurrence would land past it, the series
-    // is simply over -- nothing more spawns from here.
-    if (task.recurUntil && nextDs > task.recurUntil) return tasks;
-    const sid = task.seriesId || task.id;
-    if (tasks.some(t => (t.seriesId === sid || t.id === sid) && t.date === nextDs && !t.done && !t.cancelled)) return tasks;
-    const nextName = task.recur === "year" ? bumpAnnualNumber(task.name) : task.name;
-    const next = {
-      id: uid(),
-      name: nextName,
+    const anchor = recurAnchorDay({ ...task, date: baseDs });
+    const skips = recurSkipSet(task);
+    // Skipped dates are jumped over, and End Repeat ends the series: either
+    // way, once there's no date left the series is simply over.
+    const nextDs = nextRecurDate(new Date(baseDs + "T00:00:00"), task, anchor, skips);
+    if (!nextDs) return null;
+    // Dates already behind the new occurrence can never come up again.
+    const skipsAhead = [...skips].filter(ds => ds > nextDs);
+    return {
+      name: task.recur === "year" ? bumpAnnualNumber(task.name) : task.name,
       type: task.type,
       recur: task.recur,
       recurUntil: task.recurUntil || null,
+      // Remember the original day of a month-end series (see recurAnchorDay)
+      recurDay: anchor && anchor > 28 ? anchor : null,
+      recurSkip: skipsAhead.length ? skipsAhead : null,
       date: nextDs,
       time: task.time || "",
       length: task.length != null ? task.length : null,
@@ -24197,12 +24683,114 @@ function App() {
       // Carry the series' own reminder choice forward: completing or
       // cancelling one occurrence used to silently reset the next one back
       // to the automatic reminder.
-      reminderMinutes: task.reminderMinutes != null && task.reminderMinutes !== "" ? task.reminderMinutes : null,
+      reminderMinutes: task.reminderMinutes != null && task.reminderMinutes !== "" ? task.reminderMinutes : null
+    };
+  };
+  const seriesKey = t => t.seriesId || t.id;
+  // Moving a repeating task to another date restarts its series from there,
+  // so a remembered month-end anchor (recurDay, see recurAnchorDay) from the
+  // old date must go -- otherwise a series dragged from the 31st to the 10th
+  // would still be pulled back towards month-ends.
+  // Keeps the skipped dates in step with a date (or repeat) change: each one
+  // holds its place in the series, so a series dragged a week later has its
+  // skipped dates a week later too, and a monthly series moved to another day
+  // of the month has them on that day. A skipped date that isn't on the old
+  // grid at all is dropped.
+  const remapRecurSkips = (prev, next) => {
+    const skips = recurSkipList(prev);
+    const out = { ...next };
+    if (!skips.length) return out;
+    if (!next.recur || !next.date || !prev.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(next.date)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(prev.date))) {
+      delete out.recurSkip;
+      return out;
+    }
+    if (prev.date === next.date && String(prev.recur ?? "") === String(next.recur ?? "")) return out;
+    const want = new Set(skips);
+    const last = skips[skips.length - 1];
+    // Where each skipped date sat in the old series...
+    const slots = new Set();
+    let d = new Date(prev.date + "T00:00:00");
+    const prevAnchor = recurAnchorDay(prev);
+    for (let i = 0; i < 2000 && localDs(d) <= last; i++) {
+      if (want.has(localDs(d))) slots.add(i);
+      d = stepRecurDate(d, prev.recur, prevAnchor);
+    }
+    if (!slots.size) { delete out.recurSkip; return out; }
+    // ...is where they sit in the new one.
+    const top = Math.max(...slots);
+    const moved = [];
+    let d2 = new Date(next.date + "T00:00:00");
+    const nextAnchor = recurAnchorDay(out);
+    for (let i = 0; i <= top && i < 2000; i++) {
+      if (slots.has(i)) moved.push(localDs(d2));
+      d2 = stepRecurDate(d2, next.recur, nextAnchor);
+    }
+    const kept = moved.filter(ds => ds > String(next.date) && (!next.recurUntil || ds <= next.recurUntil)).slice(0, MAX_RECUR_SKIPS);
+    if (kept.length) out.recurSkip = kept; else delete out.recurSkip;
+    return out;
+  };
+  // A repeating task moved to another date restarts its series there, so its
+  // month-end anchor belongs to the old date and goes; the skipped dates come
+  // along, keeping their place.
+  const clearAnchor = (patch, prev) => remapRecurSkips(prev || patch, { ...patch, recurDay: null });
+  // Switching a task's type between Repeated and anything else, by drag or by
+  // the type picker. Leaving Repeated drops the whole repeat (interval, End
+  // Repeat and anchor together -- dropping only the interval used to leave
+  // an End Repeat date behind that came back the moment the task was made
+  // repeating again); entering it seeds the weekly default.
+  const typePatchForRepeat = (task, newType) => {
+    if (newType === "repeated") return task.recur ? {} : { recur: 7 };
+    if (!task.recur && !task.recurUntil && task.recurDay == null && !recurSkipList(task).length) return {};
+    return { recur: null, recurUntil: null, recurDay: null, recurSkip: null };
+  };
+  const spawnNext = (task, tasks) => {
+    const tpl = nextOccurrenceOf(task);
+    if (!tpl) return tasks;
+    const sid = seriesKey(task);
+    // The series already continues from here (a pending occurrence on or
+    // after the next date exists) -- spawning another would leave two
+    // live copies of the same series, which in Google Calendar means every
+    // future date shows up twice.
+    if (tasks.some(t => t.id !== task.id && seriesKey(t) === sid && isPending(t) && t.date && t.date >= tpl.date)) return tasks;
+    const next = {
+      id: uid(),
+      ...tpl,
       done: false,
       cancelled: false,
       created: Date.now()
     };
+    if (next.recurDay == null) delete next.recurDay;
+    if (next.recurSkip == null) delete next.recurSkip;
     return [...tasks, next];
+  };
+  // Un-completing / un-cancelling one occurrence of a repeating series.
+  // Completing it had already spawned the next occurrence, so simply
+  // flipping the flag back used to leave TWO live copies of the series
+  // (both repeating -- every future date doubled, in the app's look-ahead
+  // and as two repeating events in Google Calendar). Now:
+  //  - if the next occurrence is still exactly what completing created
+  //    (untouched), this is an undo: that copy is removed and the restored
+  //    one is the series again;
+  //  - otherwise the series has moved on (edited, or further occurrences
+  //    were done since), so the restored one comes back as a single,
+  //    non-repeating task and the series itself stays as it is.
+  const restoreOccurrence = (restored, ts) => {
+    const base = ts.map(t => t.id === restored.id ? restored : t);
+    if (!isRecurring(restored) || !restored.date) return base;
+    const sid = seriesKey(restored);
+    const later = base.filter(t => t.id !== restored.id && seriesKey(t) === sid && isPending(t) && isRecurring(t));
+    if (!later.length) return base;
+    const tpl = nextOccurrenceOf(restored);
+    const same = (a, b) => (a == null || a === "" ? null : a) === (b == null || b === "" ? null : b);
+    const pristine = tpl && later.length === 1 && ["name", "type", "recur", "recurUntil", "date", "time", "length", "note", "reminderMinutes"].every(k => same(String(later[0][k] ?? ""), String(tpl[k] ?? ""))) && recurSkipList(later[0]).join() === recurSkipList(tpl).join();
+    if (pristine) return base.filter(t => t.id !== later[0].id);
+    return base.map(t => {
+      if (t.id !== restored.id) return t;
+      const single = { ...t, recur: null, recurUntil: null, type: t.type === "repeated" ? "regular" : t.type };
+      delete single.recurDay;
+      delete single.recurSkip;
+      return single;
+    });
   };
   const handleToggle = id => {
     setTasks(ts => {
@@ -24212,12 +24800,12 @@ function App() {
       if (task.done) {
         // A restored task keeps its date (and with it, its reminder)
         const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
-        return ts.map(t => t.id === id ? {
+        return restoreOccurrence({
           ...task,
           done: false,
           updated: _now,
           ...dateRestore
-        } : t);
+        }, ts);
       } else {
         const dateUpdate = task.date ? {} : {
           date: todayStr(),
@@ -24313,7 +24901,11 @@ function App() {
   // (e.g. bulk-retyping a task that's already that type).
   const bulkPatchFor = (kind, value, task) => {
     const now = Date.now();
-    if (kind === "date") return { date: value, _autoDate: undefined, updated: now };
+    // Same as a drag or an edit: a repeating task moved to another date
+    // restarts its series there, so its month-end anchor goes with the old date.
+    // The skipped dates move with it; recurDay belongs to the old date (see
+    // clearAnchor / remapRecurSkips, applied where the patch is merged).
+    if (kind === "date") return { date: value, _autoDate: undefined, recurDay: null, updated: now };
     if (kind === "time") {
       // A time needs a date to anchor it. Unlike the single-task edit modal
       // (which quietly anchors a newly-timed dateless task to today), bulk
@@ -24342,8 +24934,7 @@ function App() {
         updated: now,
         ...(convertingFromGoogle ? { source: undefined, googleCalendarId: undefined, googleEventId: undefined, googleCalendarName: undefined, googleShared: undefined } : {})
       };
-      if (value === "repeated" && !task.recur) patch.recur = 7;
-      if (value !== "repeated" && task.recur) patch.recur = null;
+      Object.assign(patch, typePatchForRepeat(task, value));
       return patch;
     }
     return null;
@@ -24367,7 +24958,7 @@ function App() {
     archiveTasks.forEach(arch => {
       if (!ids.has(arch.id) || isBulkEditLocked(arch)) return;
       const patch = bulkPatchFor(kind, value, arch);
-      if (patch) revived.push({ ...arch, ...patch });
+      if (patch) revived.push(remapRecurSkips(arch, { ...arch, ...patch }));
     });
     if (revived.length) {
       setArchiveTasks(arr => {
@@ -24384,7 +24975,7 @@ function App() {
         if (revivedIds.has(t.id)) return t; // already carries its patch
         if (!ids.has(t.id) || isBulkEditLocked(t)) return t;
         const patch = bulkPatchFor(kind, value, t);
-        return patch ? { ...t, ...patch } : t;
+        return patch ? remapRecurSkips(t, { ...t, ...patch }) : t;
       });
     });
     // Selection is deliberately kept so several actions can be chained.
@@ -24443,6 +25034,7 @@ function App() {
           updated: Date.now()
         };
       }
+      if (wasCancelled) return restoreOccurrence(updatedTask, ts);
       const updated = ts.map(t => t.id === id ? updatedTask : t);
       if (!wasCancelled && isRecurring(task)) {
         const dateUpdate = task.date ? {} : {
@@ -24504,7 +25096,7 @@ function App() {
     if (arch.hebcal || arch.intl || arch.type === "calendar" || arch.googleShared) return true;
     const norm = v => v == null || v === false ? "" : JSON.stringify(v);
     if (Object.keys(patch).every(k => norm(arch[k]) === norm(patch[k]))) return true; // nothing changes
-    const revived = { ...arch, ...patch, updated: Date.now() };
+    const revived = remapRecurSkips(arch, { ...arch, ...patch, updated: Date.now() });
     setTasks(ts => ts.some(t => t.id === id) ? ts : [...ts, revived]);
     setArchiveTasks(arr => {
       const updated = (arr || []).filter(t => t.id !== id);
@@ -24526,13 +25118,13 @@ function App() {
       // timeless, and a duration with no time means nothing (the edit modal
       // enforces the same rule), so drop it rather than leave orphaned state
       // that would later make the modal invent a time for it.
-      return ts.map(t => t.id === id ? {
+      return ts.map(t => t.id === id ? clearAnchor({
         ...t,
         date: newDate,
         time: newTime || "",
         ...(newTime ? {} : { length: null }),
         updated: Date.now()
-      } : t);
+      }, t) : t);
     });
   };
   // Drag-to-move in the list/month/up-next views: change only the date, keeping
@@ -24544,11 +25136,11 @@ function App() {
       if (!task) return ts;
       if (task.hebcal || task.intl || task.type === "calendar" || task.googleShared) return ts;
       if (task.date === newDate) return ts;
-      return ts.map(t => t.id === id ? {
+      return ts.map(t => t.id === id ? clearAnchor({
         ...t,
         date: newDate,
         updated: Date.now()
-      } : t);
+      }, t) : t);
     });
   };
   // Drag-to-retype in the by-type view.
@@ -24581,8 +25173,7 @@ function App() {
         updated: Date.now(),
         ...(convertingFromGoogle ? { source: undefined, googleCalendarId: undefined, googleEventId: undefined, googleCalendarName: undefined, googleShared: undefined } : {})
       };
-      if (newType === "repeated" && !task.recur) patch.recur = 7;
-      if (newType !== "repeated" && task.recur) patch.recur = null;
+      Object.assign(patch, typePatchForRepeat(task, newType));
       return ts.map(t => t.id === id ? {
         ...t,
         ...patch
@@ -24603,7 +25194,7 @@ function App() {
           updated: Date.now(),
           ...dateRestore
         };
-        setTasks(ts => [...ts, revived]);
+        setTasks(ts => restoreOccurrence(revived, [...ts.filter(t => t.id !== revived.id), revived]));
         setArchiveTasks(arr => {
           const updated = arr.filter(t => t.id !== task.id);
           _cacheArchiveToLocal(updated);
@@ -24634,12 +25225,12 @@ function App() {
       if (action === "uncomplete") {
         // A restored task keeps its date (and with it, its reminder)
         const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
-        return ts.map(t => t.id === task.id ? {
+        return restoreOccurrence({
           ...task,
           done: false,
           updated: _now,
           ...dateRestore
-        } : t);
+        }, ts);
       }
       if (action === "cancel") {
         const upd = ts.map(t => t.id === task.id ? {
@@ -24658,12 +25249,12 @@ function App() {
       if (action === "uncancel") {
         // A restored task keeps its date (and with it, its reminder)
         const dateRestore = { _autoDate: undefined }; // a restored task keeps its date
-        return ts.map(t => t.id === task.id ? {
+        return restoreOccurrence({
           ...task,
           cancelled: false,
           updated: _now,
           ...dateRestore
-        } : t);
+        }, ts);
       }
       return ts;
     });
@@ -24727,20 +25318,23 @@ function App() {
     if (prefLookahead) {
       for (const t of tasks) {
         if (!t.date || !isRecurring(t) || !isPending(t)) continue;
-        const interval = t.recur === "month" || t.recur === "year" ? null : (parseInt(t.recur) || 1) * 864e5;
+        const anchor = recurAnchorDay(t);
+        const skips = recurSkipSet(t);
+        // End Repeat: nothing past it is an occurrence.
+        const endCap = t.recurUntil && new Date(t.recurUntil + "T23:59:59") < weekEnd ? new Date(t.recurUntil + "T23:59:59") : weekEnd;
         let d = new Date(t.date + "T00:00:00");
         // Advance past the stored occurrence (already counted above or overdue)
-        if (t.recur === "month") d = addMonthsClamped(d, 1);else if (t.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
+        d = stepRecurDate(d, t.recur, anchor);
         let itr = 0;
-        while (d <= weekEnd && itr < 500) {
-          if (d >= TODAY) {
+        while (d <= endCap && itr < 500) {
+          if (d >= TODAY && !skips.has(localDs(d))) {
             // Check no stored task in this series already occupies this date
             const ds = localDs(d);
             const sid = t.seriesId || t.id;
             const alreadyStored = tasks.some(st => (st.seriesId === sid || st.id === sid) && st.date === ds);
             if (!alreadyStored) count++;
           }
-          if (t.recur === "month") d = addMonthsClamped(d, 1);else if (t.recur === "year") d = addYearsClamped(d, 1);else d = new Date(d.getTime() + interval);
+          d = stepRecurDate(d, t.recur, anchor);
           itr++;
         }
       }
@@ -24963,11 +25557,7 @@ function App() {
     // photo itself was asked for. This effect depends only on `dark` (the
     // real React state), which a forced capture never touches, so it simply
     // never reruns -- and this cache never goes stale -- during one.
-    window.__baseThemeColors = {
-      bg: resolveCssColor("var(--bg)"),
-      blue: resolveCssColor("var(--blue)"),
-      text3: resolveCssColor("var(--text3)")
-    };
+    refreshBaseThemeColors();
   }, [dark]);
   useEffect(() => {
     document.documentElement.dir = lang === "he" ? "rtl" : "ltr";
@@ -26326,39 +26916,13 @@ function App() {
     onCancel: handleCancelFromList,
     onRename: handleRename,
     newlyAddedIds: newlyAddedIds,
-    onDropDate: handleDropDate,
     onDropType: handleDropType,
-    activeTab: allTasksTab,
-    onTabChange: setAllTasksTabAndSave,
     onShareReady: registerShareAction,
     selectMode: selectMode,
     selectedIds: selectedIds,
     onToggleSelect: toggleTaskSelected,
     onSetSelected: setTasksSelected,
     onQuickPicksReady: registerBulkQuickPicks,
-    onQuickAddDate: ({
-      name,
-      date
-    }) => {
-      const newTask = {
-        id: uid(),
-        name,
-        type: "regular",
-        date,
-        time: "",
-        recur: null,
-        done: false,
-        cancelled: false,
-        created: Date.now()
-      };
-      setTasks(ts => [...ts, newTask]);
-      setNewlyAddedIds(s => new Set([...s, newTask.id]));
-      setTimeout(() => setNewlyAddedIds(s => {
-        const n = new Set(s);
-        n.delete(newTask.id);
-        return n;
-      }), 900);
-    },
     onQuickAddType: ({
       name,
       type
