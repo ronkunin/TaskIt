@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "15.1";
+const APP_VERSION = "15.2";
 
 const {
   useState,
@@ -1008,7 +1008,7 @@ const isExcludedHebcalTask = task => {
 // through the edit modal and drag handlers, so they stay selectable -- this
 // is intentionally a narrower check than the drag-lock used for reschedule
 // gestures.
-const isSelectLocked = tk => !!(tk && (tk.googleShared || tk._projected));
+const isSelectLocked = tk => !!(tk && (tk.googleShared || tk._projected || tk._leaving));
 // Hebrew/international holidays and the synthetic "calendar" type used for
 // auto-generated holiday entries CAN be selected in bulk-select mode (e.g. to
 // share them alongside other tasks), but can never be modified through the
@@ -1941,6 +1941,54 @@ const recurLabelText = recur => {
   if (isHe) return n === 1 ? "כל יום" : n === 2 ? "כל יומיים" : `כל ${n} ימים`;
   return n === 1 ? "Every day" : `Every ${n} days`;
 };
+// ── Rows leaving a list ────────────────────────────────────────────────────
+// A task that disappears from a list because of a sync -- deleted on another
+// device, or completed or cancelled there -- would otherwise blink out
+// between one render and the next. Each one is kept in the list for a third
+// of a second longer, marked `_leaving`, so its card can collapse out.
+//
+// A task the person resolved on this device is left out of this: its own card
+// already plays the complete/cancel animation and only then tells the list,
+// so ghosting it too would animate the same departure twice. Those ids are
+// recorded as they go (see markSelfAnimatedLeave, called from the card).
+const LEAVE_ANIM_MS = 340;
+const selfAnimatedLeaves = new Map(); // id -> when it can be forgotten
+const markSelfAnimatedLeave = id => {
+  if (id == null) return;
+  selfAnimatedLeaves.set(String(id), Date.now() + 2500);
+};
+const isSelfAnimatedLeave = id => {
+  const until = selfAnimatedLeaves.get(String(id));
+  if (!until) return false;
+  if (until < Date.now()) {
+    selfAnimatedLeaves.delete(String(id));
+    return false;
+  }
+  return true;
+};
+const useLeavingRows = rows => {
+  const prevRef = useRef(rows);
+  const [ghosts, setGhosts] = useState([]);
+  const timersRef = useRef([]);
+  useEffect(() => {
+    const present = new Set((rows || []).map(t => t && t.id));
+    const gone = (prevRef.current || []).filter(t => t && t.id && !t._leaving && !present.has(t.id) && !isSelfAnimatedLeave(t.id));
+    prevRef.current = rows;
+    if (!gone.length) return;
+    const stamped = gone.map(t => ({ ...t, _leaving: true }));
+    const goneIds = new Set(stamped.map(t => t.id));
+    setGhosts(cur => [...cur.filter(g => !goneIds.has(g.id)), ...stamped]);
+    const timer = setTimeout(() => setGhosts(cur => cur.filter(g => !goneIds.has(g.id))), LEAVE_ANIM_MS);
+    timersRef.current.push(timer);
+  }, [rows]);
+  useEffect(() => () => timersRef.current.forEach(clearTimeout), []);
+  if (!ghosts.length) return rows;
+  // A row that came back (undone on the other device before the animation
+  // finished) is the real one again, never both.
+  const present = new Set((rows || []).map(t => t && t.id));
+  const active = ghosts.filter(g => !present.has(g.id));
+  return active.length ? [...(rows || []), ...active] : rows;
+};
 const isMultiDay = t => !!(t && t.date && t.finishDate && t.finishDate > t.date);
 // Every calendar date string a multi-day task covers, start through finish
 // inclusive. Capped generously so a bad/huge finishDate can't hang the tab.
@@ -2352,6 +2400,11 @@ html{background:var(--bg)}body{font-family:'Inter',sans-serif;background:var(--b
 @keyframes syncLabelDown{0%{opacity:0;transform:translateY(-7px)}55%{opacity:1;transform:translateY(1.5px)}100%{opacity:1;transform:translateY(0)}}
 @keyframes taskSlideIn{from{opacity:0;transform:translateY(-10px) scale(0.97)}to{opacity:1;transform:translateY(0) scale(1)}}
 .task-slide-in{animation:taskSlideIn 0.32s cubic-bezier(0.34,1.56,0.64,1) forwards;}
+/* A row leaving the list because of a sync -- the task was deleted, completed
+   or cancelled on another device -- collapses out of the way instead of
+   blinking out between two renders. */
+@keyframes taskLeaveOut{0%{opacity:1;transform:scale(1);max-height:260px}45%{opacity:0.3;transform:scale(0.975)}100%{opacity:0;transform:scale(0.95);max-height:0;padding-top:0;padding-bottom:0;margin-bottom:0;border-width:0}}
+.task-leaving{animation:taskLeaveOut 0.34s cubic-bezier(0.4,0,0.2,1) forwards;pointer-events:none;overflow:hidden;min-height:0!important}
 @keyframes newTaskGlow{0%{box-shadow:0 0 0 0 rgba(59,130,246,0),0 1px 4px rgba(0,0,0,.04)}35%{box-shadow:0 0 0 6px rgba(59,130,246,.22),0 2px 20px rgba(59,130,246,.18)}100%{box-shadow:0 0 0 0 rgba(59,130,246,0),0 1px 4px rgba(0,0,0,.04)}}
 @keyframes newTaskSlide{from{opacity:0;transform:translateY(-12px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 .task-new{animation:newTaskSlide 0.35s cubic-bezier(0.34,1.56,0.64,1) forwards,newTaskGlow 0.7s ease 0.1s forwards;background:var(--blue-bg)!important;border-color:var(--blue-border)!important}
@@ -2952,6 +3005,9 @@ const TaskCard = ({
   hideDateTag = false,
   hideRecurTag = false,
   justSynced = false,
+  // This row is on its way out (its task was removed or resolved by a sync):
+  // drawn one last time, collapsing, and inert while it does.
+  leaving = false,
   isNew = false,
   dragHandlers = null,
   isDragging = false,
@@ -3086,6 +3142,9 @@ const TaskCard = ({
       setTimeout(() => setCheckPopped(false), 400);
       setTimeout(() => setParticles([]), 600);
       setTimeout(() => {
+        // The list must not ghost this row as well -- this card has just
+        // spent 900ms animating the very same departure.
+        markSelfAnimatedLeave(task.id);
         onToggle(task.id);
         setCompleting(false);
       }, 900);
@@ -3199,7 +3258,7 @@ const TaskCard = ({
       if (_noteText) setNoteOpen(v => !v);
     },
     tabIndex: -1,
-    className: (completing ? "task-completing" : cancelling ? "task-cancelling" : isNew ? "task-new" : "") + (justSynced ? " task-slide-in" : ""),
+    className: (leaving ? "task-leaving" : completing ? "task-completing" : cancelling ? "task-cancelling" : isNew ? "task-new" : "") + (justSynced ? " task-slide-in" : ""),
     style: {
       display: "flex",
       alignItems: hideTypeBadge || renaming ? "center" : "flex-start",
@@ -3554,6 +3613,8 @@ const TaskCard = ({
         setCancelling(true);
         setTimeout(() => setXBouncing(false), 400);
         setTimeout(() => {
+          // Same as completing: this card has already animated the departure.
+          markSelfAnimatedLeave(task.id);
           onCancel(task.id);
           setCancelling(false);
         }, 900);
@@ -8037,7 +8098,7 @@ const MonthView = ({
     registerZone,
     dragPill
   } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected),
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected || tk._leaving),
     resolve: ds => ds ? ({ ds }) : null,
     commit: (id, p) => {
       onDropDate && onDropDate(id, p.ds);
@@ -9820,7 +9881,7 @@ const WeekView = ({
   // column into a 15-minute-snapped start time, keeping the grab offset so the
   // block doesn't jump under the finger.
   const DRAG_SNAP_MIN = 15;
-  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected || tk._continuation);
+  const isDragLocked = tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._projected || tk._continuation || tk._leaving);
   const minsToTime = mins => `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(Math.floor(mins % 60)).padStart(2, "0")}`;
   const timeToMins = s => {
     const [hh, mm] = (s || "0:0").split(":").map(Number);
@@ -10727,7 +10788,7 @@ const StickySwap = ({
   }, children));
 };
 const ListByType = ({
-  tasks,
+  tasks: tasksProp,
   onToggle,
   onEdit,
   onCancel,
@@ -10744,6 +10805,10 @@ const ListByType = ({
   onToggleSelect = null,
   singleColumnList = false
 }) => {
+  // Tasks that have just left this list (removed, completed or cancelled by a
+  // sync) stay in it for a third of a second longer so their cards can
+  // collapse out -- see useLeavingRows.
+  const tasks = useLeavingRows(tasksProp);
   // Drag a card onto another type group to change its type. Both the header and
   // the card area register as zones, so a collapsed group is still a target.
   const {
@@ -10754,7 +10819,7 @@ const ListByType = ({
   } = useTaskDragEngine({
     // source==="google" tasks are draggable here so the user can move them
     // to another type section; the resolve already blocks dropping INTO google.
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared),
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk._leaving),
     // Holidays and Google-imported sections must never accept a drop —
     // those tasks are externally managed and can't be re-typed.
     resolve: type => (type === "calendar" || type === "google") ? null : { type },
@@ -11144,6 +11209,7 @@ const ListByType = ({
       isDragging: !!drag && drag.id === task.id,
       delay: i * 0.04,
       hideTypeBadge: true,
+      leaving: !!task._leaving,
       isNew: !!(newlyAddedIds && newlyAddedIds.has(task.id)),
       selectMode: selectMode,
       selected: !!(selectedIds && selectedIds.has(task.id)),
@@ -15016,7 +15082,7 @@ const FilteredPieCard = ({
   })()));
 };
 const Dashboard = ({
-  tasks,
+  tasks: tasksProp,
   onToggle,
   onEdit,
   onCancel,
@@ -15035,6 +15101,14 @@ const Dashboard = ({
   onSetSelected = null,
   onQuickPicksReady = null
 }) => {
+  // Everything on this screen reads from `tasks`; `upNextRows` is the same
+  // list plus any row that has just left it through a sync (removed,
+  // completed or cancelled elsewhere), kept for a third of a second so its
+  // card can collapse out instead of blinking away. Only the three Up Next
+  // sections read it -- the overview counts and charts below stay on the real
+  // list, so a departing row can never be counted twice.
+  const tasks = tasksProp;
+  const upNextRows = useLeavingRows(React.useMemo(() => (tasksProp || []).filter(isPending), [tasksProp]));
   // Up Next drag: move a task between the Today and Tomorrow sections (and out
   // of Overdue into either). Overdue itself is a drag source only — "overdue"
   // isn't a single date, so there is nothing sensible to drop onto it.
@@ -15044,7 +15118,7 @@ const Dashboard = ({
     registerZone: upRegisterZone,
     dragPill: upDragPill
   } = useTaskDragEngine({
-    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google"),
+    isLocked: tk => !!(tk.hebcal || tk.intl || tk.type === "calendar" || tk.googleShared || tk.source === "google" || tk._leaving),
     resolve: ds => ds ? ({ ds }) : null,
     commit: (id, p) => onDropDate && onDropDate(id, p.ds),
     pillLabel: p => {
@@ -15196,15 +15270,15 @@ const Dashboard = ({
     isToday: false,
     sentinelKey: "tomorrow"
   }];
-  const overdueTasks = tasks.filter(tk => isOverdue(tk) && taskDisplayDate(tk) < todayDsNow);
+  const overdueTasks = upNextRows.filter(tk => isOverdue(tk) && taskDisplayDate(tk) < todayDsNow);
   const anyUpNext = overdueTasks.length > 0 || days.some(({
     ds
-  }) => tasks.filter(tk => taskDisplayDate(tk) === ds && isPending(tk)).length > 0);
+  }) => upNextRows.filter(tk => taskDisplayDate(tk) === ds && isPending(tk)).length > 0);
   // Quick-pick pool: the same Up Next tasks already on screen -- overdue,
   // plus today's and tomorrow's pending tasks.
   const upNextQuickPool = React.useMemo(() => [...overdueTasks, ...days.flatMap(({
     ds
-  }) => tasks.filter(tk => taskDisplayDate(tk) === ds && isPending(tk)))], [tasks, todayDsNow, tomorrowDs]);
+  }) => upNextRows.filter(tk => taskDisplayDate(tk) === ds && isPending(tk) && !tk._leaving))], [upNextRows, todayDsNow, tomorrowDs]);
   useSelectQuickPicks(upNextQuickPool, {
     selectMode,
     selectedIds,
@@ -15801,6 +15875,7 @@ const Dashboard = ({
     }).map((tk, i) => /*#__PURE__*/React.createElement(TaskCard, {
       key: tk.id,
       task: tk,
+      leaving: !!tk._leaving,
       justSynced: !!(window.__newTaskIds && window.__newTaskIds.has(tk.id)),
       isNew: !!(newlyAddedIds && newlyAddedIds.has(tk.id)),
       onToggle: onToggle,
@@ -15820,7 +15895,7 @@ const Dashboard = ({
       isToday,
       sentinelKey
     }) => {
-      const dayTasks = [...tasks.filter(tk => taskDisplayDate(tk) === ds && isPending(tk) && !(isToday && taskDisplayDate(tk) < todayDsNow))].sort((a, b) => {
+      const dayTasks = [...upNextRows.filter(tk => taskDisplayDate(tk) === ds && isPending(tk) && !(isToday && taskDisplayDate(tk) < todayDsNow))].sort((a, b) => {
         const overA = isOverdue(a),
           overB = isOverdue(b);
         if (overA && !overB) return -1;
@@ -15932,6 +16007,7 @@ const Dashboard = ({
       }))), dayTasks.map((tk, i) => /*#__PURE__*/React.createElement(TaskCard, {
         key: tk.id,
         task: tk,
+        leaving: !!tk._leaving,
         justSynced: !!(window.__newTaskIds && window.__newTaskIds.has(tk.id)),
         isNew: !!(newlyAddedIds && newlyAddedIds.has(tk.id)),
         onToggle: onToggle,
@@ -22932,10 +23008,9 @@ function App() {
   // shares (which snapshot a real DOM node with html2canvas), this reuses
   // the single task's hand-drawn canvas card style (see buildTaskShareCard /
   // renderBulkShareCanvas) so a multi-task share looks like several
-  // single-task cards stacked together, not a plain list. Selection is
-  // intentionally left alone afterwards (no exitSelectMode call anywhere in
-  // this path) so the person can keep adjusting the same selection after
-  // sharing it.
+  // single-task cards stacked together, not a plain list. Sharing is the end
+  // of what that selection was for, so select mode closes once the image is
+  // done -- same as a bulk delete.
   const [bulkShareDialogOpen, setBulkShareDialogOpen] = useState(false);
   const [bulkSharing, setBulkSharing] = useState(false);
   const [bulkShareOptions, setBulkShareOptions] = useState(null);
@@ -22977,6 +23052,8 @@ function App() {
       });
     } finally {
       setBulkSharing(false);
+      // Done with this selection: drop it and go back to normal mode.
+      setTimeout(() => exitSelectRef.current && exitSelectRef.current(), 300);
     }
   };
   const handleBulkShareConfirm = options => {
@@ -25101,7 +25178,10 @@ function App() {
     if (kind === "delete") {
       handleBulkDelete(ids);
       setBulkNotice(t("bulkDone", ids.size));
-      setSelectedIds(new Set());
+      // The selection is gone with the tasks, so there's nothing left to act
+      // on -- leave select mode rather than sitting in it with an empty bar.
+      // Long enough for the notice to be read first.
+      setTimeout(() => exitSelectRef.current && exitSelectRef.current(), 900);
       return;
     }
     // Archived tasks need reviving into the active list before they can take
