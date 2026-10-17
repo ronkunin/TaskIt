@@ -254,7 +254,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "17.0";
+const APP_VERSION = "17.2";
 
 const {
   useState,
@@ -10353,6 +10353,7 @@ const WeekView = ({
       if (swipeRef.current) {
         swipeRef.current.committed = true;
         swipeRef.current.swiping = false;
+        swipeRef.current.longPressed = true;
       }
       setSwipeDx(0);
       setWideMode(v => !v);
@@ -10376,6 +10377,10 @@ const WeekView = ({
   };
   const onGridTouchStart = e => {
     armLongPress(e);
+    // In wide mode the gesture belongs to this grid from the start: the
+    // view-swipe (and the pull-to-refresh that arms with it) must not take a
+    // reading from it at all.
+    if (wideOn && e.stopPropagation) e.stopPropagation();
     // Do NOT bail here just because a pointerdown landed on a draggable task
     // (dragRef.current.id) — at touchstart time intent is still unknown (tap?
     // scroll? week-swipe? drag?), so swipeRef must always be initialized
@@ -10398,9 +10403,17 @@ const WeekView = ({
       const t0 = e.touches[0];
       if (s0 && t0 && (Math.abs(t0.clientX - s0.startX) > 10 || Math.abs(t0.clientY - s0.startY) > 10)) clearLongPress();
     }
-    // Wide mode scrolls sideways instead of swiping between weeks: leave the
-    // gesture to the browser's own horizontal scrolling.
-    if (wideOn && !dragRef.current.active) return;
+    // Wide mode scrolls sideways instead of swiping between weeks, so the
+    // browser keeps the gesture -- but the view-swipe one level up must not
+    // also claim it, or scrolling the grid sideways would slide the whole
+    // screen to Month or Home. Hence stopPropagation but never
+    // preventDefault: the scroll being handed over is the point.
+    if (wideOn && !dragRef.current.active) {
+      const sw = swipeRef.current;
+      const tw = e.touches[0];
+      if (sw && tw && Math.abs(tw.clientX - sw.startX) > Math.abs(tw.clientY - sw.startY)) e.stopPropagation();
+      return;
+    }
     // A drag owns the gesture: block both the week swipe and the parent
     // view-swipe, and stop iOS from scrolling underneath the finger.
     if (dragRef.current.active) {
@@ -10409,6 +10422,12 @@ const WeekView = ({
       return;
     }
     const s = swipeRef.current;
+    // The gesture that just toggled wide mode is spent: it mustn't swipe the
+    // week, and it mustn't fall through to the view-swipe either.
+    if (s.longPressed) {
+      e.stopPropagation();
+      return;
+    }
     if (s.committed) return;
     const t = e.touches[0];
     const dx = t.clientX - s.startX;
@@ -10420,6 +10439,8 @@ const WeekView = ({
         return;
       } // vertical scroll wins
       s.swiping = true;
+      // A swipe is not a long press, however slowly it started.
+      clearLongPress();
     }
     e.preventDefault(); // block scroll only when clearly horizontal
     e.stopPropagation(); // prevent parent view-swipe from activating
@@ -10428,9 +10449,17 @@ const WeekView = ({
   };
   const onGridTouchEnd = e => {
     clearLongPress();
-    // Wide mode has no week swipe (sideways is scrolling, see above).
-    if (wideOn) {
+    const sEnd = swipeRef.current;
+    const wasLongPress = !!(sEnd && sEnd.longPressed);
+    if (sEnd) sEnd.longPressed = false;
+    // Wide mode has no week swipe (sideways is scrolling, see above). The
+    // view-swipe one level up decides on ITS touchend, from where the finger
+    // started and where it let go -- so a scroll across the grid still read as
+    // a swipe to another view. Stopping the move events was never going to
+    // reach that decision; this end event has to be stopped too.
+    if (wideOn || wasLongPress) {
       setSwipeDx(0);
+      if (e && e.stopPropagation) e.stopPropagation();
       return;
     }
     // Only a real, completed drag suppresses the swipe commit. dragRef.id stays
