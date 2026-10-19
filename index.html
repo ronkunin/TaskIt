@@ -222,7 +222,7 @@
     }
   })()</script>
 
-  <!-- React / ReactDOM / lz-string — plain synchronous script tags.
+  <!-- React / ReactDOM — plain synchronous script tags.
        The browser guarantees these run, in order, before anything below them,
        so there's no custom loader or "wait until ready" logic needed. -->
   <script>
@@ -238,7 +238,6 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" onerror="__taskitLoadFailed()"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" onerror="__taskitLoadFailed()"></script>
-  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js" onerror="__taskitLoadFailed()"></script>
 
   <div id="root"></div>
 
@@ -254,7 +253,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "17.2";
+const APP_VERSION = "18.2";
 
 const {
   useState,
@@ -420,7 +419,6 @@ const T = {
     resetWarning: "⚠️ This cannot be undone. All your data will be permanently deleted.",
     resetConfirm: "Yes, Delete Everything",
     resetCancel: "Keep My Data",
-    invalidJson: "Invalid JSON -- please check and try again.",
     mustBeArray: "JSON must be a valid export object with tasks.",
     // Errors
     nameRequired: "Task name is required.",
@@ -586,7 +584,6 @@ const T = {
     resetWarning: "⚠️ לא ניתן לבטל פעולה זו. כל הנתונים שלך יימחקו לצמיתות.",
     resetConfirm: "כן, מחק הכל",
     resetCancel: "שמור את הנתונים שלי",
-    invalidJson: "JSON לא תקין -- אנא בדוק ונסה שוב.",
     mustBeArray: "ה-JSON חייב להיות קובץ ייצוא תקין עם משימות.",
     nameRequired: "שם המשימה הוא שדה חובה.",
     recurInvalid: "מרווח החזרה חייב להיות מספר גדול מ-0.",
@@ -1237,6 +1234,21 @@ const uniqueById = list => {
 // Scan & Sync tool): "Erev X" and "X" should match, and Hebrew/English
 // punctuation differences shouldn't prevent a match.
 const normHolidayNameForDisplay = s => String(s || "").trim().toLowerCase().replace(/^(erev|eve of)\s+/i, "").replace(/[^\p{L}\p{N}]+/gu, "");
+// Imported Google events wearing their own calendar's name as their type, so
+// every list, group, filter and chart in the app sorts them the way the
+// calendar does. Nothing about the stored task changes: the id, the source and
+// the calendar it belongs to are all untouched, which is why anything that
+// acts on a task (editing, saving, converting it into a real TaskIt task)
+// looks the task up by id first rather than trusting the copy it was handed.
+const withRealGoogleTypes = (list, on) => {
+  if (!on) return list;
+  return list.map(tk => {
+    if (!tk || tk.source !== "google") return tk;
+    const name = String(tk.googleCalendarName || "").trim();
+    if (!name || name.toLowerCase() === "calendar") return tk;
+    return { ...tk, type: name };
+  });
+};
 const dedupeForDisplay = list => {
   const seenKeys = new Set();
   const out = [];
@@ -1404,8 +1416,29 @@ const PREF_IL = "taskflow_pref_il"; // "yes" | "no" | null (unset = first time)
 const PREF_INTL = "taskflow_pref_intl"; // "yes" | "no" | null
 const PREF_LOOKAHEAD = "taskflow_pref_lookahead"; // "yes" | "no" (default yes"
 const PREF_GCAL_FOREIGN = "taskflow_pref_gcal_foreign"; // "yes" | "no" | null (default ON, only an explicit no" turns it off)
+// Show imported Google events under the name of the calendar they came from,
+// instead of all together under one "Google" type. Display only -- the tasks
+// themselves still record where they came from, and nothing is written back
+// differently. Default OFF ("yes" turns it on).
+const PREF_GCAL_REAL = "taskflow_pref_gcal_real";
 const PREF_SINGLE_COLUMN_LISTS = "taskflow_pref_single_column_lists"; // "yes" | "no" | null — default OFF (relative-width columns, as today)
 const ONBOARDED_KEY = "taskflow_onboarded"; // presence = the welcome dialog has already run once
+// The week grid's wide mode on phone-width screens (see WeekView). Stored on
+// the device alone -- it describes this screen, not the person's tasks, so
+// there's nothing for it to do on another device or in Google.
+const WEEK_WIDE_KEY = "taskflow_week_wide";
+const readWeekWide = () => {
+  try {
+    return localStorage.getItem(WEEK_WIDE_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const saveWeekWide = on => {
+  try {
+    localStorage.setItem(WEEK_WIDE_KEY, on ? "1" : "0");
+  } catch {}
+};
 const getPref = key => localStorage.getItem(key); // null | "yes" | "no"
 const setPref = (key, val) => {
   try {
@@ -2972,38 +3005,6 @@ const Icon = ({
     })),
     filter: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polygon", {
       points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
-    })),
-    expandX: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polyline", {
-      points: "9 7 4 12 9 17",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }), /*#__PURE__*/React.createElement("polyline", {
-      points: "15 7 20 12 15 17",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }), /*#__PURE__*/React.createElement("line", {
-      x1: "4",
-      y1: "12",
-      x2: "20",
-      y2: "12",
-      strokeLinecap: "round"
-    })),
-    collapseX: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("polyline", {
-      points: "15 7 20 12 15 17",
-      strokeLinecap: "round",
-      strokeLinejoin: "round",
-      transform: "translate(-11 0)"
-    }), /*#__PURE__*/React.createElement("polyline", {
-      points: "9 7 4 12 9 17",
-      strokeLinecap: "round",
-      strokeLinejoin: "round",
-      transform: "translate(11 0)"
-    }), /*#__PURE__*/React.createElement("line", {
-      x1: "4",
-      y1: "12",
-      x2: "20",
-      y2: "12",
-      strokeLinecap: "round"
     })),
     download: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("path", {
       d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4",
@@ -8342,17 +8343,15 @@ const DayChip = ({
 // Each screen owns this call while mounted; switching screens unmounts the
 // old one (running its cleanup, which clears the bar's picks) before the
 // new screen's own effect registers its own.
-const useSelectQuickPicks = (pool, {
-  selectMode,
-  selectedIds,
-  onSetSelected,
-  onQuickPicksReady
-}) => {
-  const bulkOn = !!(selectMode && onSetSelected);
-  const isSel = id => !!(selectedIds && selectedIds.has(id));
-  const bulkPool = bulkOn ? pool.filter(tk => !isBulkEditLocked(tk)) : [];
+// The quick-select chips: the status ones (All / Pending / Overdue /
+// Completed / Cancelled / No date) and then one per type present in what's on
+// screen, each carrying its type's own colour so the panel reads like the
+// tasks do. A chip selects everything it counts, and tapping it again
+// deselects that set. Types only appear when there's more than one to choose
+// between -- with a single type its chip would just be "All" again.
+const buildQuickPicks = bulkPool => {
   const isPendingTk = tk => !isDone(tk) && !isCancelled(tk);
-  const quickPicks = bulkOn ? [{
+  const status = [{
     key: "all",
     label: t("selectAll"),
     list: bulkPool
@@ -8376,7 +8375,40 @@ const useSelectQuickPicks = (pool, {
     key: "nodate",
     label: t("noDate"),
     list: bulkPool.filter(tk => !tk.date)
-  }].filter(p => p.key === "all" || p.list.length > 0) : [];
+  }];
+  const byType = new Map();
+  for (const tk of bulkPool) {
+    const tp = tk.type || "regular";
+    if (!byType.has(tp)) byType.set(tp, []);
+    byType.get(tp).push(tk);
+  }
+  const types = byType.size > 1
+    ? [...byType.entries()]
+        .sort((a, b) => b[1].length - a[1].length || String(a[0]).localeCompare(String(b[0])))
+        .map(([tp, list]) => {
+          const m = getTypeMeta(tp);
+          return {
+            key: "type:" + tp,
+            label: m.label,
+            list,
+            color: m.color,
+            bg: m.bg,
+            border: m.dot || m.border
+          };
+        })
+    : [];
+  return [...status, ...types].filter(p => p.key === "all" || p.list.length > 0);
+};
+const useSelectQuickPicks = (pool, {
+  selectMode,
+  selectedIds,
+  onSetSelected,
+  onQuickPicksReady
+}) => {
+  const bulkOn = !!(selectMode && onSetSelected);
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
+  const bulkPool = bulkOn ? pool.filter(tk => !isBulkEditLocked(tk)) : [];
+  const quickPicks = bulkOn ? buildQuickPicks(bulkPool) : [];
   const invertSelection = () => {
     const on = [],
       off = [];
@@ -8391,6 +8423,9 @@ const useSelectQuickPicks = (pool, {
         picks: quickPicks.map(p => ({
           key: p.key,
           label: p.label,
+          color: p.color || null,
+          bg: p.bg || null,
+          border: p.border || null,
           ids: p.list.map(tk => tk.id)
         })),
         isSel,
@@ -10137,6 +10172,12 @@ const weekSelBadge = (centered = false) => /*#__PURE__*/React.createElement("div
 const WeekView = ({
   tasks,
   curDate,
+  // Set by the app: tapping the Week tab while already on Week calls this to
+  // switch the grid between fitting the screen and being widened. It replaces
+  // the little icon that used to sit beside the dates -- the tab is where a
+  // repeat tap already means "do the view's own thing" (the List tab collapses
+  // its groups, the Month tab jumps back to today).
+  onWideToggleRef,
   onNav,
   onTaskClick,
   onDayClick,
@@ -10170,8 +10211,28 @@ const WeekView = ({
   const WIDE_DAY_COL = 112;
   const WIDE_GUTTER = 26;
   const WIDE_CONTENT_W = WIDE_GUTTER + WIDE_DAY_COL * 7;
-  const [wideMode, setWideMode] = useState(false);
+  // Remembered per device: someone who reads the week widened wants it
+  // widened every time, not once per visit. Only a deliberate switch is
+  // written down -- the automatic drop below, when the screen stops being
+  // phone-width, leaves the preference alone so it comes back on return.
+  const [wideMode, setWideMode] = useState(readWeekWide);
+  const setWideModeSaved = next => {
+    setWideMode(v => {
+      const val = typeof next === "function" ? next(v) : next;
+      saveWeekWide(val);
+      return val;
+    });
+  };
   const wideOn = phone && wideMode && !captureWide;
+  useEffect(() => {
+    if (!onWideToggleRef) return;
+    // Only where wide mode exists at all; on a roomier screen a repeat tap on
+    // the tab just scrolls to the top, as it always did.
+    onWideToggleRef.current = phone ? () => setWideModeSaved(v => !v) : null;
+    return () => {
+      onWideToggleRef.current = null;
+    };
+  }, [onWideToggleRef, phone]);
   // The grid's normal width in pixels. A width transition needs real numbers
   // at both ends -- "100%" to 810px doesn't animate -- so the pane measures
   // itself and the normal end of the animation is that measurement.
@@ -10187,12 +10248,34 @@ const WeekView = ({
     return () => ro.disconnect();
   }, []);
   // Leaving phone width (rotation, a wider window) drops wide mode: there's
-  // nothing for it to fix there, and the week swipe should come back.
+  // nothing for it to fix there, and the week swipe should come back. Coming
+  // back to phone width restores whatever was last chosen.
   useEffect(() => {
-    if (!phone && wideMode) setWideMode(false);
-  }, [phone, wideMode]);
+    setWideMode(phone ? readWeekWide() : false);
+  }, [phone]);
   const hScrollRef = useRef(null);
   const weekHeaderRef = useRef(null);
+  // Where wide mode starts from: today's column, centred, or the first day of
+  // the week when the week on screen isn't the current one. Done by asking the
+  // browser to bring that column into view rather than by setting scrollLeft:
+  // a right-to-left grid counts its scroll position from the other end (and
+  // not identically in every browser), so a pixel calculation would be right
+  // in one language and wrong in the other.
+  const centerWeekColumn = (behavior = "auto") => {
+    const pane = hScrollRef.current;
+    if (!pane) return;
+    const today = todayStr();
+    const cols = pane.querySelectorAll("[data-weekcol]");
+    if (!cols.length) return;
+    let target = null;
+    for (const c of cols) if (c.dataset.weekcol === today) target = c;
+    if (!target) target = cols[0];
+    try {
+      target.scrollIntoView({ inline: "center", block: "nearest", behavior });
+    } catch {
+      target.scrollIntoView(false);
+    }
+  };
   const longPressTimerRef = useRef(null);
   const longPressAtRef = useRef(0);
   // The header can't sit inside the horizontal scroller -- it's sticky to the
@@ -10203,8 +10286,25 @@ const WeekView = ({
     if (el) el.style.transform = `translate3d(${-sl}px,0,0)`;
   };
   useEffect(() => {
-    if (!wideOn) syncHeaderScroll(0);
+    if (!wideOn) {
+      syncHeaderScroll(0);
+      return;
+    }
+    // After the widening animation has run, so the column is measured at the
+    // width it ends up with rather than the one it started from.
+    const timer = setTimeout(() => centerWeekColumn("auto"), 360);
+    return () => clearTimeout(timer);
   }, [wideOn]);
+  // Navigating to another week while widened starts that week at the same
+  // place: today if it's in there, otherwise its first day.
+  useEffect(() => {
+    if (!wideOn) return;
+    const timer = setTimeout(() => centerWeekColumn("smooth"), 30);
+    return () => clearTimeout(timer);
+    // Only the week matters here -- switching wide mode on is handled above,
+    // after its widening animation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curDate]);
   const scrollRef = useRef();
   const isHe = getLang() === "he";
   const weekCaptureRef = useRef(null);
@@ -10343,10 +10443,18 @@ const WeekView = ({
     if (e.button != null && e.button !== 0) return;
     const target = e.target;
     if (target && target.closest && target.closest("[data-taskid]")) return;
+    // A drag in flight (or one that just ended) owns the gesture. Only
+    // `active` and the app-wide flag are checked: dragRef.id deliberately
+    // stays set after a stood-down gesture, so testing it would switch the
+    // long press off for good after the first task press.
+    if (dragRef.current.active || dragActiveFlag.current || Date.now() - (dragActiveFlag.endedAt || 0) < 350) return;
     const point = e.touches && e.touches[0] ? e.touches[0] : e;
     pressPosRef.current = { x: point.clientX, y: point.clientY };
     longPressTimerRef.current = setTimeout(() => {
       longPressTimerRef.current = null;
+      // The drag engine's hold arms at 350ms, well before this one, so a
+      // press that became a grab must not also flip the mode.
+      if (dragRef.current.active || dragActiveFlag.current) return;
       longPressAtRef.current = Date.now();
       // The gesture is spent: no week swipe, and no "new task" from the tap
       // that ends it (see the column's onClick).
@@ -10356,7 +10464,7 @@ const WeekView = ({
         swipeRef.current.longPressed = true;
       }
       setSwipeDx(0);
-      setWideMode(v => !v);
+      setWideModeSaved(v => !v);
       if (window.navigator.vibrate) window.navigator.vibrate(12);
       // A held mouse button leaves the page mid-selection otherwise.
       if (typeof window !== "undefined" && window.getSelection) {
@@ -10529,32 +10637,7 @@ const WeekView = ({
       gap: 7,
       minWidth: 0
     }
-  }, phone && !captureWide && /*#__PURE__*/React.createElement("div", {
-    // Before the title, so it sits on the side the language starts from --
-    // the right in Hebrew, the left in English -- exactly like the collapse
-    // control on the By Type list.
-    onClick: () => setWideMode(v => !v),
-    title: wideOn
-      ? (isHe ? "החזר לרוחב המסך" : "Fit the week to the screen")
-      : (isHe ? "הרחב את הטבלה" : "Widen the table"),
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      width: 26,
-      height: 26,
-      borderRadius: 8,
-      cursor: "pointer",
-      flexShrink: 0,
-      background: wideOn ? C.blueBg : "transparent",
-      border: `1px solid ${wideOn ? C.blueBorder : "transparent"}`,
-      transition: "background 0.18s, border-color 0.18s"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: wideOn ? "collapseX" : "expandX",
-    size: 15,
-    color: C.blue
-  })), /*#__PURE__*/React.createElement("h2", {
+  }, /*#__PURE__*/React.createElement("h2", {
     style: {
       fontSize: narrow ? 16 : 22,
       fontWeight: 700,
@@ -10846,6 +10929,9 @@ const WeekView = ({
       const isSel = !!(selectedIds && selectedIds.has(tk.id));
       return /*#__PURE__*/React.createElement("div", {
         key: tk.id,
+        // Marks this as a task, which is how the wide-mode long press knows
+        // to keep out of a press that lands on one (see armLongPress).
+        "data-taskid": tk.id,
         ...(!selectMode ? dragHandlersFor(tk, {
           dur: getTaskLength(tk) || 60,
           fromAllDay: true
@@ -11061,6 +11147,9 @@ const WeekView = ({
       const isSel = !!(selectedIds && selectedIds.has(tk.id));
       return /*#__PURE__*/React.createElement("div", {
         key: tk.id,
+        // See the all-day chips above: this is what keeps the wide-mode long
+        // press out of a press that lands on a task.
+        "data-taskid": tk.id,
         ...(!selectMode ? dragHandlersFor(tk, {
           dur: getTaskLength(tk) || 60
         }, onTaskClick) : {}),
@@ -11163,6 +11252,10 @@ const WeekView = ({
       }, minsToTime(drag.payload.mins)) : null;
       return /*#__PURE__*/React.createElement("div", {
         key: i,
+        // Which day this column is, so wide mode can scroll to it by date
+        // rather than by working out pixel offsets (which differ between
+        // Hebrew's right-to-left grid and English's left-to-right one).
+        "data-weekcol": ds,
         ref: registerZone("col" + i, {
           ds
         }),
@@ -18374,7 +18467,6 @@ const SettingsModal = ({
   onClose,
   tasks,
   charts,
-  onLoad,
   dark,
   darkOverride,
   toggleDark,
@@ -18403,6 +18495,8 @@ const SettingsModal = ({
   gcalReady,
   prefGcalForeign,
   onToggleGcalForeign,
+  prefGcalReal,
+  onToggleGcalReal,
   onImportIcs,
   onDeleteType,
   onCleanDelays,
@@ -18424,7 +18518,6 @@ const SettingsModal = ({
     if (e && e.currentTarget && e.currentTarget.blur) e.currentTarget.blur();
     requestAnimationFrame(() => requestAnimationFrame(fn));
   };
-  const [jsonText, setJsonText] = useState("");
   // ── iCalendar import state ──
   const icsFileRef = useRef(null);
   const [icsFiles, setIcsFiles] = useState([]); // [{name, text}]
@@ -18543,12 +18636,7 @@ const SettingsModal = ({
     }
     setIcsBusy(false);
   };
-  const [loadSaving, setLoadSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [pasted, setPasted] = useState(false);
-  const [loadError, setLoadError] = useState("");
-  const [loadMsg, setLoadMsg] = useState("");
-  const [loadOpen, setLoadOpen] = useState(false);
+
   const [resetStep, setResetStep] = useState(0); // 0=idle 1=confirm
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -18587,8 +18675,7 @@ const SettingsModal = ({
     setHandleDragY(0);
   };
   // ── Copy JSON: let the person pick which types to include first ──
-  const [copyPickerOpen, setCopyPickerOpen] = useState(false);
-  const [copyTypes, setCopyTypes] = useState(null); // Set of selected types, or null before opened
+
   const copyTypeCounts = React.useMemo(() => {
     const m = {};
     (tasks || []).forEach(tk => {
@@ -18600,6 +18687,7 @@ const SettingsModal = ({
 
   // ── Export iCalendar: the same type picker as Copy JSON, but the result
   // is a .ics file rather than clipboard text ──
+  const [appleGuideOpen, setAppleGuideOpen] = useState(false);
   const [icsExportOpen, setIcsExportOpen] = useState(false);
   const [icsExportTypes, setIcsExportTypes] = useState(null);
   const [icsExportMsg, setIcsExportMsg] = useState("");
@@ -18608,13 +18696,9 @@ const SettingsModal = ({
     if (open) {
       setVisible(true);
       setClosing(false);
-      setJsonText("");
+      setAppleGuideOpen(false);
       setIcsExportOpen(false);
       setIcsExportMsg("");
-      setCopied(false);
-      setPasted(false);
-      setLoadError("");
-      setLoadOpen(false);
       setResetStep(0);
     } else if (visible) {
       setClosing(true);
@@ -18626,36 +18710,6 @@ const SettingsModal = ({
   }, [open]);
   if (!visible) return null;
   const copyTypeList = Object.keys(copyTypeCounts).sort();
-  const openCopyPicker = () => {
-    setCopyTypes(new Set(copyTypeList)); // default: everything selected
-    setCopyPickerOpen(true);
-    setCopied(false);
-  };
-  const toggleCopyType = tp => {
-    setCopyTypes(prev => {
-      const n = new Set(prev);
-      if (n.has(tp)) n.delete(tp); else n.add(tp);
-      return n;
-    });
-  };
-  const selectedCopyCount = copyTypes ? [...copyTypes].reduce((s, tp) => s + (copyTypeCounts[tp] || 0), 0) : 0;
-  const allCopySelected = !!copyTypes && copyTypeList.length > 0 && copyTypeList.every(tp => copyTypes.has(tp));
-  const handleCopy = () => {
-    const chosen = copyTypes || new Set(copyTypeList);
-    const scopedTasks = (tasks || []).filter(tk => chosen.has(tk.type || "regular"));
-    const compressed = LZString.compressToEncodedURIComponent(JSON.stringify({
-      tasks: scopedTasks,
-      searchHistory: loadSearchHistory(),
-      _v: 2
-    }));
-    navigator.clipboard.writeText(compressed).then(() => {
-      setCopied(true);
-      setTimeout(() => {
-        setCopied(false);
-        setCopyPickerOpen(false);
-      }, 1200);
-    });
-  };
   const openIcsExport = () => {
     setIcsExportTypes(new Set(copyTypeList)); // default: everything selected
     setIcsExportOpen(true);
@@ -18683,81 +18737,6 @@ const SettingsModal = ({
     setIcsExportMsg(isHe
       ? `יוצאו ${count} משימות${skipped > 0 ? ` · ${skipped} ללא תאריך דולגו` : ""}`
       : `Exported ${count} task${count === 1 ? "" : "s"}${skipped > 0 ? ` · ${skipped} without a date skipped` : ""}`);
-  };
-  const handlePaste = () => {
-    navigator.clipboard.readText().then(text => {
-      setJsonText(text);
-      setLoadError("");
-      setPasted(true);
-      setTimeout(() => setPasted(false), 2000);
-    }).catch(() => setLoadError(isHe ? "לא ניתן לגשת ללוח. הדבק ידנית." : "Clipboard access denied. Paste manually."));
-  };
-  const handleLoad = async () => {
-    try {
-      // Support both lz-string compressed and plain JSON
-      let parsed;
-      const trimmed = jsonText.trim();
-      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        parsed = JSON.parse(trimmed);
-      } else {
-        const decompressed = LZString.decompressFromEncodedURIComponent(trimmed);
-        if (!decompressed) {
-          setLoadError(t("invalidJson"));
-          return;
-        }
-        parsed = JSON.parse(decompressed);
-      }
-      let loadedTasks;
-      if (Array.isArray(parsed)) {
-        loadedTasks = parsed.map(migrateTask);
-      } else if (parsed && Array.isArray(parsed.tasks)) {
-        loadedTasks = parsed.tasks.map(migrateTask);
-      } else {
-        setLoadError(t("mustBeArray"));
-        return;
-      }
-      loadedTasks = loadedTasks.filter(tk => tk.type !== "calendar" && !tk.hebcal && !tk.intl || isDone(tk) || isCancelled(tk));
-
-      // ── Merge, never replace: keep every existing task and only add the
-      // ones from this import that aren't already here. `tasks` here is the
-      // combined active+archive list the parent passes in. ──
-      const existingAll = tasks || [];
-      const existingIds = new Set(existingAll.map(tk => tk.id));
-      const sigOf = tk => (tk.name || "").trim().toLowerCase() + "|" + (tk.date || "") + "|" + (tk.time || "") + "|" + (tk.type || "");
-      const existingSigs = new Set(existingAll.map(sigOf));
-      const fresh = [];
-      let dupCount = 0;
-      for (const lt of loadedTasks) {
-        if (existingIds.has(lt.id)) { dupCount++; continue; }
-        const sig = sigOf(lt);
-        if (existingSigs.has(sig)) { dupCount++; continue; }
-        existingSigs.add(sig);
-        fresh.push(lt);
-      }
-      const mergedAll = [...existingAll, ...fresh];
-
-      // Re-split into main/archive, same rule the app uses elsewhere.
-      const finSorted = mergedAll.filter(tk => tk.done || tk.cancelled).sort((a, b) => (b.created || 0) - (a.created || 0));
-      const newMain = [...mergedAll.filter(tk => !tk.done && !tk.cancelled), ...finSorted.slice(0, ARCHIVE_BUFFER)];
-      const newArchive = finSorted.slice(ARCHIVE_BUFFER);
-      _rawSave(STORAGE_KEY, newMain);
-      _rawSave(ARCHIVE_KEY, newArchive);
-
-      onLoad({
-        tasks: newMain,
-        archive: newArchive,
-        charts: null,
-        keepPrefs: true // this is an add, not a restore — leave holiday prefs untouched
-      });
-      setLoadMsg(fresh.length
-        ? (isHe
-            ? `נוספו ${fresh.length} משימות${dupCount > 0 ? ` · ${dupCount} כבר קיימות ודולגו` : ""}`
-            : `Added ${fresh.length} task${fresh.length === 1 ? "" : "s"}${dupCount > 0 ? ` · ${dupCount} already here, skipped` : ""}`)
-        : (isHe ? "הכול כבר קיים, לא נוסף דבר" : "Everything was already here, nothing added"));
-      setJsonText("");
-    } catch {
-      setLoadError(t("invalidJson"));
-    }
   };
   const handleReset = async () => {
     onSpecialLoading("resetting");
@@ -19053,7 +19032,7 @@ const SettingsModal = ({
       textTransform: "uppercase",
       margin: "20px 0 4px"
     }
-  }, isHe ? "יומן Google" : "Google Calendar"), /*#__PURE__*/React.createElement(Row, {
+  }, isHe ? "סנכרון" : "Syncing"), /*#__PURE__*/React.createElement(Row, {
     icon: "📆",
     label: isHe ? "Google Calendar" : "Google Calendar",
     sub: gcalError
@@ -19100,7 +19079,66 @@ const SettingsModal = ({
       cursor: "pointer",
       flexShrink: 0
     }
-  }, isHe ? "הצג" : "Show")), gcalConnected && /*#__PURE__*/React.createElement(Row, {
+  }, isHe ? "הצג" : "Show")), /*#__PURE__*/React.createElement(Row, {
+    icon: "🍎",
+    label: isHe ? "איך מחברים ליומן של אפל?" : "How to connect Apple Calendar",
+    sub: appleGuideOpen
+      ? (isHe ? "דרך יומן Google, בלי חיבור נוסף" : "Through Google Calendar, with nothing else to connect")
+      : (isHe ? "המשימות יופיעו באייפון, במק ובשעון" : "Your tasks on iPhone, Mac and Watch")
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: e => deferAfterBlur(e, () => setAppleGuideOpen(v => !v)),
+    style: {
+      padding: "6px 14px",
+      borderRadius: 20,
+      border: `1.5px solid ${appleGuideOpen ? C.blueBorder : C.border2}`,
+      background: appleGuideOpen ? C.blueBg : C.card2,
+      color: appleGuideOpen ? C.blue : C.text3,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: "pointer",
+      flexShrink: 0,
+      transition: "all 0.15s"
+    }
+  }, appleGuideOpen ? (isHe ? "סגור" : "Close") : (isHe ? "הצג" : "Show"))), appleGuideOpen && /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "-4px 0 12px",
+      padding: "14px",
+      borderRadius: 12,
+      background: C.card2,
+      border: `1px solid ${C.border2}`,
+      direction: isHe ? "rtl" : "ltr",
+      fontSize: 12.5,
+      color: C.text2,
+      lineHeight: 1.75
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { marginBottom: 10, color: C.text3 }
+  }, isHe
+    ? "אפל לא מתחברת ל-TaskIt ישירות, אבל היא כן יודעת לקרוא יומני Google. ברגע ש-TaskIt מחובר ל-Google, די להוסיף את חשבון Google ליומן של אפל והמשימות יופיעו שם מעצמן."
+    : "Apple doesn't connect to TaskIt directly, but it does read Google calendars. Once TaskIt is connected to Google, adding that Google account to Apple Calendar is enough — your tasks show up there on their own."),
+  ...[
+    isHe
+      ? { t: "באייפון או באייפד", l: ["פתחו הגדרות ובחרו אפליקציות ← יומן (בגרסאות קודמות: הגדרות ← יומן).", "בחרו חשבונות ← הוספת חשבון ← Google.", "התחברו עם אותו חשבון Google שאליו TaskIt מחובר.", "ודאו שהמתג של יומנים דולק, ושמרו.", "פתחו את אפליקציית יומן, גשו ל'יומנים' למטה וסמנו את היומנים של TaskIt."] }
+      : { t: "On iPhone or iPad", l: ["Open Settings and go to Apps → Calendar (on older versions: Settings → Calendar).", "Choose Accounts → Add Account → Google.", "Sign in with the same Google account TaskIt is connected to.", "Make sure the Calendars switch is on, then save.", "Open the Calendar app, tap Calendars at the bottom, and tick the TaskIt calendars."] },
+    isHe
+      ? { t: "במק", l: ["פתחו את אפליקציית יומן ← יומן ← הגדרות ← חשבונות.", "לחצו על + ובחרו Google, והתחברו לאותו חשבון.", "סמנו יומנים ברשימת האפשרויות של החשבון.", "היומנים של TaskIt יופיעו בסרגל הצד; סמנו אותם כדי להציג."] }
+      : { t: "On a Mac", l: ["Open the Calendar app → Calendar → Settings → Accounts.", "Click + , choose Google, and sign in with the same account.", "Tick Calendars in the account's list of things to sync.", "The TaskIt calendars appear in the sidebar — tick them to show them."] },
+    isHe
+      ? { t: "כדאי לדעת", l: ["עריכה ביומן של אפל נשמרת ב-Google ומגיעה בחזרה ל-TaskIt, בדיוק כמו עריכה ביומן Google עצמו.", "סימון משימה כבוצעה מוסיף ✔ לכותרת שלה, וזה מה שתראו גם באפל.", "העדכון בין Google לאפל אינו מיידי; בדרך כלל דקות. משיכה למטה באפליקציית יומן מזרזת.", "אם היומנים לא מופיעים, פתחו calendar.google.com/calendar/syncselect באייפון וסמנו אותם שם."] }
+      : { t: "Worth knowing", l: ["An edit made in Apple Calendar is saved to Google and comes back to TaskIt, exactly like an edit made in Google Calendar itself.", "Completing a task puts a ✔ in its title — that's what you'll see in Apple too.", "Google and Apple don't update each other instantly; minutes is normal. Pull down in the Calendar app to hurry it along.", "If the calendars don't appear, open calendar.google.com/calendar/syncselect on your iPhone and tick them there."] }
+  ].map((sec, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: { marginTop: i ? 12 : 0 }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 12, fontWeight: 700, color: C.text, marginBottom: 3 }
+  }, sec.t), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 3 }
+  }, sec.l.map((line, j) => /*#__PURE__*/React.createElement("div", {
+    key: j,
+    style: { display: "flex", gap: 7, alignItems: "flex-start" }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: { color: C.text4, flexShrink: 0, minWidth: 12 }
+  }, sec.t === (isHe ? "כדאי לדעת" : "Worth knowing") ? "·" : `${j + 1}.`), /*#__PURE__*/React.createElement("span", null, line))))))), gcalConnected && /*#__PURE__*/React.createElement(Row, {
     icon: gcalStats && gcalStats.pending === 0 && gcalStats.failed === 0 ? "✅" : "🔄",
     label: isHe ? "סריקה וסנכרון" : "Scan & sync",
     sub: !gcalReady
@@ -19162,6 +19200,20 @@ const SettingsModal = ({
     on: prefGcalForeign,
     onToggle: onToggleGcalForeign,
     color: GOOGLE_TYPE_COLOR
+  })), gcalConnected && prefGcalForeign && /*#__PURE__*/React.createElement(Row, {
+    icon: "🎨",
+    label: isHe ? "יומני Google האמיתיים" : "Show real Google calendars",
+    sub: isHe
+      ? prefGcalReal
+        ? "כל אירוע מוצג תחת שם היומן שלו"
+        : "כל האירועים מוצגים יחד תחת הסוג Google"
+      : prefGcalReal
+        ? "Each event shows under the name of its own calendar"
+        : "All events show together under the Google type"
+  }, /*#__PURE__*/React.createElement(Toggle, {
+    on: prefGcalReal,
+    onToggle: onToggleGcalReal,
+    color: GOOGLE_TYPE_COLOR
   })), (prefIL !== null || prefIntl !== null) && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
@@ -19197,110 +19249,6 @@ const SettingsModal = ({
       margin: "20px 0 4px"
     }
   }, isHe ? "נתונים" : "Data"), /*#__PURE__*/React.createElement(Row, {
-    icon: "📋",
-    label: isHe ? "העתק JSON" : "Copy JSON",
-    sub: copyPickerOpen
-      ? (isHe ? "בחר אילו סוגים לכלול" : "Choose which types to include")
-      : (isHe ? "ייצא משימות ללוח, אפשר לבחור סוגים" : "Export tasks to clipboard, pick which types")
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: e => deferAfterBlur(e, () => copyPickerOpen ? setCopyPickerOpen(false) : openCopyPicker()),
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: copyPickerOpen ? `1.5px solid ${C.blueBorder}` : "none",
-      background: copyPickerOpen ? C.blueBg : "linear-gradient(135deg,#3B82F6,#2563EB)",
-      color: copyPickerOpen ? C.blue : "#fff",
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      transition: "background 0.25s",
-      flexShrink: 0,
-      boxShadow: copyPickerOpen ? "none" : "0 2px 8px rgba(59,130,246,0.3)"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "copy",
-    size: 13,
-    color: copyPickerOpen ? C.blue : "#fff"
-  }), copyPickerOpen ? (isHe ? "סגור" : "Close") : (isHe ? "העתק" : "Copy"))), copyPickerOpen && /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: "-4px 0 12px",
-      padding: "12px",
-      borderRadius: 12,
-      background: C.card2,
-      border: `1px solid ${C.border2}`,
-      direction: isHe ? "rtl" : "ltr"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 12, fontWeight: 700, color: C.text2 }
-  }, isHe ? "אילו סוגים לכלול?" : "Which types to include?"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setCopyTypes(allCopySelected ? new Set() : new Set(copyTypeList)),
-    style: {
-      fontSize: 11.5,
-      fontWeight: 700,
-      color: C.blue,
-      background: "none",
-      border: "none",
-      cursor: "pointer",
-      padding: 0
-    }
-  }, allCopySelected ? (isHe ? "נקה הכל" : "Deselect all") : (isHe ? "בחר הכל" : "Select all"))), copyTypeList.length === 0 ? /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 12, color: C.text4, padding: "4px 0" }
-  }, isHe ? "אין משימות" : "No tasks yet") : /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }
-  }, copyTypeList.map(tp => {
-    const active = !!copyTypes && copyTypes.has(tp);
-    const m = getTypeMeta(tp);
-    return /*#__PURE__*/React.createElement("button", {
-      key: tp,
-      onClick: () => toggleCopyType(tp),
-      style: {
-        display: "flex",
-        alignItems: "center",
-        gap: 5,
-        padding: "5px 10px",
-        borderRadius: 20,
-        border: `1.5px solid ${active ? m.dot : C.border2}`,
-        background: active ? m.bg : "transparent",
-        color: active ? m.color : C.text3,
-        fontSize: 12,
-        fontWeight: 700,
-        cursor: "pointer"
-      }
-    }, m.label, /*#__PURE__*/React.createElement("span", {
-      style: { fontSize: 10.5, opacity: 0.75, fontWeight: 600 }
-    }, `(${copyTypeCounts[tp]})`));
-  })), /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", gap: 8, alignItems: "center" }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: handleCopy,
-    disabled: selectedCopyCount === 0,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: "none",
-      background: selectedCopyCount === 0 ? C.border : copied ? "linear-gradient(135deg,#22C55E,#16A34A)" : "linear-gradient(135deg,#3B82F6,#2563EB)",
-      color: "#fff",
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: selectedCopyCount === 0 ? "default" : "pointer",
-      transition: "background 0.25s",
-      boxShadow: selectedCopyCount === 0 ? "none" : copied ? "0 2px 8px rgba(34,197,94,0.35)" : "0 2px 8px rgba(59,130,246,0.3)"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: copied ? "check" : "copy",
-    size: 13,
-    color: "#fff"
-  }), copied
-    ? (isHe ? "הועתק!" : "Copied!")
-    : (isHe ? `העתק ${selectedCopyCount} משימות` : `Copy ${selectedCopyCount} task${selectedCopyCount === 1 ? "" : "s"}`)))), /*#__PURE__*/React.createElement(Row, {
     icon: "📤",
     label: isHe ? "ייצוא iCalendar (.ics)" : "Export iCalendar (.ics)",
     sub: icsExportOpen
@@ -19404,161 +19352,6 @@ const SettingsModal = ({
   }), isHe ? `ייצא ${selectedIcsCount} משימות` : `Export ${selectedIcsCount} task${selectedIcsCount === 1 ? "" : "s"}`), icsExportMsg && /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11.5, fontWeight: 600, color: C.text3 }
   }, icsExportMsg))), /*#__PURE__*/React.createElement(Row, {
-    icon: "📂",
-    label: isHe ? "טען JSON" : "Load JSON",
-    sub: isHe ? "מוסיף משימות בלי למחוק קיימות, כפילויות ידולגו" : "Adds tasks without deleting existing ones, duplicates are skipped"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: e => deferAfterBlur(e, () => setLoadOpen(v => !v)),
-    style: {
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: `1.5px solid ${loadOpen ? C.blueBorder : C.border2}`,
-      background: loadOpen ? C.blueBg : C.card2,
-      color: loadOpen ? C.blue : C.text3,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      flexShrink: 0,
-      transition: "all 0.15s"
-    }
-  }, loadOpen ? isHe ? "סגור" : "Close" : isHe ? "פתח" : "Open")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      overflow: "hidden",
-      maxHeight: loadOpen ? "360px" : "0px",
-      opacity: loadOpen ? 1 : 0,
-      transition: "max-height 0.3s cubic-bezier(0.4,0,0.2,1),opacity 0.2s ease"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "12px 0 4px"
-    }
-  }, /*#__PURE__*/React.createElement("textarea", {
-    value: jsonText,
-    onChange: e => {
-      setJsonText(e.target.value);
-      setLoadError("");
-      setLoadMsg("");
-    },
-    placeholder: isHe ? "הדבק JSON כאן..." : "Paste your JSON here...",
-    style: {
-      width: "100%",
-      minHeight: 140,
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: `1px solid ${loadError ? C.red : C.border}`,
-      background: C.card2,
-      color: C.text,
-      fontSize: 11,
-      fontFamily: "monospace",
-      resize: "none",
-      outline: "none",
-      lineHeight: 1.5,
-      transition: "border-color 0.15s",
-      boxSizing: "border-box"
-    }
-  }), loadError && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "6px 10px",
-      borderRadius: 8,
-      background: C.redBg,
-      border: `1px solid ${C.redBorder}`,
-      marginTop: 6
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "alert",
-    size: 12,
-    color: C.red
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: C.red
-    }
-  }, loadError)), loadMsg && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "6px 10px",
-      borderRadius: 8,
-      background: C.greenBg,
-      border: `1px solid ${C.greenBorder}`,
-      marginTop: 6
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: "check",
-    size: 12,
-    color: C.green
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 12,
-      color: C.green
-    }
-  }, loadMsg)), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 10,
-      color: C.text4,
-      margin: "8px 0 10px"
-    }
-  }, t("replaceWarning")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      justifyContent: "flex-end"
-    }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: handlePaste,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 5,
-      padding: "8px 14px",
-      borderRadius: 9,
-      border: `1px solid ${pasted ? C.greenBorder : C.border2}`,
-      background: pasted ? C.greenBg : C.card2,
-      color: pasted ? C.green : C.text2,
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: "pointer",
-      transition: "all 0.2s"
-    }
-  }, /*#__PURE__*/React.createElement(Icon, {
-    name: pasted ? "check" : "copy",
-    size: 12,
-    color: pasted ? C.green : C.text2
-  }), pasted ? isHe ? "הודבק!" : "Pasted!" : isHe ? "הדבק" : "Paste"), /*#__PURE__*/React.createElement("button", {
-    onClick: handleLoad,
-    disabled: !jsonText.trim() || loadSaving,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "8px 18px",
-      borderRadius: 9,
-      border: "none",
-      background: jsonText.trim() && !loadSaving ? "linear-gradient(135deg,#3B82F6,#2563EB)" : C.border,
-      color: "#fff",
-      fontSize: 13,
-      fontWeight: 600,
-      cursor: jsonText.trim() && !loadSaving ? "pointer" : "default",
-      boxShadow: jsonText.trim() && !loadSaving ? "0 2px 8px rgba(59,130,246,0.3)" : "none"
-    }
-  }, loadSaving && /*#__PURE__*/React.createElement("svg", {
-    width: "13",
-    height: "13",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "#fff",
-    strokeWidth: "2.5",
-    style: {
-      animation: "spin 0.8s linear infinite"
-    }
-  }, /*#__PURE__*/React.createElement("path", {
-    d: "M12 2a10 10 0 0 1 10 10",
-    strokeLinecap: "round"
-  })), loadSaving ? isHe ? "שומר..." : "Saving..." : isHe ? "הוסף" : "Add")))), /*#__PURE__*/React.createElement(Row, {
     icon: "📥",
     label: isHe ? "ייבוא iCalendar (.ics)" : "Import iCalendar (.ics)",
     sub: icsFiles.length
@@ -19950,30 +19743,46 @@ const AllTasksView = ({
       gap: 8,
       marginBottom: 16
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    onClick: handleCollapseAllClick,
-    title: isHe ? "כווץ הכל" : "Collapse all",
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      cursor: anyTypeOpen ? "pointer" : "default",
-      opacity: anyTypeOpen ? 1 : 0.4,
-      transition: "opacity 0.15s",
-      animation: collapseBounce ? "checkBounce 0.42s cubic-bezier(0.34,1.56,0.64,1)" : "none"
-    }
   }, /*#__PURE__*/React.createElement(Icon, {
     name: "tag",
     size: 16,
     color: "#3B82F6"
-  })), /*#__PURE__*/React.createElement("h2", {
+  }), /*#__PURE__*/React.createElement("h2", {
     style: {
       fontSize: 18,
       fontWeight: 700,
       color: C.text,
       flex: 1
     }
-  }, t("tasksByType"))), /*#__PURE__*/React.createElement(ListByType, {
+  }, t("tasksByType")),
+  // Collapse all, at the far end of the title row: a named button rather than
+  // the bare icon that used to sit beside the title, where it read as part of
+  // the heading rather than as something to press. Dimmed and inert when
+  // every group is already closed.
+  /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: handleCollapseAllClick,
+    disabled: !anyTypeOpen,
+    title: isHe ? "כווץ הכל" : "Collapse all",
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      flexShrink: 0,
+      padding: 6,
+      borderRadius: 8,
+      border: "none",
+      background: "transparent",
+      cursor: anyTypeOpen ? "pointer" : "default",
+      opacity: anyTypeOpen ? 0.75 : 0.3,
+      transition: "opacity 0.15s, background 0.15s, border-color 0.15s",
+      animation: collapseBounce ? "checkBounce 0.42s cubic-bezier(0.34,1.56,0.64,1)" : "none"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "collapseAll",
+    size: 15,
+    color: anyTypeOpen ? C.text3 : C.text4
+  }))), /*#__PURE__*/React.createElement(ListByType, {
     tasks: tasks.filter(t => !isDone(t) && !isCancelled(t)),
     onToggle: onToggle,
     onEdit: onEdit,
@@ -19995,7 +19804,6 @@ const AllTasksView = ({
 
 // ── SearchView: keyword + type + date filters → tasks in minimal DayChip view ─
 const SEARCH_STORAGE_KEY = "taskflow_search_state";
-const SEARCH_HISTORY_KEY = "taskflow_search_history";
 const BLANK_SEARCH = {
   query: "",
   typeFilter: "",
@@ -20023,21 +19831,6 @@ const saveSearchState = s => {
     localStorage.setItem(SEARCH_STORAGE_KEY, JSON.stringify(s));
   } catch {}
 };
-// Migrate old history entries that lack chartMode — default to "pie"
-const migrateHistoryEntry = h => ({
-  chartMode: "pie",
-  sortOrder: "smart",
-  ...h
-});
-const loadSearchHistory = () => {
-  try {
-    const h = localStorage.getItem(SEARCH_HISTORY_KEY);
-    return h ? JSON.parse(h).map(migrateHistoryEntry) : [];
-  } catch {
-    return [];
-  }
-};
-
 // Given a preset, return {from,to} date strings (YYYY-MM-DD), or "" for open-ended
 const presetToDates = preset => {
   const pad = n => String(n).padStart(2, "0");
@@ -20588,32 +20381,7 @@ const SearchView = ({
   const bulkOn = !!(selectMode && onSetSelected);
   const isSel = id => !!(selectedIds && selectedIds.has(id));
   const bulkPool = bulkOn ? filtered.filter(tk => !isBulkEditLocked(tk)) : [];
-  const isPendingTk = tk => !isDone(tk) && !isCancelled(tk);
-  const quickPicks = bulkOn ? [{
-    key: "all",
-    label: t("selectAll"),
-    list: bulkPool
-  }, {
-    key: "pending",
-    label: t("pendingL"),
-    list: bulkPool.filter(isPendingTk)
-  }, {
-    key: "overdue",
-    label: t("overdue"),
-    list: bulkPool.filter(isOverdue)
-  }, {
-    key: "done",
-    label: t("completedL"),
-    list: bulkPool.filter(isDone)
-  }, {
-    key: "cancelled",
-    label: t("cancelledL"),
-    list: bulkPool.filter(isCancelled)
-  }, {
-    key: "nodate",
-    label: t("noDate"),
-    list: bulkPool.filter(tk => !tk.date)
-  }].filter(p => p.key === "all" || p.list.length > 0) : [];
+  const quickPicks = bulkOn ? buildQuickPicks(bulkPool) : [];
   const invertSelection = () => {
     const on = [],
       off = [];
@@ -20635,6 +20403,9 @@ const SearchView = ({
         picks: quickPicks.map(p => ({
           key: p.key,
           label: p.label,
+          color: p.color || null,
+          bg: p.bg || null,
+          border: p.border || null,
           ids: p.list.map(tk => tk.id)
         })),
         isSel,
@@ -23217,9 +22988,11 @@ const BulkActionBar = ({
           gap: 5,
           padding: "7px 14px",
           borderRadius: 999,
-          border: `1px solid ${active ? C.blueBorder : C.border2}`,
-          background: active ? C.blueBg : C.card2,
-          color: active ? C.blue : C.text3,
+          // A type chip wears its own type's colour when active; the status
+          // chips stay blue.
+          border: `1px solid ${active ? p.border || C.blueBorder : C.border2}`,
+          background: active ? p.bg || C.blueBg : C.card2,
+          color: active ? p.color || C.blue : C.text3,
           fontSize: 12,
           fontWeight: 600,
           cursor: p.ids.length === 0 ? "default" : "pointer",
@@ -23723,6 +23496,7 @@ function App() {
         handleMonthNav(0);
         resetMonthViewRef.current();
       }
+      if (nextView === "week" && weekWideToggleRef.current) weekWideToggleRef.current();
       return;
     }
     window.scrollTo({
@@ -23914,6 +23688,7 @@ function App() {
     };
   });
   const resetMonthViewRef = useRef(null); // set by MonthView; called when tapping active month tab
+  const weekWideToggleRef = useRef(null); // set by WeekView; called when tapping the active week tab
   const [pullDist, setPullDist] = useState(0);
   const [filteredCharts, setFilteredCharts] = useState(loadCharts);
   // Auto-save whenever the person adds/removes/reorders a chart, or changes
@@ -23931,6 +23706,7 @@ function App() {
   const [prefIntl, setPrefIntl] = useState(() => getPref(PREF_INTL) || "yes");
   const [prefLookahead, setPrefLookahead] = useState(() => getPref(PREF_LOOKAHEAD) !== "no"); // default ON
   const [prefGcalForeign, setPrefGcalForeign] = useState(() => getPref(PREF_GCAL_FOREIGN) !== "no"); // default ON
+  const [prefGcalReal, setPrefGcalReal] = useState(() => getPref(PREF_GCAL_REAL) === "yes"); // default OFF
   const [singleColumnLists, setSingleColumnLists] = useState(() => getPref(PREF_SINGLE_COLUMN_LISTS) === "yes"); // default OFF
   // New-user welcome dialog (offline vs Google) -- shown once, the very
   // first time the app runs on a device.
@@ -24569,6 +24345,11 @@ function App() {
     } else if (gcalConnected) {
       gcalPullForeignNow();
     }
+  };
+  const handleToggleGcalReal = () => {
+    const next = !prefGcalReal;
+    setPref(PREF_GCAL_REAL, next ? "yes" : "no");
+    setPrefGcalReal(next);
   };
 
   const handleConnectGCal = async () => {
@@ -25460,7 +25241,13 @@ function App() {
     // on the calendar. Always resolve back to the real, stored task (its
     // actual next-due date) instead of editing the virtual date it was
     // rendered under, regardless of which future cell was tapped.
-    const real = task && task._projected ? (tasks.find(t => t.id === task.id) || task) : task;
+    // Also the one place the display copy must not be trusted: with "real
+    // Google calendars" on, that copy wears its calendar's name as its type,
+    // and saving from it would read as a deliberate type change (i.e. as
+    // converting the event into a TaskIt task).
+    const real = task && (task._projected || task.source === "google")
+      ? (tasks.find(t => t.id === task.id) || task)
+      : task;
     setEditTask(real);
     setModalOpen(true);
   };
@@ -27811,7 +27598,7 @@ function App() {
       animation: slideDir === "left" ? "slideInLeft 0.22s cubic-bezier(0.25,1,0.5,1) both" : slideDir === "right" ? "slideInRight 0.22s cubic-bezier(0.25,1,0.5,1) both" : undefined
     }
   }, view === "home" && /*#__PURE__*/React.createElement(Dashboard, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
+    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -27830,7 +27617,7 @@ function App() {
     onSetSelected: setTasksSelected,
     onQuickPicksReady: registerBulkQuickPicks
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
+    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
     curDate: calDate,
     onNav: handleMonthNav,
     onDayClick: ds => {
@@ -27849,8 +27636,9 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
+    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
     curDate: calDate,
+    onWideToggleRef: weekWideToggleRef,
     onNav: handleWeekNav,
     onTaskClick: openEdit,
     onDayClick: openNew,
@@ -27863,7 +27651,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
+    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -27917,7 +27705,7 @@ function App() {
     collapseAllRef: collapseAllTypesRef,
     singleColumnLists: singleColumnLists
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
-    tasks: dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)),
+    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
     onEdit: openEdit,
     onShareReady: registerShareAction,
     selectMode: selectMode,
@@ -27995,6 +27783,8 @@ function App() {
     gcalReady: gcalReady,
     prefGcalForeign: prefGcalForeign,
     onToggleGcalForeign: handleToggleGcalForeign,
+    prefGcalReal: prefGcalReal,
+    onToggleGcalReal: handleToggleGcalReal,
     onDeleteType: type => {
       if (!type) return;
       const match = tk => (tk.type || "regular") === type;
@@ -28018,47 +27808,6 @@ function App() {
         return fresh.length ? [...prev, ...fresh] : prev;
       });
     },
-    onLoad: ({
-      tasks: lt,
-      archive: la,
-      charts: lc,
-      prefs: lp,
-      keepPrefs
-    }) => {
-      setTasks(lt);
-      setArchiveTasks(la || []);
-      if (lc) {
-        setFilteredCharts(lc);
-        persistCharts(lc);
-      }
-      if (keepPrefs) return; // merge-import: leave holiday prefs exactly as they are
-      if (lp) {
-        // New JSON with prefs — restore them, no prompts needed
-        setPref(PREF_IL, lp.il || "no");
-        setPrefIL(lp.il || "no");
-        setPref(PREF_INTL, lp.intl || "no");
-        setPrefIntl(lp.intl || "no");
-        // If opted in, also clear sync date so holidays re-seed fresh
-        if (lp.il === "yes") {
-          localStorage.removeItem(HEBCAL_SYNC_KEY);
-        }
-        if (lp.intl === "yes") {
-          // Re-seed intl holidays on next render
-          setTimeout(() => setTasks(prev => {
-            const n = buildIntlHolidays(prev);
-            return n.length > 0 ? [...prev, ...n] : prev;
-          }), 100);
-        }
-      } else {
-        // Old JSON — reset prefs so prompts appear
-        localStorage.removeItem(PREF_IL);
-        setPrefIL(null);
-        localStorage.removeItem(PREF_INTL);
-        setPrefIntl(null);
-        localStorage.removeItem(HEBCAL_SYNC_KEY);
-        localStorage.removeItem("taskflow_hebcal_ids");
-      }
-    }
   }), (selectMode || bulkBarClosing) && /*#__PURE__*/React.createElement(BulkActionBar, {
     narrow: narrow,
     armed: armedBulk,
