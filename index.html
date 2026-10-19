@@ -253,7 +253,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "18.2";
+const APP_VERSION = "18.5";
 
 const {
   useState,
@@ -5313,6 +5313,21 @@ const fixBrokenWordsForCapture = doc => {
   if (!meas) return;
   const seg = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
   const letters = w => seg ? Array.from(seg.segment(w), x => x.segment) : Array.from(w);
+  // Which words may be broken up at all. This helper exists for one case: a
+  // single long unbroken word (a URL, a run of Latin letters) that the live
+  // browser wraps but html2canvas renders at full width. The fix is to insert
+  // zero-width spaces between its letters so the capture wraps it too.
+  //
+  // That trick must not touch right-to-left or emoji text. html2canvas lays
+  // out each "word" itself, by measuring it and placing it at an x position
+  // of its own calculation -- and it does that left-to-right regardless of
+  // direction. Splitting a Hebrew name into twenty separate one-letter words
+  // therefore hands it twenty fragments to position in the wrong direction,
+  // which is what drew them on top of each other. Clipping is handled by plain
+  // CSS (overflow:hidden with a max height), which html2canvas does honour, so
+  // leaving these words whole costs nothing.
+  const BIDI_OR_EMOJI = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u200F\u200E\u2066-\u2069]|[\uD800-\uDBFF]|[\u2190-\u2BFF\uFE0F\u20E3]/;
+  const breakable = w => !BIDI_OR_EMOJI.test(w);
   doc.querySelectorAll("body *").forEach(el => {
     const cs = win.getComputedStyle(el);
     const wraps = cs.overflowWrap === "break-word" || cs.overflowWrap === "anywhere" || cs.wordBreak === "break-word";
@@ -5325,6 +5340,7 @@ const fixBrokenWordsForCapture = doc => {
       let changed = false;
       const out = node.nodeValue.split(/(\s+)/).map(tok => {
         if (!tok || /^\s+$/.test(tok) || meas.measureText(tok).width <= width) return tok;
+        if (!breakable(tok)) return tok;
         changed = true;
         return letters(tok).join("\u200B");
       }).join("");
@@ -10270,11 +10286,17 @@ const WeekView = ({
     let target = null;
     for (const c of cols) if (c.dataset.weekcol === today) target = c;
     if (!target) target = cols[0];
+    // scrollIntoView is a two-axis operation; "nearest" should leave a column
+    // taller than the screen where it is, but the page's own scroll position
+    // is put back if it moved at all -- nothing here is about vertical
+    // position.
+    const y = typeof window !== "undefined" ? window.scrollY : 0;
     try {
       target.scrollIntoView({ inline: "center", block: "nearest", behavior });
     } catch {
       target.scrollIntoView(false);
     }
+    if (typeof window !== "undefined" && window.scrollY !== y) window.scrollTo(0, y);
   };
   const longPressTimerRef = useRef(null);
   const longPressAtRef = useRef(0);
@@ -10287,13 +10309,26 @@ const WeekView = ({
   };
   useEffect(() => {
     if (!wideOn) {
+      // Narrowing needs no help: as the pane shrinks the browser clamps the
+      // scroll position itself, frame by frame, and all seven columns end up
+      // on screen anyway.
       syncHeaderScroll(0);
       return;
     }
-    // After the widening animation has run, so the column is measured at the
-    // width it ends up with rather than the one it started from.
-    const timer = setTimeout(() => centerWeekColumn("auto"), 360);
-    return () => clearTimeout(timer);
+    // Widening is the case that needs following. The grid's width animates
+    // over 340ms and the scroll position that centres today's column moves
+    // with it, so the column is re-centred every frame while that runs --
+    // the grid widens and slides into place as one movement, instead of
+    // widening and then jumping sideways once it has finished.
+    let raf = 0;
+    const started = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const follow = () => {
+      centerWeekColumn("auto");
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (now - started < 420) raf = requestAnimationFrame(follow);
+    };
+    raf = requestAnimationFrame(follow);
+    return () => cancelAnimationFrame(raf);
   }, [wideOn]);
   // Navigating to another week while widened starts that week at the same
   // place: today if it's in there, otherwise its first day.
@@ -10500,7 +10535,12 @@ const WeekView = ({
       startY: t.clientY,
       dx: 0,
       swiping: false,
-      committed: false
+      committed: false,
+      // Wide mode only: how far the finger has carried on after the grid ran
+      // out of room to scroll (see onGridTouchMove).
+      edgePull: 0,
+      lastScroll: null,
+      lastX: null
     };
     setSwipeDx(0);
   };
@@ -10519,7 +10559,33 @@ const WeekView = ({
     if (wideOn && !dragRef.current.active) {
       const sw = swipeRef.current;
       const tw = e.touches[0];
-      if (sw && tw && Math.abs(tw.clientX - sw.startX) > Math.abs(tw.clientY - sw.startY)) e.stopPropagation();
+      if (sw && tw && Math.abs(tw.clientX - sw.startX) > Math.abs(tw.clientY - sw.startY)) {
+        e.stopPropagation();
+        // Carrying on past the end of the grid changes the week, the way the
+        // swipe does when the week fits the screen. "Past the end" is read
+        // from the grid itself rather than from a scroll position: whenever
+        // the pane hasn't moved since the last touch event but the finger has
+        // kept going sideways, there was nowhere left to scroll, and that
+        // leftover movement is what counts. Doing it this way needs no
+        // knowledge of which end is which -- a right-to-left grid measures its
+        // scroll from the other side, and not identically in every browser.
+        const pane = hScrollRef.current;
+        if (pane) {
+          const sl = pane.scrollLeft;
+          const lastX = sw.lastX == null ? sw.startX : sw.lastX;
+          const step = tw.clientX - lastX;
+          if (sw.lastScroll != null && Math.abs(sl - sw.lastScroll) < 0.5) {
+            sw.edgePull = (sw.edgePull || 0) + step;
+          } else {
+            sw.edgePull = 0;
+          }
+          sw.lastScroll = sl;
+          sw.lastX = tw.clientX;
+          // A damped nudge, so holding at the edge shows that something is
+          // about to give.
+          setSwipeDx(Math.max(-60, Math.min(60, (sw.edgePull || 0) * 0.35)));
+        }
+      }
       return;
     }
     // A drag owns the gesture: block both the week swipe and the parent
@@ -10566,8 +10632,18 @@ const WeekView = ({
     // a swipe to another view. Stopping the move events was never going to
     // reach that decision; this end event has to be stopped too.
     if (wideOn || wasLongPress) {
+      const pull = wideOn && !wasLongPress ? (sEnd && sEnd.edgePull) || 0 : 0;
+      if (sEnd) {
+        sEnd.edgePull = 0;
+        sEnd.lastScroll = null;
+        sEnd.lastX = null;
+      }
       setSwipeDx(0);
       if (e && e.stopPropagation) e.stopPropagation();
+      // Enough pull past the edge, in the same direction the swipe uses when
+      // the week fits the screen.
+      const EDGE_THRESHOLD = 64;
+      if (Math.abs(pull) >= EDGE_THRESHOLD) onNav(isHe ? (pull < 0 ? -7 : 7) : (pull < 0 ? 7 : -7));
       return;
     }
     // Only a real, completed drag suppresses the swipe commit. dragRef.id stays
