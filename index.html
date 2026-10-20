@@ -253,7 +253,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "18.6";
+const APP_VERSION = "18.8";
 
 const {
   useState,
@@ -21269,6 +21269,16 @@ const GCal = (() => {
     // and its repeat exceptions stay attached to it.
     const nat = /^gn_([a-v0-9]{5,1000})$/.exec(String(taskId));
     if (nat) return nat[1];
+    // Same idea for events whose id isn't plain lowercase letters/digits, e.g. ones
+    // that arrive from Apple Calendar / an .ics file (uppercase UUIDs with hyphens).
+    // The task id carries that id hex-encoded so it stays a safe string everywhere.
+    const nx = /^gx_((?:[0-9a-f]{2}){1,500})$/.exec(String(taskId));
+    if (nx) {
+      try {
+        const raw = new TextDecoder().decode(Uint8Array.from(nx[1].match(/../g).map(h => parseInt(h, 16))));
+        if (raw) return raw;
+      } catch {}
+    }
     const bytes = new TextEncoder().encode(String(taskId));
     let hex = "";
     for (const b of bytes) hex += b.toString(16).padStart(2, "0");
@@ -22168,12 +22178,12 @@ const GCal = (() => {
       const clean = o => o && Object.fromEntries(Object.entries(o).filter(([, v]) => v != null));
       const full = { ...body, start: clean(body.start), end: clean(body.end), status: "confirmed" };
       if (full.description == null) delete full.description;
-      return apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, { method: "PUT", body: JSON.stringify(full) });
+      return apiFetch(`/calendars/${enc(calendarId)}/events/${enc(eventId)}`, { method: "PUT", body: JSON.stringify(full) });
     };
     const doUpdate = async () => {
       let ev;
       try {
-        ev = await apiFetch(`/calendars/${enc(calendarId)}/events/${eventId}`, {
+        ev = await apiFetch(`/calendars/${enc(calendarId)}/events/${enc(eventId)}`, {
           method: "PATCH", body: JSON.stringify({ ...body, status: "confirmed" })
         });
       } catch (e) {
@@ -22210,7 +22220,7 @@ const GCal = (() => {
     // Only clean up a location we actually know held this task (a real type change),
     // never a blind sweep of every calendar we happen to know about.
     if (knownLoc && knownLoc !== calendarId) {
-      await apiFetch(`/calendars/${enc(knownLoc)}/events/${eventId}`, { method: "DELETE" }).catch(() => {});
+      await apiFetch(`/calendars/${enc(knownLoc)}/events/${enc(eventId)}`, { method: "DELETE" }).catch(() => {});
     }
     if (body.recurrence.length && task.recur === "year") await syncAnnualInstanceNames(calendarId, eventId, task);
     return { googleEventId: event.id, calendarId, sig: taskSignature(task) };
@@ -22227,13 +22237,13 @@ const GCal = (() => {
     // a silently-lost delete is how a deleted task came back on the next pull.
     const gone = e => { if (e && (e.status === 404 || e.status === 410)) return; throw e; };
     if (knownLoc) {
-      await apiFetch(`/calendars/${enc(knownLoc)}/events/${eventId}`, { method: "DELETE" }).catch(gone);
+      await apiFetch(`/calendars/${enc(knownLoc)}/events/${enc(eventId)}`, { method: "DELETE" }).catch(gone);
       return;
     }
     const ids = await getAllCalendarIds();
     let firstErr = null;
     for (const cid of ids) {
-      await apiFetch(`/calendars/${enc(cid)}/events/${eventId}`, { method: "DELETE" }).catch(gone).catch(e => { firstErr = firstErr || e; });
+      await apiFetch(`/calendars/${enc(cid)}/events/${enc(eventId)}`, { method: "DELETE" }).catch(gone).catch(e => { firstErr = firstErr || e; });
     }
     if (firstErr) throw firstErr;
   }
@@ -22250,8 +22260,15 @@ const GCal = (() => {
   async function adoptNativeEvent(calendarId, type, ev) {
     if (!type || type === UNSCHEDULED_KEY || type === HOLIDAYS_KEY || type === "calendar" || type === "google") return null;
     if (!ev.start || ev.recurringEventId) return null;
-    if (!/^[a-v0-9]{5,1000}$/.test(String(ev.id || ""))) return null; // id TaskIt can address again
-    const tid = "gn_" + ev.id;
+    const evId = String(ev.id || "");
+    if (!evId) return null;
+    let tid;
+    if (/^[a-v0-9]{5,1000}$/.test(evId)) tid = "gn_" + evId;
+    else {
+      const hex = Array.from(new TextEncoder().encode(evId)).map(b => b.toString(16).padStart(2, "0")).join("");
+      if (hex.length > 1000) return null;
+      tid = "gx_" + hex;
+    }
     const priv = { ...(ev.extendedProperties?.private || {}), taskitId: tid, type };
     if (Array.isArray(ev.recurrence) && ev.recurrence.length) priv.rrule = "1";
     // A leading check mark in the title means completed, a cross cancelled.
