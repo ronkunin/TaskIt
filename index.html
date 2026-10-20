@@ -21264,6 +21264,11 @@ const GCal = (() => {
   // same task aim at the same event id, so the second one updates instead of
   // inserting. No lookup table required, therefore nothing to lose on reload.
   function eventIdForTask(taskId) {
+    // A task adopted from an event made by hand in Google Calendar ("gn_" + that
+    // event's own id) keeps using that very event, so nothing is copied or moved
+    // and its repeat exceptions stay attached to it.
+    const nat = /^gn_([a-v0-9]{5,1000})$/.exec(String(taskId));
+    if (nat) return nat[1];
     const bytes = new TextEncoder().encode(String(taskId));
     let hex = "";
     for (const b of bytes) hex += b.toString(16).padStart(2, "0");
@@ -22233,6 +22238,40 @@ const GCal = (() => {
     if (firstErr) throw firstErr;
   }
 
+  // ── Adopt events created by hand in Google Calendar ──────────────────────
+  // The Google Calendar app never writes TaskIt's private tag, so tasks added by
+  // hand inside a "TaskIt · X" calendar were ignored. Here such an event is tagged
+  // IN PLACE (a PATCH of its private properties only): task id "gn_" + the event's
+  // own id, type = the calendar's type. Its id never changes (see eventIdForTask),
+  // so nothing is copied or deleted, and a repeating event keeps every date that
+  // was moved or deleted in Google. The first sync then writes the full TaskIt
+  // version of the event back, so it ends up a regular TaskIt task.
+  // Returns the tagged event, or null when it can't be adopted.
+  async function adoptNativeEvent(calendarId, type, ev) {
+    if (!type || type === UNSCHEDULED_KEY || type === HOLIDAYS_KEY || type === "calendar" || type === "google") return null;
+    if (!ev.start || ev.recurringEventId) return null;
+    if (!/^[a-v0-9]{5,1000}$/.test(String(ev.id || ""))) return null; // id TaskIt can address again
+    const tid = "gn_" + ev.id;
+    const priv = { ...(ev.extendedProperties?.private || {}), taskitId: tid, type };
+    if (Array.isArray(ev.recurrence) && ev.recurrence.length) priv.rrule = "1";
+    // A leading check mark in the title means completed, a cross cancelled.
+    const mark = splitStatusMark(ev.summary);
+    const body = {};
+    if (mark.done || mark.cancelled) {
+      priv.done = mark.done ? "1" : "0";
+      priv.cancelled = mark.cancelled ? "1" : "0";
+      const canon = (mark.done ? "\u2714 " : "\u2716 ") + mark.name;
+      if (String(ev.summary || "") !== canon) body.summary = canon;
+    }
+    const tagged = { ...ev, ...body, extendedProperties: { ...(ev.extendedProperties || {}), private: priv } };
+    // No signature is stored on purpose: the next sync sees the event as not yet
+    // matching the task and pushes the full TaskIt version of it back, so from then
+    // on it is an ordinary TaskIt event (reminder, title marks, tags and all).
+    body.extendedProperties = { private: priv };
+    await apiFetch(`/calendars/${enc(calendarId)}/events/${enc(ev.id)}`, { method: "PATCH", body: JSON.stringify(body) });
+    return { ...tagged, extendedProperties: { ...(tagged.extendedProperties || {}), private: priv } };
+  }
+
   // ── Pull ──────────────────────────────────────────────────────────────────
   // No syncToken. A sync token is per-device incremental state with a short shelf
   // life; when it expires Google answers 410 (those were the 410s in the console)
@@ -22279,8 +22318,16 @@ const GCal = (() => {
               continue;
             }
             if (ev.status === "cancelled") continue;
-            if (!ev.extendedProperties?.private?.taskitId) continue;
-            events.push({ calendarId, type, event: ev });
+            let evx = ev;
+            if (!evx.extendedProperties?.private?.taskitId) {
+              // Made by hand in the Google Calendar app inside a TaskIt calendar.
+              // Tag it in place so it becomes a real task of that calendar's type.
+              // If that isn't possible (read-only calendar, unusual event id, offline)
+              // it is left alone and still shows through the Google Events import.
+              try { evx = await adoptNativeEvent(calendarId, type, evx); } catch (e) { evx = null; }
+              if (!evx) continue;
+            }
+            events.push({ calendarId, type, event: evx });
           }
           pageToken = res?.nextPageToken || null;
         } while (pageToken && ++guard < 200);
@@ -22391,15 +22438,26 @@ const GCal = (() => {
     const list = await apiFetch("/users/me/calendarList?maxResults=250");
     const raw = [];
     for (const c of list?.items || []) {
-      if (c.summary && c.summary.startsWith(CAL_PREFIX)) continue; // ours, handled above
       if (c.deleted) continue;
+      // Our own "TaskIt · X" calendars are read by pullAll, but only events that
+      // carry TaskIt's tag. Anything added there by hand in the Google Calendar
+      // app has no tag, so it comes through here instead -- the same untagged,
+      // in-place route as any other Google event (every occurrence of a repeating
+      // one shown as Google has it, single edits/deletions included; tagged
+      // events are skipped in pullForeign). Shown under the bare calendar name.
+      let foreignSummary = c.summary;
+      if (c.summary && c.summary.startsWith(CAL_PREFIX)) {
+        const k = c.summary.slice(CAL_PREFIX.length);
+        if (k === UNSCHEDULED_KEY || k === HOLIDAYS_KEY) continue;
+        foreignSummary = k;
+      }
       // A calendar the user did not add themselves (holidays-in-X, birthdays,
       // etc. that Google subscribes everyone to) still comes back as "reader"
       // and would flood the list with entries nobody asked to import — skip
       // anything whose id looks like one of Google's own public feeds.
       if (/^[a-z_]+#(holiday|weeknum)@group\.v\.calendar\.google\.com$/.test(c.id)) continue;
       if (c.id === "addressbook#contacts@group.v.calendar.google.com") continue;
-      raw.push({ id: c.id, summary: c.summary || c.id, accessRole: c.accessRole || "reader", primary: !!c.primary });
+      raw.push({ id: c.id, summary: foreignSummary || c.id, accessRole: c.accessRole || "reader", primary: !!c.primary });
     }
     foreignCalRaw = raw;
     foreignCalAt = Date.now();
