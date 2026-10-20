@@ -253,7 +253,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "18.8";
+const APP_VERSION = "19.1";
 
 const {
   useState,
@@ -958,6 +958,14 @@ const migrateTask = t => {
   if (task.recurSkip !== undefined) {
     const skips = (Array.isArray(task.recurSkip) ? task.recurSkip : []).map(v => String(v || "")).filter((ds, i, a) => /^\d{4}-\d{2}-\d{2}$/.test(ds) && a.indexOf(ds) === i && (!task.date || ds > task.date) && (!task.recurUntil || ds <= task.recurUntil)).sort().slice(0, 60);
     if (skips.length && task.recur) task.recurSkip = skips; else delete task.recurSkip;
+  }
+  // Moved occurrences (recurMoved): display-only, from Google. Only well-formed
+  // entries on a task that still repeats.
+  if (task.recurMoved !== undefined) {
+    const okDs = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ""));
+    const mv = (Array.isArray(task.recurMoved) ? task.recurMoved : []).filter(m => m && typeof m === "object" && okDs(m.from) && okDs(m.date)).slice(0, 60);
+    const repeats = !!task.recur || Array.isArray(task.recurRule) && task.recurRule.length > 0;
+    if (mv.length && repeats) task.recurMoved = mv; else delete task.recurMoved;
   }
   // Fix previously mis-renamed or excluded hebcal holidays from old versions:
   if (task.hebcal) {
@@ -2081,13 +2089,46 @@ const renderShareTaskRow = (task, options) => {
 // can't express (see expandRecurRule above).
 const recurRuleLines = t => Array.isArray(t && t.recurRule) ? t.recurRule.filter(l => typeof l === "string" && l) : [];
 const isExternalRecur = t => recurRuleLines(t).length > 0;
-// Locked tasks: a repeat the app can only read. Renaming, completing,
+// Locked tasks: only repeats TaskIt itself can't hold. Renaming, completing,
 // cancelling and restoring all work; changing the dates, the time, the type
 // or the repeat itself does not, because there's nothing the app could write
 // back that wouldn't throw away what it was given. That covers a rule it
-// can't express, and a plain repeat whose exceptions ("this week it doesn't
-// meet") came in from outside -- moving that around would scatter the holes.
-const isRecurLocked = t => !!t && (isExternalRecur(t) || (Array.isArray(t.recurSkip) && t.recurSkip.length > 0));
+// can't express ("every weekday", "the second Tuesday"...) and a series with
+// an occurrence moved on its own in Google or Apple. Skipped dates are NOT a
+// lock any more: TaskIt holds those itself (recurSkip), and a date or repeat
+// change carries them along (see remapRecurSkips).
+const isRecurLocked = t => !!t && (isExternalRecur(t) || recurMovedList(t).length > 0);
+// Occurrences of a repeat that were moved, one at a time, in Google or Apple
+// Calendar ("this event only"). TaskIt's repeat model can't hold a single
+// moved date, so these are read from Google for display only: the series is
+// locked (see isRecurLocked) and the moved dates are drawn where they now
+// are. Each entry: { from, date, time, length, gs, ge } -- the date it left,
+// where it went, and Google's own start/end so it can be put back exactly.
+function recurMovedList(t) {
+  return Array.isArray(t && t.recurMoved) ? t.recurMoved.filter(m => m && typeof m.from === "string" && typeof m.date === "string") : [];
+}
+// The task's own (stored) occurrence, moved: shown at its new slot. The copy
+// keeps the real task in _real, so anything that works out the repeat's
+// dates uses the real date, and editing resolves back to the real task.
+const showMovedOccurrence = tk => {
+  if (!tk || !tk.date || !isRecurring(tk)) return tk;
+  const m = recurMovedList(tk).find(x => x.from === tk.date);
+  if (!m) return tk;
+  return {
+    ...tk,
+    date: m.date,
+    time: m.time || "",
+    length: m.length != null ? m.length : m.time ? tk.length : null,
+    finishDate: null,
+    _movedOcc: true,
+    _movedFrom: tk.date,
+    _real: tk
+  };
+};
+// Dates of the series that were moved away (nothing to project there)...
+const movedAwayDates = tk => new Set(recurMovedList(tk).map(m => m.from));
+// ...and the future ones landing inside [lo, hi], for the look-ahead.
+const movedOccurrencesBetween = (tk, lo, hi) => recurMovedList(tk).filter(m => m.from > tk.date && m.date >= lo && m.date <= hi && (!tk.recurUntil || m.from <= tk.recurUntil));
 const isRecurring = t => isExternalRecur(t) || !!(t.recur && (t.recur === "month" || t.recur === "year" || typeof t.recur === "number" && t.recur > 0 || typeof t.recur === "string" && parseInt(t.recur) > 0));
 const isDone = t => !!t.done;
 const isCancelled = t => !!t.cancelled;
@@ -6988,9 +7029,22 @@ const Modal = ({
         marginBottom: 16,
         lineHeight: 1.5
       }
-    }, getLang() === "he"
+    }, recurMovedList(editTask).length ? (getLang() === "he"
+      ? "מועד אחד או יותר של החזרה הזו הוזז ביומן אחר (Google או אפל), ולכן אפשר כאן רק לשנות שם, לסמן כבוצעה, לבטל או לשחזר."
+      : "One or more dates of this repeat were moved in another calendar (Google or Apple), so only renaming, completing, cancelling and restoring are available here.") : getLang() === "he"
       ? "החזרה של המשימה הזו הוגדרה מחוץ לאפליקציה, ולכן אפשר רק לשנות שם, לסמן כבוצעה, לבטל או לשחזר."
-      : "This task's repeat was set outside the app, so only renaming, completing, cancelling and restoring are available."), editTask.date && /*#__PURE__*/React.createElement("div", {
+      : "This task's repeat was set outside the app, so only renaming, completing, cancelling and restoring are available."), lockedRecur && recurMovedList(editTask).length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: C.text3,
+        marginTop: -8,
+        marginBottom: 16,
+        lineHeight: 1.7,
+        direction: getLang() === "he" ? "rtl" : "ltr"
+      }
+    }, recurMovedList(editTask).slice(0, 6).map((m, i) => /*#__PURE__*/React.createElement("div", {
+      key: i
+    }, fmtDate(m.from) + (getLang() === "he" ? " ← " : " → ") + fmtDate(m.date) + (m.time ? " " + m.time : ""))), recurMovedList(editTask).length > 6 && /*#__PURE__*/React.createElement("div", null, "…")), editTask.date && /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 13,
         color: C.text3,
@@ -8456,7 +8510,7 @@ const useSelectQuickPicks = (pool, {
   }, [bulkOn, pool, selectedIds]);
 };
 const MonthView = ({
-  tasks,
+  tasks: tasksIn,
   curDate,
   onNav,
   onDayClick,
@@ -8472,6 +8526,10 @@ const MonthView = ({
   onQuickPicksReady = null,
   prefLookahead = true
 }) => {
+  // A repeat's own occurrence moved on its own in Google/Apple Calendar is
+  // drawn where it now is (see showMovedOccurrence). Everything below sees
+  // that display copy; it resolves back to the real task when tapped.
+  const tasks = React.useMemo(() => (tasksIn || []).map(showMovedOccurrence), [tasksIn]);
   // Drop ripple: ds of the last cell that received a drop (cleared after animation).
   // Declared BEFORE useTaskDragEngine so the commit closure has no TDZ risk.
   const [rippleDs, setRippleDs] = useState(null);
@@ -9552,9 +9610,14 @@ const MonthView = ({
       // ...and the dates already projected, so two live tasks of one series
       // don't each project the same future date.
       const projectedSeriesDates = new Set();
-      tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tk => {
+      tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tkShown => {
+        // The real task, not its moved display copy: the repeat's dates are
+        // counted from where the series really is.
+        const tk = tkShown._real || tkShown;
+        const away = movedAwayDates(tk);
         occurrenceDatesInRange(tk, monthStart, monthEnd).forEach(ds => {
           if (ds === tk.date) return; // the real, stored occurrence is added normally
+          if (away.has(ds)) return; // moved in Google/Apple -- placed below instead
           const seriesDs = (tk.seriesId || tk.id) + "|" + ds;
           if (storedSeriesDates.has(seriesDs)) return; // already there for real
           if (projectedSeriesDates.has(seriesDs)) return;
@@ -9566,6 +9629,22 @@ const MonthView = ({
             name: recurNameOn(tk, ds),
             date: ds,
             _projected: true
+          });
+        });
+        // Future occurrences moved on their own in Google/Apple, where they
+        // went. Projections are never draggable, and the series itself is
+        // locked (isRecurLocked), so these only show.
+        movedOccurrencesBetween(tk, localDs(monthStart), localDs(monthEnd)).forEach(m => {
+          (map[m.date] || (map[m.date] = [])).push({
+            ...tk,
+            name: recurNameOn(tk, m.from),
+            date: m.date,
+            time: m.time || "",
+            length: m.length != null ? m.length : m.time ? tk.length : null,
+            finishDate: null,
+            _projected: true,
+            _movedOcc: true,
+            _movedFrom: m.from
           });
         });
       });
@@ -10186,7 +10265,7 @@ const weekSelBadge = (centered = false) => /*#__PURE__*/React.createElement("div
   points: "20 6 9 17 4 12"
 })));
 const WeekView = ({
-  tasks,
+  tasks: tasksIn,
   curDate,
   // Set by the app: tapping the Week tab while already on Week calls this to
   // switch the grid between fitting the screen and being widened. It replaces
@@ -10206,6 +10285,10 @@ const WeekView = ({
   onQuickPicksReady = null,
   prefLookahead = true
 }) => {
+  // A repeat's own occurrence moved on its own in Google/Apple Calendar is
+  // drawn where it now is (see showMovedOccurrence). Everything below sees
+  // that display copy; it resolves back to the real task when tapped.
+  const tasks = React.useMemo(() => (tasksIn || []).map(showMovedOccurrence), [tasksIn]);
   const width = useWindowWidth();
   const height = useWindowHeight();
   const rawNarrow = height > width;
@@ -10535,12 +10618,7 @@ const WeekView = ({
       startY: t.clientY,
       dx: 0,
       swiping: false,
-      committed: false,
-      // Wide mode only: how far the finger has carried on after the grid ran
-      // out of room to scroll (see onGridTouchMove).
-      edgePull: 0,
-      lastScroll: null,
-      lastX: null
+      committed: false
     };
     setSwipeDx(0);
   };
@@ -10560,31 +10638,11 @@ const WeekView = ({
       const sw = swipeRef.current;
       const tw = e.touches[0];
       if (sw && tw && Math.abs(tw.clientX - sw.startX) > Math.abs(tw.clientY - sw.startY)) {
+        // Sideways here only scrolls the widened grid. It never changes the
+        // week -- that's done with the header's prev/next buttons, or by
+        // switching back to the normal seven-column view, where the swipe
+        // between weeks still works.
         e.stopPropagation();
-        // Carrying on past the end of the grid changes the week, the way the
-        // swipe does when the week fits the screen. "Past the end" is read
-        // from the grid itself rather than from a scroll position: whenever
-        // the pane hasn't moved since the last touch event but the finger has
-        // kept going sideways, there was nowhere left to scroll, and that
-        // leftover movement is what counts. Doing it this way needs no
-        // knowledge of which end is which -- a right-to-left grid measures its
-        // scroll from the other side, and not identically in every browser.
-        const pane = hScrollRef.current;
-        if (pane) {
-          const sl = pane.scrollLeft;
-          const lastX = sw.lastX == null ? sw.startX : sw.lastX;
-          const step = tw.clientX - lastX;
-          if (sw.lastScroll != null && Math.abs(sl - sw.lastScroll) < 0.5) {
-            sw.edgePull = (sw.edgePull || 0) + step;
-          } else {
-            sw.edgePull = 0;
-          }
-          sw.lastScroll = sl;
-          sw.lastX = tw.clientX;
-          // A damped nudge, so holding at the edge shows that something is
-          // about to give.
-          setSwipeDx(Math.max(-60, Math.min(60, (sw.edgePull || 0) * 0.35)));
-        }
       }
       return;
     }
@@ -10626,24 +10684,14 @@ const WeekView = ({
     const sEnd = swipeRef.current;
     const wasLongPress = !!(sEnd && sEnd.longPressed);
     if (sEnd) sEnd.longPressed = false;
-    // Wide mode has no week swipe (sideways is scrolling, see above). The
+    // Wide mode has no week swipe at all (sideways is scrolling, see above). The
     // view-swipe one level up decides on ITS touchend, from where the finger
     // started and where it let go -- so a scroll across the grid still read as
     // a swipe to another view. Stopping the move events was never going to
     // reach that decision; this end event has to be stopped too.
     if (wideOn || wasLongPress) {
-      const pull = wideOn && !wasLongPress ? (sEnd && sEnd.edgePull) || 0 : 0;
-      if (sEnd) {
-        sEnd.edgePull = 0;
-        sEnd.lastScroll = null;
-        sEnd.lastX = null;
-      }
       setSwipeDx(0);
       if (e && e.stopPropagation) e.stopPropagation();
-      // Enough pull past the edge, in the same direction the swipe uses when
-      // the week fits the screen.
-      const EDGE_THRESHOLD = 64;
-      if (Math.abs(pull) >= EDGE_THRESHOLD) onNav(isHe ? (pull < 0 ? -7 : 7) : (pull < 0 ? 7 : -7));
       return;
     }
     // Only a real, completed drag suppresses the swipe commit. dragRef.id stays
@@ -10816,9 +10864,14 @@ const WeekView = ({
       // ...and the dates already projected, so two live tasks of one series
       // don't each project the same future date.
       const projectedSeriesDates = new Set();
-      tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tk => {
+      tasks.filter(tk => isRecurring(tk) && isPending(tk)).forEach(tkShown => {
+        // The real task, not its moved display copy: the repeat's dates are
+        // counted from where the series really is.
+        const tk = tkShown._real || tkShown;
+        const away = movedAwayDates(tk);
         occurrenceDatesInRange(tk, days[0], days[6]).forEach(ds => {
           if (ds === tk.date) return; // the real, stored occurrence is added normally
+          if (away.has(ds)) return; // moved in Google/Apple -- placed below instead
           const seriesDs = (tk.seriesId || tk.id) + "|" + ds;
           if (storedSeriesDates.has(seriesDs)) return; // already there for real
           if (projectedSeriesDates.has(seriesDs)) return;
@@ -10830,6 +10883,22 @@ const WeekView = ({
             name: recurNameOn(tk, ds),
             date: ds,
             _projected: true
+          });
+        });
+        // Future occurrences moved on their own in Google/Apple, where they
+        // went. Projections are never draggable, and the series itself is
+        // locked (isRecurLocked), so these only show.
+        movedOccurrencesBetween(tk, localDs(days[0]), localDs(days[6])).forEach(m => {
+          (map[m.date] || (map[m.date] = [])).push({
+            ...tk,
+            name: recurNameOn(tk, m.from),
+            date: m.date,
+            time: m.time || "",
+            length: m.length != null ? m.length : m.time ? tk.length : null,
+            finishDate: null,
+            _projected: true,
+            _movedOcc: true,
+            _movedFrom: m.from
           });
         });
       });
@@ -21505,12 +21574,52 @@ const GCal = (() => {
   let foreignCalRaw = null;
   let foreignCalAt = 0;
 
+  // ── Renamed TaskIt calendars ──────────────────────────────────────────
+  // Each TaskIt calendar's id is remembered with the type it stood for, so a
+  // calendar renamed in Google or Apple Calendar is recognised by its id
+  // rather than taken for a new type (which used to recreate the old calendar
+  // and move everything back). A rename renames the type on every task on
+  // the next load (see takeTypeRenames / gcalPullNow). Renames that can't be
+  // a type -- the Schedule, Repeated, Unscheduled and Holidays calendars, a
+  // reserved name, an empty one -- are put back in Google instead. A name
+  // that lost the "TaskIt · " part is still the same calendar: the type takes
+  // the new name and the prefix is put back on it.
+  const LS_CAL_NAMES = "taskit_gcal_cal_names";
+  const readCalNames = () => { try { return JSON.parse(localStorage.getItem(LS_CAL_NAMES) || "{}") || {}; } catch { return {}; } };
+  const saveCalNames = m => { try { localStorage.setItem(LS_CAL_NAMES, JSON.stringify(m)); } catch {} };
+  const RESERVED_CAL_KEYS = new Set(["regular", "repeated", "calendar", "google", UNSCHEDULED_KEY, HOLIDAYS_KEY]);
+  let pendingTypeRenames = [];
+  const takeTypeRenames = () => { const r = pendingTypeRenames; pendingTypeRenames = []; return r; };
+
   async function listAllRaw(force) {
     if (calRaw && !force && Date.now() - calMapAt < 300000) return calRaw;
     const list = await apiFetch("/users/me/calendarList?maxResults=250");
     const raw = [];
+    const known = readCalNames();
+    const nextKnown = {};
+    const putBack = [];
     for (const c of list?.items || []) {
-      if (c.summary && c.summary.startsWith(CAL_PREFIX)) raw.push({ id: c.id, type: c.summary.slice(CAL_PREFIX.length) });
+      const name = String(c.summary || "");
+      const ours = name.startsWith(CAL_PREFIX);
+      const was = Object.prototype.hasOwnProperty.call(known, c.id) ? known[c.id] : null;
+      if (!ours && was == null) continue; // not TaskIt's, and never was
+      let type = ours ? name.slice(CAL_PREFIX.length).trim() : name.trim();
+      if (was != null && type !== was) {
+        if (RESERVED_CAL_KEYS.has(was) || RESERVED_CAL_KEYS.has(type) || !type || type.length > 100) {
+          // Not a rename TaskIt can follow: the calendar gets its name back.
+          type = was;
+          putBack.push({ id: c.id, summary: CAL_PREFIX + was });
+        } else {
+          pendingTypeRenames.push({ from: was, to: type });
+          if (!ours) putBack.push({ id: c.id, summary: CAL_PREFIX + type });
+        }
+      }
+      raw.push({ id: c.id, type });
+      nextKnown[c.id] = type;
+    }
+    saveCalNames(nextKnown);
+    for (const f of putBack) {
+      await apiFetch(`/calendars/${enc(f.id)}`, { method: "PATCH", body: JSON.stringify({ summary: f.summary }) }).catch(() => {});
     }
     calRaw = raw;
     calMapAt = Date.now();
@@ -21874,6 +21983,176 @@ const GCal = (() => {
       return false;
     });
   }
+  // Occurrences of this repeating event moved on their own in Google or Apple
+  // Calendar (a different start, or a different length, from the series).
+  // A title-only override -- TaskIt's own counted-up yearly names among
+  // them -- is not a move. Only those from the series' start onward count.
+  function movedOccurrences(event, exceptions) {
+    if (!Array.isArray(event?.recurrence) || !event.recurrence.length || !Array.isArray(exceptions)) return [];
+    const st = event.start || {}, en = event.end || {};
+    const startDs = eventStartDs(event);
+    const mins = (a, b) => Math.round((new Date(b).getTime() - new Date(a).getTime()) / 60000);
+    const days = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 864e5);
+    const baseLen = st.dateTime && en.dateTime ? mins(st.dateTime, en.dateTime) : null;
+    const baseDays = st.date && en.date ? days(st.date, en.date) : 1;
+    const out = [];
+    for (const x of exceptions) {
+      if (!x || x.status === "cancelled" || !x.originalStartTime || !x.start) continue;
+      const o = x.originalStartTime;
+      const from = o.date || (o.dateTime ? localDs(new Date(o.dateTime)) : "");
+      if (!from || (startDs && from < startDs)) continue;
+      let date, time = "", length = null, sameStart, sameLen;
+      if (x.start.dateTime) {
+        const d = new Date(x.start.dateTime);
+        if (isNaN(d.getTime())) continue;
+        date = localDs(d);
+        time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+        if (x.end?.dateTime) length = mins(x.start.dateTime, x.end.dateTime);
+        sameStart = !!o.dateTime && new Date(o.dateTime).getTime() === d.getTime();
+        sameLen = length === baseLen;
+      } else if (x.start.date) {
+        date = x.start.date;
+        sameStart = o.date === x.start.date;
+        sameLen = (x.end?.date ? days(x.start.date, x.end.date) : 1) === baseDays;
+      } else continue;
+      if (sameStart && sameLen) continue;
+      out.push({ from, date, time, length: length > 0 ? length : null, gs: x.start, ge: x.end || null });
+    }
+    out.sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
+    return out.slice(0, 60);
+  }
+
+  // ── Moves waiting to be put back (self-repair) ───────────────────────────
+  // Putting the moved dates back on a new series (syncMovedInstances) is a
+  // second request after the event is created. If that one never lands
+  // (connection lost, app closed in between), the moves would be gone for
+  // good. So the new event is created already carrying them, in its hidden
+  // private properties ("mvp0".."mvp7", a JSON split into chunks, since one
+  // value holds at most 1024 characters). Every pull checks: a move that
+  // isn't in Google yet is applied again. Once every date has its override
+  // there is nothing left to do, and after 7 days the note is ignored, so
+  // nothing retries forever.
+  const MOVE_KEYS = 8, MOVE_CHUNK = 1000, MOVE_GIVE_UP_MS = 7 * 864e5;
+  const occFromOf = o => (o && (o.date || (o.dateTime ? localDs(new Date(o.dateTime)) : ""))) || "";
+  // A Google start/end pair as a recurMoved entry (date, time, length).
+  function moveEntry(from, gs, ge) {
+    if (!from || !gs) return null;
+    if (gs.dateTime) {
+      const d = new Date(gs.dateTime);
+      if (isNaN(d.getTime())) return null;
+      const len = ge && ge.dateTime ? Math.round((new Date(ge.dateTime).getTime() - d.getTime()) / 60000) : null;
+      return { from, date: localDs(d), time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}`, length: len > 0 ? len : null, gs, ge: ge || null };
+    }
+    if (gs.date) return { from, date: gs.date, time: "", length: null, gs, ge: ge || null };
+    return null;
+  }
+  function encodePendingMoves(task) {
+    const mv = recurMovedList(task).filter(m => m.gs && m.from >= String(task.date || ""));
+    if (!mv.length) return null;
+    const json = JSON.stringify({ t: Date.now(), m: mv.map(m => ({ f: m.from, s: m.gs, e: m.ge || null })) });
+    if (json.length > MOVE_KEYS * MOVE_CHUNK) return null; // too many to carry -- the direct attempt still runs
+    const out = {};
+    for (let i = 0; i < MOVE_KEYS; i++) out["mvp" + i] = json.slice(i * MOVE_CHUNK, (i + 1) * MOVE_CHUNK);
+    return out;
+  }
+  function readPendingMoves(event) {
+    const p = event?.extendedProperties?.private || {};
+    let json = "";
+    for (let i = 0; i < MOVE_KEYS; i++) json += p["mvp" + i] || "";
+    if (!json) return null;
+    try {
+      const o = JSON.parse(json);
+      if (!o || !Array.isArray(o.m)) return null;
+      const moves = o.m.map(x => x && moveEntry(String(x.f || ""), x.s, x.e)).filter(Boolean);
+      return { t: Number(o.t) || 0, moves };
+    } catch { return null; }
+  }
+  // The noted moves Google doesn't have yet: no override at all for that
+  // date. An override that IS there -- the move itself, or anything someone
+  // did to that date since -- settles it; TaskIt never overrules that.
+  function pendingMovesMissing(event, exceptions) {
+    const pend = readPendingMoves(event);
+    if (!pend || Date.now() - pend.t > MOVE_GIVE_UP_MS) return [];
+    const exs = Array.isArray(exceptions) ? exceptions : [];
+    return pend.moves.filter(m => !exs.some(x => occFromOf(x.originalStartTime) === m.from));
+  }
+  // Run after every pull (not awaited by it): re-apply what's missing. The
+  // note itself is never rewritten -- clearing it would touch the series
+  // event and could make it look newer than an edit still waiting to be
+  // pushed. It simply stops mattering: a date that has an override is
+  // settled, and after 7 days the whole note is ignored.
+  async function settlePendingMoves(events, exceptions) {
+    for (const { calendarId, event } of events || []) {
+      const missing = pendingMovesMissing(event, exceptions[calendarId + "::" + event.id]);
+      if (!missing.length) continue;
+      try {
+        await syncMovedInstances(calendarId, event.id, { date: eventStartDs(event), recurMoved: missing }, event);
+      } catch { /* next pull tries again */ }
+    }
+  }
+
+  // A completed occurrence ends its Google series and the next one starts a
+  // new event (see spawnNext), which on its own would drop every date moved
+  // in Google. The next task carries those moves over (recurMoved), and right
+  // after its new event is created they're put back on it, instance by
+  // instance. Best effort, like syncAnnualInstanceNames.
+  // `series` (optional) is the repeating event itself, for its length: an
+  // occurrence counts as untouched only at its original start AND length.
+  async function syncMovedInstances(calendarId, eventId, task, series) {
+    try {
+      const want = recurMovedList(task).filter(m => m.gs && m.from >= String(task.date || ""));
+      if (!want.length) return;
+      const all = want.map(m => m.from).concat(want.map(m => m.date)).sort();
+      const lo = new Date(all[0] + "T00:00:00"); lo.setDate(lo.getDate() - 1);
+      const hi = new Date(all[all.length - 1] + "T00:00:00"); hi.setDate(hi.getDate() + 2);
+      const same = (a, b) => !!a && !!b && (a.date || b.date ? (a.date || null) === (b.date || null) : !!a.dateTime && !!b.dateTime && new Date(a.dateTime).getTime() === new Date(b.dateTime).getTime());
+      const asPatch = v => v.date ? { date: v.date, dateTime: null, timeZone: null } : { dateTime: v.dateTime, timeZone: v.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", date: null };
+      // How long an untouched occurrence is: the series' own length.
+      const spanOf = (a, b) => {
+        if (!a || !b) return null;
+        if (a.dateTime && b.dateTime) return "m" + Math.round((new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()) / 60000);
+        if (a.date && b.date) return "d" + Math.round((new Date(b.date + "T00:00:00") - new Date(a.date + "T00:00:00")) / 864e5);
+        return null;
+      };
+      const seriesSpan = series ? spanOf(series.start, series.end) : null;
+      // Untouched = exactly where and as long as the series put it. Anything
+      // else means the occurrence was changed after the series was made --
+      // by this repair on another device, or by a person -- and is left be.
+      const untouched = inst => same(inst.start, inst.originalStartTime) && (seriesSpan == null || spanOf(inst.start, inst.end) === seriesSpan);
+      let pageToken = null, guard = 0;
+      do {
+        const params = new URLSearchParams({ maxResults: "250", showDeleted: "false", timeMin: lo.toISOString(), timeMax: hi.toISOString() });
+        if (pageToken) params.set("pageToken", pageToken);
+        const res = await apiFetch(`/calendars/${enc(calendarId)}/events/${enc(eventId)}/instances?${params}`);
+        for (const inst of res?.items || []) {
+          if (inst.status === "cancelled") continue;
+          const o = inst.originalStartTime || {};
+          const from = o.date || (o.dateTime ? localDs(new Date(o.dateTime)) : "");
+          const m = want.find(x => x.from === from);
+          if (!m) continue;
+          // Checked live, right before acting -- never on the strength of the
+          // note alone:
+          // 1. Already where it should be: done, nothing to do.
+          if (same(inst.start, m.gs) && (!m.ge || same(inst.end, m.ge))) continue;
+          // 2. Not where the series put it any more: someone moved it, or
+          //    another device already did this. That decision stands.
+          if (!untouched(inst)) continue;
+          // 3. Untouched: move it -- but only if it is still the very version
+          //    just read. If anything changed it in between, Google refuses
+          //    (412) and it is left alone; the next pull looks again.
+          const body = { start: asPatch(m.gs) };
+          if (m.ge) body.end = asPatch(m.ge);
+          await apiFetch(`/calendars/${enc(calendarId)}/events/${enc(inst.id)}`, {
+            method: "PATCH",
+            headers: inst.etag ? { "If-Match": inst.etag } : {},
+            body: JSON.stringify(body)
+          }).catch(() => {});
+        }
+        pageToken = res?.nextPageToken || null;
+      } while (pageToken && ++guard < 10);
+    } catch { /* display data -- never fail the push over it */ }
+  }
+
   // Yearly series that count up ("birthday 30", "31", ...): a repeating
   // event can only carry one title, so each of the next few years gets its
   // own correctly numbered title as a per-occurrence override. Re-run on
@@ -21910,7 +22189,10 @@ const GCal = (() => {
       t.done ? 1 : 0, t.cancelled ? 1 : 0,
       // Present for a task pushed as a repeating event -- including one whose
       // rule came from outside, where these lines are the whole repeat.
-      ...(rr ? [rr.join("\n")] : [])
+      ...(rr ? [rr.join("\n")] : []),
+      // Only for multi-day tasks: every other task's signature stays exactly
+      // what it was, so nothing re-syncs just because this was added.
+      ...(isMultiDay(t) ? ["finish:" + t.finishDate] : [])
     ]);
   }
 
@@ -21938,6 +22220,7 @@ const GCal = (() => {
           done: task.done ? "1" : "0",
           cancelled: task.cancelled ? "1" : "0",
           length: task.length == null ? "" : String(task.length),
+          finishDate: isMultiDay(task) ? String(task.finishDate) : "",
           noDate: isDateless(task) ? "1" : "0",
           // Round-tripped so a device that pulls one of these back — before it has
           // regenerated the same holiday locally itself — reconstructs a proper
@@ -22073,9 +22356,11 @@ const GCal = (() => {
         patch.recurDay = null;
         patch.recurSkip = null;
         if (patch.type === "regular") patch.type = "repeated";
-        return patch;
-      }
-      if (nat.ok) {
+        // No early return here: the date and time below still have to be
+        // read. Returning without them left an event made in Apple or Google
+        // with a rule like "every weekday" dateless, and the push that
+        // followed overwrote the real event with an undated one.
+      } else {
         patch.recur = nat.recur;
         patch.recurRule = null;
         patch.recurSkip = nat.skips && nat.skips.length ? nat.skips : null;
@@ -22124,7 +22409,68 @@ const GCal = (() => {
       patch.date = event.start.date;
       patch.time = "";
     }
+    readEventSpan(event, p, patch, repeats);
     return patch;
+  }
+
+  // How long the event really is in Google, read back into length and
+  // finishDate. Without this an event made (or stretched) in Apple or Google
+  // Calendar came in at TaskIt's stored length -- or the 1-hour default for a
+  // new one -- and the next push shrank the real event to match; a multi-day
+  // event came in as a single day. When the event is exactly the shape the
+  // stored values already produce, they are kept as they are, so tasks that
+  // never changed don't all re-sync once over a stored null becoming 60.
+  function readEventSpan(event, p, patch, repeats) {
+    const storedFinish = !repeats && p.finishDate && p.finishDate > patch.date ? p.finishDate : null;
+    if (event.start?.dateTime && event.end?.dateTime) {
+      const s = new Date(event.start.dateTime);
+      const e = new Date(event.end.dateTime);
+      if (isNaN(s.getTime()) || isNaN(e.getTime())) return;
+      const storedLen = Number(patch.length) > 0 ? Number(patch.length) : DEFAULT_TASK_LENGTH;
+      const expectedEnd = storedFinish
+        ? new Date(`${storedFinish}T${patch.time}:00`).getTime() + storedLen * 60000
+        : s.getTime() + storedLen * 60000;
+      if (Math.abs(e.getTime() - expectedEnd) < 60000) {
+        patch.finishDate = storedFinish;
+        return;
+      }
+      const raw = Math.round((e.getTime() - s.getTime()) / 60000);
+      if (raw <= 0) return; // a zero-length event: nothing sensible to adopt
+      if (raw < 1440 || repeats) {
+        // One day (an evening running past midnight included). A repeating
+        // task can't be multi-day in TaskIt, so a long one keeps its length.
+        patch.length = raw;
+        patch.finishDate = null;
+        return;
+      }
+      // Several days with times: TaskIt draws these as start time on the
+      // first day through finish date + length, so split the span that way.
+      const sTod = s.getHours() * 60 + s.getMinutes();
+      const eTod = e.getHours() * 60 + e.getMinutes();
+      let len = eTod - sTod;
+      if (len <= 0) len += 1440;
+      const finish = localDs(new Date(e.getTime() - len * 60000));
+      if (finish > patch.date) {
+        patch.length = len;
+        patch.finishDate = finish;
+      } else {
+        patch.length = raw;
+        patch.finishDate = null;
+      }
+      return;
+    }
+    if (event.start?.date) {
+      // Google's all-day end date is exclusive.
+      const endEx = event.end?.date || null;
+      const spanDays = endEx ? Math.round((new Date(endEx + "T00:00:00") - new Date(event.start.date + "T00:00:00")) / 864e5) : 1;
+      if (spanDays > 1 && !repeats) {
+        const last = new Date(endEx + "T00:00:00");
+        last.setDate(last.getDate() - 1);
+        patch.finishDate = localDs(last);
+      } else {
+        patch.finishDate = null;
+      }
+    }
   }
 
   const remoteSigOf = event => event.extendedProperties?.private?.sig || null;
@@ -22195,21 +22541,30 @@ const GCal = (() => {
       if (clearingRepeat && ev && Array.isArray(ev.recurrence) && ev.recurrence.length) return doReplace();
       return ev;
     };
+    // A new series that has moved dates to put back is created with a note
+    // of them (see encodePendingMoves), so a lost second request is redone
+    // on the next pull.
+    const pendingMoves = body.recurrence.length ? encodePendingMoves(task) : null;
+    const insertBody = pendingMoves
+      ? { ...body, extendedProperties: { ...body.extendedProperties, private: { ...body.extendedProperties.private, ...pendingMoves } } }
+      : body;
     const doInsert = () => apiFetch(`/calendars/${enc(calendarId)}/events`, {
-      method: "POST", body: JSON.stringify({ ...body, id: eventId })
+      method: "POST", body: JSON.stringify({ ...insertBody, id: eventId })
     });
     let event;
+    let inserted = false;
     if (knownLoc === calendarId) {
       try {
         event = await doUpdate();
       } catch (e) {
         if (e.status !== 404 && e.status !== 410) throw e;
-        try { event = await doInsert(); }
+        try { event = await doInsert(); inserted = true; }
         catch (e2) { if (e2.status !== 409) throw e2; event = await doUpdate(); }
       }
     } else {
       try {
         event = await doInsert();
+        inserted = true;
       } catch (e) {
         if (e.status !== 409) throw e;
         // id already taken here (usually a previously deleted event, or the task
@@ -22223,6 +22578,10 @@ const GCal = (() => {
       await apiFetch(`/calendars/${enc(knownLoc)}/events/${enc(eventId)}`, { method: "DELETE" }).catch(() => {});
     }
     if (body.recurrence.length && task.recur === "year") await syncAnnualInstanceNames(calendarId, eventId, task);
+    // Only on a brand-new event (the next occurrence after a completion): an
+    // existing series still has its moved dates in Google, and re-applying
+    // them there could undo a move made since the last pull.
+    if (inserted && body.recurrence.length && recurMovedList(task).length) await syncMovedInstances(calendarId, eventId, task, event || body);
     return { googleEventId: event.id, calendarId, sig: taskSignature(task) };
   }
 
@@ -22258,18 +22617,49 @@ const GCal = (() => {
   // version of the event back, so it ends up a regular TaskIt task.
   // Returns the tagged event, or null when it can't be adopted.
   async function adoptNativeEvent(calendarId, type, ev) {
-    if (!type || type === UNSCHEDULED_KEY || type === HOLIDAYS_KEY || type === "calendar" || type === "google") return null;
+    if (!type || type === "calendar" || type === "google") return null;
     if (!ev.start || ev.recurringEventId) return null;
     const evId = String(ev.id || "");
     if (!evId) return null;
-    let tid;
-    if (/^[a-v0-9]{5,1000}$/.test(evId)) tid = "gn_" + evId;
-    else {
-      const hex = Array.from(new TextEncoder().encode(evId)).map(b => b.toString(16).padStart(2, "0")).join("");
-      if (hex.length > 1000) return null;
-      tid = "gx_" + hex;
+    // An event made in the Unscheduled calendar used to be skipped here and
+    // was also left out of the Google Events import, so it simply never
+    // appeared anywhere in TaskIt. It comes in as a plain Schedule task:
+    // dateless when it sits on the anchor date, otherwise on its own date
+    // (the push then files it under Schedule, where dated tasks live).
+    const unscheduled = type === UNSCHEDULED_KEY;
+    // Same for an event added by hand to the Holidays calendar: holidays are
+    // TaskIt's own, so anything else there is a plain Schedule task (or a
+    // Repeated one, if it repeats -- see eventToTaskPatch), and the push moves
+    // it into that calendar.
+    const holidays = type === HOLIDAYS_KEY;
+    const taskType = unscheduled || holidays ? "regular" : type;
+    let tid = null;
+    // One of TaskIt's own events that has lost its private tag (an edit from
+    // another calendar app can drop it). Its id is the task id, hex-encoded
+    // (see eventIdForTask), so it goes back to that same task -- not a new
+    // copy beside it, with the original then looking deleted.
+    const own = /^tk((?:[0-9a-f]{2})+)$/.exec(evId);
+    if (own) {
+      try {
+        const bytes = Uint8Array.from(own[1].match(/../g).map(h => parseInt(h, 16)));
+        const orig = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        if (orig && eventIdForTask(orig) === evId) tid = orig;
+      } catch {}
+      // One of TaskIt's own holidays that lost its tag: not something the
+      // person added, so it's left to the holiday sync rather than becoming
+      // a Schedule task.
+      if (tid && holidays) return null;
     }
-    const priv = { ...(ev.extendedProperties?.private || {}), taskitId: tid, type };
+    if (!tid) {
+      if (/^[a-v0-9]{5,1000}$/.test(evId)) tid = "gn_" + evId;
+      else {
+        const hex = Array.from(new TextEncoder().encode(evId)).map(b => b.toString(16).padStart(2, "0")).join("");
+        if (hex.length > 1000) return null;
+        tid = "gx_" + hex;
+      }
+    }
+    const priv = { ...(ev.extendedProperties?.private || {}), taskitId: tid, type: taskType };
+    if (unscheduled && ev.start.date === ANCHOR_DATE) priv.noDate = "1";
     if (Array.isArray(ev.recurrence) && ev.recurrence.length) priv.rrule = "1";
     // A leading check mark in the title means completed, a cross cancelled.
     const mark = splitStatusMark(ev.summary);
@@ -22331,7 +22721,7 @@ const GCal = (() => {
           for (const ev of res?.items || []) {
             if (ev.recurringEventId) {
               const k = calendarId + "::" + ev.recurringEventId;
-              (exceptions[k] = exceptions[k] || []).push({ status: ev.status, originalStartTime: ev.originalStartTime || null });
+              (exceptions[k] = exceptions[k] || []).push({ status: ev.status, originalStartTime: ev.originalStartTime || null, start: ev.start || null, end: ev.end || null });
               continue;
             }
             if (ev.status === "cancelled") continue;
@@ -22343,6 +22733,17 @@ const GCal = (() => {
               // it is left alone and still shows through the Google Events import.
               try { evx = await adoptNativeEvent(calendarId, type, evx); } catch (e) { evx = null; }
               if (!evx) continue;
+            }
+            // Moved to another TaskIt calendar in Google or Apple Calendar:
+            // the calendar it now sits in is its type. Without this the task
+            // kept its old type and the next push moved the event straight
+            // back. Dateless, holiday and calendar-only events are left alone
+            // (their calendar isn't a type).
+            const pv = evx.extendedProperties?.private || {};
+            if (type && type !== UNSCHEDULED_KEY && type !== HOLIDAYS_KEY && type !== "calendar" && type !== "google" &&
+                pv.type && pv.type !== type && pv.type !== "calendar" &&
+                pv.noDate !== "1" && pv.hebcal !== "1" && pv.intl !== "1") {
+              evx = { ...evx, extendedProperties: { ...(evx.extendedProperties || {}), private: { ...pv, type } } };
             }
             events.push({ calendarId, type, event: evx });
           }
@@ -22452,6 +22853,7 @@ const GCal = (() => {
   // written into a foreign one.
   async function listForeignCalendars(force) {
     if (foreignCalRaw && !force && Date.now() - foreignCalAt < 300000) return foreignCalRaw;
+    const knownCals = readCalNames();
     const list = await apiFetch("/users/me/calendarList?maxResults=250");
     const raw = [];
     for (const c of list?.items || []) {
@@ -22474,7 +22876,7 @@ const GCal = (() => {
       // anything whose id looks like one of Google's own public feeds.
       if (/^[a-z_]+#(holiday|weeknum)@group\.v\.calendar\.google\.com$/.test(c.id)) continue;
       if (c.id === "addressbook#contacts@group.v.calendar.google.com") continue;
-      raw.push({ id: c.id, summary: foreignSummary || c.id, accessRole: c.accessRole || "reader", primary: !!c.primary });
+      raw.push({ id: c.id, summary: foreignSummary || c.id, accessRole: c.accessRole || "reader", primary: !!c.primary, taskit: !!(c.summary && c.summary.startsWith(CAL_PREFIX)) || Object.prototype.hasOwnProperty.call(knownCals, c.id) });
     }
     foreignCalRaw = raw;
     foreignCalAt = Date.now();
@@ -22594,7 +22996,11 @@ const GCal = (() => {
           const res = await apiFetch(`/calendars/${enc(cal.id)}/events?${params}`);
           for (const ev of res?.items || []) {
             if (ev.status === "cancelled") continue;
-            if (ev.extendedProperties?.private?.taskitId) continue; // one of ours, already covered by pullAll
+            // One of ours, already covered by pullAll -- but only inside a
+            // TaskIt calendar. A TaskIt event moved into a personal calendar
+            // keeps its tag; skipping it there made it vanish from TaskIt
+            // altogether, so it's shown as a Google event like its neighbours.
+            if (ev.extendedProperties?.private?.taskitId && cal.taskit) continue;
             if (!ev.start) continue;
             const dupeKey = ev.iCalUID || (cal.id + "::" + ev.id);
             const prior = chosen.get(dupeKey);
@@ -22742,7 +23148,8 @@ const GCal = (() => {
     taskSignature, remoteSigOf, eventIdForTask, getCalendars, getAllCalendarIds,
     listForeignCalendars, pullForeign, patchForeignEvent, deleteForeignEvent, foreignTaskId,
     isHolidayTask, eventMatchesTask,
-    recurrenceFor, recurrenceMatches, firstOccurrenceDeleted,
+    recurrenceFor, recurrenceMatches, firstOccurrenceDeleted, movedOccurrences, takeTypeRenames,
+    pendingMovesMissing, settlePendingMoves,
     // Custom Client ID, for anyone self-hosting this app on an origin the
     // built-in one isn't registered for (see the in-app Google setup guide).
     getClientId: () => CLIENT_ID,
@@ -24029,6 +24436,34 @@ function App() {
     setPullProgress({ done: 0, total: 0 });
     try {
       const { events: allEvents, complete, exceptions = {} } = await GCal.pullAll(setPullProgress);
+      // A TaskIt calendar renamed in Google or Apple: that type is renamed on
+      // every task, archived ones included. Chained renames (A→B, then B→C
+      // before this ran) collapse to A→C. The changed type changes each
+      // task's signature, so the push re-files them under the new name.
+      {
+        const renames = GCal.takeTypeRenames();
+        if (renames.length) {
+          const map = {};
+          for (const { from, to } of renames) {
+            for (const k of Object.keys(map)) if (map[k] === from) map[k] = to;
+            map[from] = to;
+          }
+          for (const k of Object.keys(map)) if (map[k] === k) delete map[k];
+          const retype = list => {
+            let changed = false;
+            const out = (list || []).map(t => {
+              if (!t || !Object.prototype.hasOwnProperty.call(map, t.type)) return t;
+              changed = true;
+              return { ...t, type: map[t.type] };
+            });
+            return changed ? out : list;
+          };
+          if (Object.keys(map).length) {
+            setTasks(retype);
+            setArchiveTasks(retype);
+          }
+        }
+      }
       // Exactly one event per task. The task's own (canonical) event always
       // wins over any other copy carrying the same taskitId. One kind of copy
       // is special: "Edit > This and following events" on a repeating event
@@ -24055,9 +24490,20 @@ function App() {
       // "Delete > This event" on the series' current date in Google = cancel
       // this occurrence, same as the ✖ in TaskIt (the next one takes over).
       const firstDeleted = new Set();
+      // Single occurrences moved in Google/Apple, per task (display only).
+      const movedByTid = {};
       for (const { event, calendarId } of events) {
         if (GCal.firstOccurrenceDeleted(event, exceptions[calendarId + "::" + event.id])) firstDeleted.add(event.extendedProperties.private.taskitId);
+        const exs = exceptions[calendarId + "::" + event.id];
+        // Moves still waiting to be put back count as moved already, so the
+        // views don't flash the old date while the repair is under way.
+        movedByTid[event.extendedProperties.private.taskitId] = GCal.movedOccurrences(event, exs)
+          .concat(GCal.pendingMovesMissing(event, exs))
+          .sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
       }
+      // Re-apply moves that didn't make it into Google.
+      // Not awaited: it's repair work and must not hold up this pull.
+      GCal.settlePendingMoves(events, exceptions).catch(() => {});
       const remote = {};
       const realRemote = {}; // the signature Google really holds, never NEEDS_REPAIR
       const byId = {};
@@ -24207,6 +24653,23 @@ function App() {
             // that base remotely, so Google's fresh copy wins instead.
             next = (next === ts ? [...ts] : next).map(t => t.id === tid ? { ...t, ...patch } : t);
           }
+        }
+        // Moved occurrences: always Google's current picture, whatever the
+        // timestamps say -- moving one occurrence doesn't touch the series
+        // event's own "updated", so the merge above would never see it.
+        for (const [tid, mv] of Object.entries(movedByTid)) {
+          if (archivedIds.has(tid) || tombstones.has(tid)) continue;
+          const cur = next.find(t => t.id === tid);
+          if (!cur) continue;
+          const have = Array.isArray(cur.recurMoved) ? cur.recurMoved : [];
+          if (!mv.length && !have.length) continue;
+          if (JSON.stringify(have) === JSON.stringify(mv)) continue;
+          next = (next === ts ? [...ts] : next).map(t => {
+            if (t.id !== tid) return t;
+            const u = { ...t };
+            if (mv.length) u.recurMoved = mv; else delete u.recurMoved;
+            return u;
+          });
         }
         // Occurrences deleted in Google on the series' own date: cancel that
         // occurrence here and let the series move on to its next date, exactly
@@ -25396,7 +25859,7 @@ function App() {
     // Google calendars" on, that copy wears its calendar's name as its type,
     // and saving from it would read as a deliberate type change (i.e. as
     // converting the event into a TaskIt task).
-    const real = task && (task._projected || task.source === "google")
+    const real = task && (task._projected || task._movedOcc || task.source === "google")
       ? (tasks.find(t => t.id === task.id) || task)
       : task;
     setEditTask(real);
@@ -25495,7 +25958,8 @@ function App() {
         length: task.length != null ? task.length : null,
         note: task.note || null,
         seriesId: task.seriesId || task.id,
-        reminderMinutes: task.reminderMinutes != null && task.reminderMinutes !== "" ? task.reminderMinutes : null
+        reminderMinutes: task.reminderMinutes != null && task.reminderMinutes !== "" ? task.reminderMinutes : null,
+        recurMoved: (() => { const mv = recurMovedList(task).filter(m => m.from >= after); return mv.length ? mv : null; })()
       };
     }
     const anchor = recurAnchorDay({ ...task, date: baseDs });
@@ -25514,6 +25978,8 @@ function App() {
       // Remember the original day of a month-end series (see recurAnchorDay)
       recurDay: anchor && anchor > 28 ? anchor : null,
       recurSkip: skipsAhead.length ? skipsAhead : null,
+      // Dates moved in Google/Apple that are still ahead (see syncMovedInstances).
+      recurMoved: (() => { const mv = recurMovedList(task).filter(m => m.from >= nextDs); return mv.length ? mv : null; })(),
       date: nextDs,
       time: task.time || "",
       length: task.length != null ? task.length : null,
@@ -25601,6 +26067,7 @@ function App() {
     if (next.recurDay == null) delete next.recurDay;
     if (next.recurSkip == null) delete next.recurSkip;
     if (next.recurRule == null) delete next.recurRule;
+    if (next.recurMoved == null) delete next.recurMoved;
     return [...tasks, next];
   };
   // Un-completing / un-cancelling one occurrence of a repeating series.
