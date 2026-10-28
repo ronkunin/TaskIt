@@ -253,7 +253,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "19.1";
+const APP_VERSION = "19.5";
 
 const {
   useState,
@@ -10827,22 +10827,12 @@ const WeekView = ({
     const wMarkOverdue = !sharingWeek || !shareOptions || shareOptions.markOverdue !== false;
     const wShowCompletedMark = !sharingWeek || !shareOptions || shareOptions.showCompletedMark !== false;
     const wShowCompletedTasks = !sharingWeek || !shareOptions || shareOptions.showCompletedTasks !== false;
-    // A cancelled task still ahead of you is nothing to plan around -- it's a
-    // slot that was given up, taking room in the grid for an hour nobody is
-    // going to spend. That covers any day still to come, and on today the
-    // hours that haven't arrived yet: an hour already past (or one running
-    // right now) keeps its ✖ as a record of what happened, and so does a
-    // cancelled task with no hour at all, which isn't "upcoming" by the
-    // clock either.
-    const wTodayDs = todayStr();
-    const hideUpcomingCancelled = (tk, ds) => {
-      if (!isCancelled(tk)) return false;
-      if (ds > wTodayDs) return true;
-      if (ds !== wTodayDs) return false;
-      const time = typeof tk.time === "string" ? /^(\d{1,2}):(\d{2})/.exec(tk.time) : null;
-      if (!time) return false;
-      return Number(time[1]) * 60 + Number(time[2]) > nowMinutes;
-    };
+    // Cancelled tasks used to be hidden here when still ahead (a later day,
+    // or a later hour today), so cancelling one made it vanish from the week
+    // -- with no way to see or restore it from here. They now stay, shown
+    // with their ✖ like any other cancelled task. Kept as a function so the
+    // filters below read the same.
+    const hideUpcomingCancelled = () => false;
     // Unlike the flags above (which suppress something normal browsing
     // already shows), projecting future recurring occurrences is purely
     // additive -- it must default to OFF outside of an actual capture, not
@@ -24434,6 +24424,12 @@ function App() {
     gcalSyncing.current = true;
     setGcalPulling(true);
     setPullProgress({ done: 0, total: 0 });
+    // What Google had really confirmed holding, taken BEFORE the listing
+    // starts -- the only fair basis for "it's gone from Google, so it was
+    // deleted elsewhere" (see the removal step below). Also the outbox: local
+    // work Google hasn't confirmed yet.
+    const confirmedAtStart = new Set(Object.keys(gcalConfirmed.current));
+    const outboxAtStart = new Set(outboxRef.current ? outboxRef.current.tasks.keys() : []);
     try {
       const { events: allEvents, complete, exceptions = {} } = await GCal.pullAll(setPullProgress);
       // A TaskIt calendar renamed in Google or Apple: that type is renamed on
@@ -24566,7 +24562,7 @@ function App() {
         realRemote[tid] = GCal.remoteSigOf(event) || "";
         remote[tid] = needsRepair ? NEEDS_REPAIR : realRemote[tid];
       }
-      const hadBefore = gcalRemote.current;
+      const RECENT_KEEP_MS = 120000;
       gcalRemote.current = remote;
       gcalLoc.current = loc;
       // What Google actually holds right now. Merged (not replaced) so a push
@@ -24722,7 +24718,7 @@ function App() {
         }
         // A task that Google no longer has was deleted on another device.
         // Only a complete pull may conclude this; a partial read never deletes locally.
-        // On the very first pull (hadBefore is empty) we use initialLocalIds to tell
+        // On the very first pull (nothing confirmed yet) we use initialLocalIds to tell
         // apart "was in localStorage at startup → deleted elsewhere → remove" from
         // "created in this session, not pushed yet → keep".
         if (complete) {
@@ -24735,8 +24731,26 @@ function App() {
             if (GCal.isHolidayTask(t)) return true;
             if (!GCal.shouldSync(t)) return true;
             if (byId[t.id]) return true;
-            if (isFirstPull) return !initialLocalIds.current.has(t.id);
-            return !(t.id in hadBefore);
+            // Just created or changed here: its push may simply not have
+            // landed in Google's listing yet. Judged again on a later pull.
+            if (Date.now() - Math.max(Number(t.updated) || 0, Number(t.created) || 0) < RECENT_KEEP_MS) return true;
+            if (isFirstPull) {
+              // Unpushed local work (still in the outbox) is never a deletion
+              // -- the boot snapshot can list it too, since it is saved after
+              // every edit. Only an offline edit that lost to a change made
+              // elsewhere goes.
+              if (outboxAtStart.has(t.id) && !offlineConflicts.has(t.id)) return true;
+              return !initialLocalIds.current.has(t.id);
+            }
+            // Only a task Google had CONFIRMED before this listing began can
+            // be judged deleted. This used to be gcalRemote, which the push
+            // marks optimistically the moment a push is queued: a pull that
+            // overlapped a push took the brand-new task for "deleted on
+            // another device" and removed it -- most visibly the next
+            // occurrence spawned by completing or cancelling a repeat, which
+            // made the whole series vanish (the finished one had already
+            // become a single event in Google).
+            return !confirmedAtStart.has(t.id);
           });
           // Holidays are exempt from the removal above (they're generated
           // locally), which also meant an extra copy of one was never
