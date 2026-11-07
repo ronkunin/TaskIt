@@ -18666,7 +18666,6 @@ const SettingsModal = ({
   const [icsLinkOpen, setIcsLinkOpen] = useState(false);
   const [icsLink, setIcsLink] = useState("");
   const [icsLinkBusy, setIcsLinkBusy] = useState(false);
-  const [icsLinkRelay, setIcsLinkRelay] = useState(false); // offer the relay after a blocked direct fetch
   // ── Delete-all-of-a-type state ──
   const [delType, setDelType] = useState("");
   const [delConfirm, setDelConfirm] = useState(false);
@@ -18745,49 +18744,53 @@ const SettingsModal = ({
   };
   // Fetches an .ics feed and hands it to the very same panel a picked file
   // uses (type question, Import & sync), so nothing downstream differs.
-  // A browser can only read a link whose server allows it (CORS); when the
-  // direct request is blocked the person is offered, explicitly, a public
-  // relay -- never used silently, since a calendar link can be a private one.
-  const loadIcsLink = async viaRelay => {
-    let url = icsLink.trim().replace(/^webcals?:\/\//i, m => m.toLowerCase() === "webcals://" ? "https://" : "https://");
+  // Calendar apps read these links natively; a web page can only read one if
+  // the host sends CORS headers. So: try the link directly first, and when
+  // the browser blocks it, go through public relays until one returns a
+  // real calendar.
+  const loadIcsLink = async () => {
+    const url = icsLink.trim().replace(/^webcals?:\/\//i, "https://");
     if (!/^https?:\/\/\S+$/i.test(url)) {
       setIcsMsg(isHe ? "הדבק קישור תקין (https://…)" : "Paste a valid link (https://…)");
       return;
     }
-    const anchor = document.activeElement;
     setIcsMsg("");
     setIcsLinkBusy(true);
-    try {
-      const target = viaRelay ? "https://api.allorigins.win/raw?url=" + encodeURIComponent(url) : url;
-      const res = await fetch(target, { cache: "no-store" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const text = await res.text();
-      if (!/BEGIN:VCALENDAR/i.test(text)) {
-        setIcsMsg(isHe ? "הקישור לא מכיל לוח שנה (.ics)" : "That link doesn't hold a calendar (.ics)");
-        setIcsLinkBusy(false);
-        return;
-      }
-      const counts = {};
-      let untyped = 0;
-      const scan = icsScanTypes(text);
-      for (const [tp, n] of Object.entries(scan.counts)) counts[tp] = (counts[tp] || 0) + n;
-      untyped += scan.untyped;
-      keepScroll(anchor, () => {
-        setIcsFiles([{ name: url, text }]);
-        setIcsScan({ counts, untyped, fromTaskit: Object.keys(counts).length > 0 });
-        setIcsLinkRelay(false);
-        setIcsLink("");
-        setIcsLinkOpen(false);
-      });
-    } catch (err) {
-      const blocked = err instanceof TypeError;
-      if (blocked && !viaRelay) {
-        setIcsLinkRelay(true);
-        setIcsMsg(isHe ? "הדפדפן חסם את הגישה לקישור הזה (CORS)." : "The browser blocked reading that link (CORS).");
-      } else {
-        setIcsMsg((isHe ? "לא הצלחתי לטעון את הקישור: " : "Couldn't load the link: ") + (err.message || String(err)));
-      }
+    const anchor = document.activeElement;
+    const enc = encodeURIComponent(url);
+    const attempts = [
+      url,
+      "https://api.allorigins.win/raw?url=" + enc,
+      "https://corsproxy.io/?url=" + enc,
+      "https://api.codetabs.com/v1/proxy/?quest=" + enc
+    ];
+    let text = null;
+    let notCalendar = false;
+    for (const target of attempts) {
+      try {
+        const res = await fetch(target, { cache: "no-store" });
+        if (!res.ok) continue;
+        const t = await res.text();
+        if (/BEGIN:VCALENDAR/i.test(t)) { text = t; break; }
+        notCalendar = true;
+      } catch (err) { /* blocked or offline: next one */ }
     }
+    if (text == null) {
+      setIcsMsg(notCalendar
+        ? (isHe ? "הקישור לא מכיל לוח שנה (.ics)" : "That link doesn't hold a calendar (.ics)")
+        : (isHe ? "לא הצלחתי לטעון את הקישור. בדוק אותו ונסה שוב." : "Couldn't load the link. Check it and try again."));
+      setIcsLinkBusy(false);
+      return;
+    }
+    const counts = {};
+    const scan = icsScanTypes(text);
+    for (const [tp, n] of Object.entries(scan.counts)) counts[tp] = (counts[tp] || 0) + n;
+    keepScroll(anchor, () => {
+      setIcsFiles([{ name: url, text }]);
+      setIcsScan({ counts, untyped: scan.untyped, fromTaskit: Object.keys(counts).length > 0 });
+      setIcsLink("");
+      setIcsLinkOpen(false);
+    });
     setIcsLinkBusy(false);
   };
   const runIcsImport = () => {
@@ -19588,7 +19591,7 @@ const SettingsModal = ({
     label: isHe ? "ייבוא iCalendar מקישור" : "Import iCalendar from link",
     sub: isHe ? "הדבק קישור ל-.ics או webcal" : "Paste an .ics or webcal link"
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: e => keepScroll(e.currentTarget, () => { setIcsLinkOpen(o => !o); setIcsLinkRelay(false); setIcsMsg(""); }),
+    onClick: e => keepScroll(e.currentTarget, () => { setIcsLinkOpen(o => !o); setIcsMsg(""); }),
     style: {
       padding: "6px 14px",
       borderRadius: 20,
@@ -19612,8 +19615,8 @@ const SettingsModal = ({
     }
   }, /*#__PURE__*/React.createElement("input", {
     value: icsLink,
-    onChange: e => { setIcsLink(e.target.value); setIcsLinkRelay(false); },
-    onKeyDown: e => { if (e.key === "Enter" && !icsLinkBusy) loadIcsLink(false); },
+    onChange: e => setIcsLink(e.target.value),
+    onKeyDown: e => { if (e.key === "Enter" && !icsLinkBusy) loadIcsLink(); },
     placeholder: "https://…/calendar.ics",
     inputMode: "url",
     autoCapitalize: "off",
@@ -19636,7 +19639,7 @@ const SettingsModal = ({
   }), /*#__PURE__*/React.createElement("div", {
     style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => loadIcsLink(false),
+    onClick: () => loadIcsLink(),
     disabled: icsLinkBusy || !icsLink.trim(),
     style: {
       padding: "7px 16px",
@@ -19649,24 +19652,11 @@ const SettingsModal = ({
       cursor: icsLinkBusy || !icsLink.trim() ? "default" : "pointer",
       opacity: icsLinkBusy || !icsLink.trim() ? 0.6 : 1
     }
-  }, icsLinkBusy ? (isHe ? "טוען…" : "Loading…") : (isHe ? "טען" : "Load")), icsLinkRelay && /*#__PURE__*/React.createElement("button", {
-    onClick: () => loadIcsLink(true),
-    disabled: icsLinkBusy,
-    style: {
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: `1.5px solid ${C.border2}`,
-      background: "transparent",
-      color: C.text3,
-      fontSize: 13,
-      fontWeight: 700,
-      cursor: icsLinkBusy ? "default" : "pointer"
-    }
-  }, isHe ? "נסה דרך שרת מתווך" : "Try via relay")), icsLinkRelay && /*#__PURE__*/React.createElement("div", {
+  }, icsLinkBusy ? (isHe ? "טוען…" : "Loading…") : (isHe ? "טען" : "Load"))), /*#__PURE__*/React.createElement("div", {
     style: { fontSize: 11, color: C.text4, marginTop: 8, lineHeight: 1.6 }
   }, isHe
-    ? "השרת המתווך (allorigins.win) יראה את הקישור. אל תשתמש בו עבור קישור פרטי/סודי."
-    : "The relay (allorigins.win) will see the link. Don't use it for a private or secret calendar link.")), icsFiles.length > 0 && /*#__PURE__*/React.createElement("div", {
+    ? "אם האתר חוסם גישה מהדפדפן, הקישור נטען דרך שרת מתווך ציבורי — עדיף לא להשתמש בקישור פרטי/סודי."
+    : "If the site blocks browsers, the link is loaded through a public relay, so avoid private or secret links.")), icsFiles.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       margin: "10px 0 0",
       padding: "12px",
