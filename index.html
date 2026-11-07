@@ -18662,6 +18662,11 @@ const SettingsModal = ({
   // What the chosen files hold: the types their events already name (when the
   // file came from this app's own export) and how many events still need one.
   const [icsScan, setIcsScan] = useState(null);
+  // Import from a link: the same flow as a file, the text just arrives by URL.
+  const [icsLinkOpen, setIcsLinkOpen] = useState(false);
+  const [icsLink, setIcsLink] = useState("");
+  const [icsLinkBusy, setIcsLinkBusy] = useState(false);
+  const [icsLinkRelay, setIcsLinkRelay] = useState(false); // offer the relay after a blocked direct fetch
   // ── Delete-all-of-a-type state ──
   const [delType, setDelType] = useState("");
   const [delConfirm, setDelConfirm] = useState(false);
@@ -18723,6 +18728,68 @@ const SettingsModal = ({
     }
     e.target.value = "";
   };
+  // Closing or swapping a panel removes the element that has focus, which on
+  // iOS Safari throws the scrolling sheet back to the top. Blur first, make
+  // the change, then put the sheet's scroll position back.
+  const keepScroll = (anchor, fn) => {
+    let n = anchor || null;
+    while (n && n !== document.body) {
+      if (n.scrollHeight > n.clientHeight && /(auto|scroll)/.test(getComputedStyle(n).overflowY)) break;
+      n = n.parentElement;
+    }
+    if (n === document.body) n = null;
+    const top = n ? n.scrollTop : 0;
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    fn();
+    if (n) requestAnimationFrame(() => { n.scrollTop = top; requestAnimationFrame(() => { n.scrollTop = top; }); });
+  };
+  // Fetches an .ics feed and hands it to the very same panel a picked file
+  // uses (type question, Import & sync), so nothing downstream differs.
+  // A browser can only read a link whose server allows it (CORS); when the
+  // direct request is blocked the person is offered, explicitly, a public
+  // relay -- never used silently, since a calendar link can be a private one.
+  const loadIcsLink = async viaRelay => {
+    let url = icsLink.trim().replace(/^webcals?:\/\//i, m => m.toLowerCase() === "webcals://" ? "https://" : "https://");
+    if (!/^https?:\/\/\S+$/i.test(url)) {
+      setIcsMsg(isHe ? "הדבק קישור תקין (https://…)" : "Paste a valid link (https://…)");
+      return;
+    }
+    const anchor = document.activeElement;
+    setIcsMsg("");
+    setIcsLinkBusy(true);
+    try {
+      const target = viaRelay ? "https://api.allorigins.win/raw?url=" + encodeURIComponent(url) : url;
+      const res = await fetch(target, { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const text = await res.text();
+      if (!/BEGIN:VCALENDAR/i.test(text)) {
+        setIcsMsg(isHe ? "הקישור לא מכיל לוח שנה (.ics)" : "That link doesn't hold a calendar (.ics)");
+        setIcsLinkBusy(false);
+        return;
+      }
+      const counts = {};
+      let untyped = 0;
+      const scan = icsScanTypes(text);
+      for (const [tp, n] of Object.entries(scan.counts)) counts[tp] = (counts[tp] || 0) + n;
+      untyped += scan.untyped;
+      keepScroll(anchor, () => {
+        setIcsFiles([{ name: url, text }]);
+        setIcsScan({ counts, untyped, fromTaskit: Object.keys(counts).length > 0 });
+        setIcsLinkRelay(false);
+        setIcsLink("");
+        setIcsLinkOpen(false);
+      });
+    } catch (err) {
+      const blocked = err instanceof TypeError;
+      if (blocked && !viaRelay) {
+        setIcsLinkRelay(true);
+        setIcsMsg(isHe ? "הדפדפן חסם את הגישה לקישור הזה (CORS)." : "The browser blocked reading that link (CORS).");
+      } else {
+        setIcsMsg((isHe ? "לא הצלחתי לטעון את הקישור: " : "Couldn't load the link: ") + (err.message || String(err)));
+      }
+    }
+    setIcsLinkBusy(false);
+  };
   const runIcsImport = () => {
     const type = icsType.trim().toLowerCase();
     // Events that carry their own type need nothing chosen; a type is only
@@ -18736,6 +18803,7 @@ const SettingsModal = ({
       setIcsMsg(isHe ? "‘calendar’ שמור לחגים, בחר שם אחר" : "'calendar' is reserved for holidays, pick another name");
       return;
     }
+    const importAnchor = document.activeElement;
     setIcsBusy(true);
     try {
       const existing = new Set((tasks || []).map(tk => tk.id));
@@ -18763,8 +18831,10 @@ const SettingsModal = ({
         setIcsMsg(isHe
           ? `נוצרו ${added.length} משימות כ־${asLabel} מתוך ${total} אירועים${repeated > 0 ? ` · ${repeated} כחוזרות` : ""}${expanded > 0 ? ` · ${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : ""}${skipped > 0 ? ` · ${skipped} דולגו` : ""}`
           : `Created ${added.length} tasks as ${asLabel} from ${total} events${repeated > 0 ? ` · ${repeated} imported as repeating` : ""}${expanded > 0 ? ` · ${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates` : ""}${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
-        setIcsFiles([]);
-        setIcsScan(null);
+        keepScroll(importAnchor, () => {
+          setIcsFiles([]);
+          setIcsScan(null);
+        });
       }
     } catch (err) {
       setIcsMsg((isHe ? "שגיאה: " : "Error: ") + (err.message || String(err)));
@@ -19513,7 +19583,90 @@ const SettingsModal = ({
       flexShrink: 0,
       transition: "all 0.15s"
     }
-  }, isHe ? "בחר קובץ" : "Choose file")), icsFiles.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, isHe ? "בחר קובץ" : "Choose file")), /*#__PURE__*/React.createElement(Row, {
+    icon: "🔗",
+    label: isHe ? "ייבוא iCalendar מקישור" : "Import iCalendar from link",
+    sub: isHe ? "הדבק קישור ל-.ics או webcal" : "Paste an .ics or webcal link"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: e => keepScroll(e.currentTarget, () => { setIcsLinkOpen(o => !o); setIcsLinkRelay(false); setIcsMsg(""); }),
+    style: {
+      padding: "6px 14px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: "pointer",
+      flexShrink: 0,
+      transition: "all 0.15s"
+    }
+  }, icsLinkOpen ? (isHe ? "סגור" : "Close") : (isHe ? "הזן קישור" : "Enter link"))), icsLinkOpen && /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "10px 0 0",
+      padding: "12px",
+      borderRadius: 12,
+      background: C.card2,
+      border: `1px solid ${C.border2}`,
+      direction: isHe ? "rtl" : "ltr"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: icsLink,
+    onChange: e => { setIcsLink(e.target.value); setIcsLinkRelay(false); },
+    onKeyDown: e => { if (e.key === "Enter" && !icsLinkBusy) loadIcsLink(false); },
+    placeholder: "https://…/calendar.ics",
+    inputMode: "url",
+    autoCapitalize: "off",
+    autoCorrect: "off",
+    spellCheck: false,
+    style: {
+      width: "100%",
+      boxSizing: "border-box",
+      padding: "8px 10px",
+      borderRadius: 9,
+      border: `1px solid ${C.border2}`,
+      background: C.card,
+      color: C.text,
+      fontSize: 13,
+      fontWeight: 600,
+      outline: "none",
+      direction: "ltr",
+      textAlign: "left"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => loadIcsLink(false),
+    disabled: icsLinkBusy || !icsLink.trim(),
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.blueBorder}`,
+      background: C.blueBg,
+      color: C.blue,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: icsLinkBusy || !icsLink.trim() ? "default" : "pointer",
+      opacity: icsLinkBusy || !icsLink.trim() ? 0.6 : 1
+    }
+  }, icsLinkBusy ? (isHe ? "טוען…" : "Loading…") : (isHe ? "טען" : "Load")), icsLinkRelay && /*#__PURE__*/React.createElement("button", {
+    onClick: () => loadIcsLink(true),
+    disabled: icsLinkBusy,
+    style: {
+      padding: "7px 16px",
+      borderRadius: 20,
+      border: `1.5px solid ${C.border2}`,
+      background: "transparent",
+      color: C.text3,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: icsLinkBusy ? "default" : "pointer"
+    }
+  }, isHe ? "נסה דרך שרת מתווך" : "Try via relay")), icsLinkRelay && /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 11, color: C.text4, marginTop: 8, lineHeight: 1.6 }
+  }, isHe
+    ? "השרת המתווך (allorigins.win) יראה את הקישור. אל תשתמש בו עבור קישור פרטי/סודי."
+    : "The relay (allorigins.win) will see the link. Don't use it for a private or secret calendar link.")), icsFiles.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       margin: "10px 0 0",
       padding: "12px",
@@ -19598,7 +19751,7 @@ const SettingsModal = ({
       opacity: icsBusy ? 0.6 : 1
     }
   }, icsBusy ? (isHe ? "מייבא…" : "Importing…") : (isHe ? "ייבא וסנכרן" : "Import & sync")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => { setIcsFiles([]); setIcsScan(null); setIcsMsg(""); },
+    onClick: e => keepScroll(e.currentTarget, () => { setIcsFiles([]); setIcsScan(null); setIcsMsg(""); }),
     style: {
       padding: "7px 16px",
       borderRadius: 20,
@@ -25971,6 +26124,7 @@ function App() {
         time: task.time || "",
         length: task.length != null ? task.length : null,
         note: task.note || null,
+        location: task.location || null,
         seriesId: task.seriesId || task.id,
         reminderMinutes: task.reminderMinutes != null && task.reminderMinutes !== "" ? task.reminderMinutes : null,
         recurMoved: (() => { const mv = recurMovedList(task).filter(m => m.from >= after); return mv.length ? mv : null; })()
@@ -25998,6 +26152,7 @@ function App() {
       time: task.time || "",
       length: task.length != null ? task.length : null,
       note: task.note || null,
+      location: task.location || null,
       seriesId: task.seriesId || task.id,
       // Carry the series' own reminder choice forward: completing or
       // cancelling one occurrence used to silently reset the next one back
