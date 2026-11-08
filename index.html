@@ -253,7 +253,7 @@
 // This number is shown to the user in parentheses next to the "Update App"
 // button in Settings, so they can tell at a glance whether they're on the
 // latest build.
-const APP_VERSION = "19.5";
+const APP_VERSION = "19.6";
 
 const {
   useState,
@@ -17267,13 +17267,18 @@ const icsScanTypes = text => {
 // type and keep it; everything else takes `type`, the one chosen in the import
 // panel. `existingIds` is mutated so a re-import of the same file (or a second
 // file sharing UIDs) adds nothing twice.
-const icsToTasks = (text, type, existingIds) => {
+const icsToTasks = (text, type, existingIds, existingMap) => {
   const events = parseICS(text);
   const out = [];
   let skipped = 0;
   let expanded = 0;
   let repeated = 0;
   const usedTypes = new Set();
+  // Only what is still ahead is imported: events already over are left out,
+  // and a repeating series starts from its current/next occurrence.
+  const todayDs = localDs(new Date());
+  let past = 0;
+  const updates = [];
   for (const ev of events) {
     const st = icsParseDT(ev.start);
     const mark = splitStatusMark(ev.summary);
@@ -17299,6 +17304,13 @@ const icsToTasks = (text, type, existingIds) => {
     // for a live Google Calendar sync) rather than folded into the note text
     // -- displayed read-only, never something the person can edit here.
     const location = ev.location || null;
+    // An event already imported earlier isn't added twice, but it can still
+    // pick up a location it was imported without.
+    const sync = id => {
+      if (!existingMap || !location) return;
+      const t = existingMap.get(id);
+      if (t && t.location !== location) updates.push({ id, location });
+    };
     const excluded = new Set(ev.exdates || []);
     const ds0 = localDs(new Date(st.ms));
     const time0 = st.allDay ? "" : `${String(new Date(st.ms).getHours()).padStart(2, "0")}:${String(new Date(st.ms).getMinutes()).padStart(2, "0")}`;
@@ -17326,9 +17338,29 @@ const icsToTasks = (text, type, existingIds) => {
           return out;
         })()
         : occurrences.map(localDs);
-      // The series starts on its first date that isn't excluded.
+      // The series starts on its first date that isn't excluded, then moves
+      // forward to the occurrence that is current today (or the next one).
       const firstDs = nativeDates.find(ds => !excluded.has(ds)) || ds0;
-      const skips = nativeDates.filter(ds => excluded.has(ds) && ds > firstDs && (!native.recurUntil || ds <= native.recurUntil));
+      let startDs = firstDs;
+      if (startDs < todayDs || excluded.has(startDs)) {
+        let d = new Date(startDs + "T00:00:00");
+        let guard = 0;
+        while ((localDs(d) < todayDs || excluded.has(localDs(d))) && guard++ < 20000) d = stepRecurDate(d, native.recur, native.recurDay);
+        startDs = localDs(d);
+      }
+      if (native.recurUntil && startDs > native.recurUntil) { past++; continue; }
+      const skips = [];
+      if (excluded.size) {
+        const lastEx = [...excluded].sort().pop();
+        const stop = native.recurUntil && native.recurUntil < lastEx ? native.recurUntil : lastEx;
+        let d = stepRecurDate(new Date(startDs + "T00:00:00"), native.recur, native.recurDay);
+        let guard = 0;
+        while (localDs(d) <= stop && guard++ < 20000) {
+          const ds = localDs(d);
+          if (excluded.has(ds)) skips.push(ds);
+          d = stepRecurDate(d, native.recur, native.recurDay);
+        }
+      }
       const id = icsStableId(ev.uid ? ev.uid + "|series" : name + "|series|" + ds0 + "|" + time0);
       if (!existingIds.has(id)) {
         existingIds.add(id);
@@ -17336,7 +17368,7 @@ const icsToTasks = (text, type, existingIds) => {
           id,
           name,
           type: evType,
-          date: firstDs,
+          date: startDs,
           time: time0,
           length,
           note,
@@ -17351,7 +17383,7 @@ const icsToTasks = (text, type, existingIds) => {
           ics: true
         });
         repeated++;
-      }
+      } else sync(id);
       continue;
     }
     // A repeat the task model can't express -- several weekdays, "the second
@@ -17362,8 +17394,18 @@ const icsToTasks = (text, type, existingIds) => {
     if (!isCancelled && !isDoneEv && ev.rrule) {
       const lines = ["RRULE:" + String(ev.rrule)];
       for (const x of excluded) lines.push("EXDATE;VALUE=DATE:" + x.replace(/-/g, ""));
-      const ruleDates = expandRecurRule(ds0, lines, ds0, null, 8);
-      if (ruleDates.length > 1) {
+      // A COUNT would start counting again from the moved start date, so it
+      // becomes the UNTIL that it amounts to before the start moves forward.
+      if (ds0 < todayDs && /(?:^|;)COUNT=\d+/i.test(lines[0])) {
+        const all = expandRecurRule(ds0, lines, null, null, 400);
+        if (all.length) {
+          const kept = lines[0].replace(/^RRULE:/i, "").split(";").filter(x => !/^COUNT=/i.test(x));
+          lines[0] = "RRULE:" + kept.join(";") + ";UNTIL=" + all[all.length - 1].replace(/-/g, "");
+        }
+      }
+      const ruleDates = expandRecurRule(ds0, lines, ds0 < todayDs ? todayDs : ds0, null, 8);
+      if (ruleDates.length === 0 && ds0 < todayDs) { past++; continue; }
+      if (ruleDates.length > 1 || (ds0 < todayDs && ruleDates.length === 1)) {
         const id = icsStableId(ev.uid ? ev.uid + "|rule" : name + "|rule|" + ds0 + "|" + time0);
         if (!existingIds.has(id)) {
           existingIds.add(id);
@@ -17384,18 +17426,21 @@ const icsToTasks = (text, type, existingIds) => {
             ics: true
           });
           repeated++;
-        }
+        } else sync(id);
         continue;
       }
     }
     // Everything else: one independent, non-repeating task per occurrence.
     if (occurrences.length > 1) expanded++;
+    let anyKept = false;
     for (const occ of occurrences) {
       const ds = localDs(occ);
       if (excluded.has(ds)) continue;
+      if (ds < todayDs) continue;
+      anyKept = true;
       const time = st.allDay ? "" : `${String(occ.getHours()).padStart(2, "0")}:${String(occ.getMinutes()).padStart(2, "0")}`;
       const id = icsStableId(ev.uid ? ev.uid + "|" + ds + "|" + time : name + "|" + ds + "|" + time);
-      if (existingIds.has(id)) continue;
+      if (existingIds.has(id)) { sync(id); continue; }
       existingIds.add(id);
       out.push({
         id,
@@ -17413,8 +17458,9 @@ const icsToTasks = (text, type, existingIds) => {
         ics: true
       });
     }
+    if (!anyKept) past++;
   }
-  return { tasks: out, skipped, total: events.length, expanded, repeated, types: [...usedTypes].sort() };
+  return { tasks: out, skipped, total: events.length, expanded, repeated, past, updates, types: [...usedTypes].sort() };
 };
 
 // ─── iCalendar (.ics) export ───────────────────────────────────────────────
@@ -18662,10 +18708,6 @@ const SettingsModal = ({
   // What the chosen files hold: the types their events already name (when the
   // file came from this app's own export) and how many events still need one.
   const [icsScan, setIcsScan] = useState(null);
-  // Import from a link: the same flow as a file, the text just arrives by URL.
-  const [icsLinkOpen, setIcsLinkOpen] = useState(false);
-  const [icsLink, setIcsLink] = useState("");
-  const [icsLinkBusy, setIcsLinkBusy] = useState(false);
   // ── Delete-all-of-a-type state ──
   const [delType, setDelType] = useState("");
   const [delConfirm, setDelConfirm] = useState(false);
@@ -18731,69 +18773,19 @@ const SettingsModal = ({
   // iOS Safari throws the scrolling sheet back to the top. Blur first, make
   // the change, then put the sheet's scroll position back.
   const keepScroll = (anchor, fn) => {
+    const scrollable = n => n && n.scrollHeight > n.clientHeight && /(auto|scroll)/.test(getComputedStyle(n).overflowY);
     let n = anchor || null;
-    while (n && n !== document.body) {
-      if (n.scrollHeight > n.clientHeight && /(auto|scroll)/.test(getComputedStyle(n).overflowY)) break;
-      n = n.parentElement;
+    while (n && n !== document.body && !scrollable(n)) n = n.parentElement;
+    if (!n || n === document.body) {
+      const root = sheetRef.current;
+      n = root ? (scrollable(root) ? root : [...root.querySelectorAll("*")].find(scrollable) || null) : null;
     }
-    if (n === document.body) n = null;
     const top = n ? n.scrollTop : 0;
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     fn();
     if (n) requestAnimationFrame(() => { n.scrollTop = top; requestAnimationFrame(() => { n.scrollTop = top; }); });
   };
-  // Fetches an .ics feed and hands it to the very same panel a picked file
-  // uses (type question, Import & sync), so nothing downstream differs.
-  // Calendar apps read these links natively; a web page can only read one if
-  // the host sends CORS headers. So: try the link directly first, and when
-  // the browser blocks it, go through public relays until one returns a
-  // real calendar.
-  const loadIcsLink = async () => {
-    const url = icsLink.trim().replace(/^webcals?:\/\//i, "https://");
-    if (!/^https?:\/\/\S+$/i.test(url)) {
-      setIcsMsg(isHe ? "הדבק קישור תקין (https://…)" : "Paste a valid link (https://…)");
-      return;
-    }
-    setIcsMsg("");
-    setIcsLinkBusy(true);
-    const anchor = document.activeElement;
-    const enc = encodeURIComponent(url);
-    const attempts = [
-      url,
-      "https://api.allorigins.win/raw?url=" + enc,
-      "https://corsproxy.io/?url=" + enc,
-      "https://api.codetabs.com/v1/proxy/?quest=" + enc
-    ];
-    let text = null;
-    let notCalendar = false;
-    for (const target of attempts) {
-      try {
-        const res = await fetch(target, { cache: "no-store" });
-        if (!res.ok) continue;
-        const t = await res.text();
-        if (/BEGIN:VCALENDAR/i.test(t)) { text = t; break; }
-        notCalendar = true;
-      } catch (err) { /* blocked or offline: next one */ }
-    }
-    if (text == null) {
-      setIcsMsg(notCalendar
-        ? (isHe ? "הקישור לא מכיל לוח שנה (.ics)" : "That link doesn't hold a calendar (.ics)")
-        : (isHe ? "לא הצלחתי לטעון את הקישור. בדוק אותו ונסה שוב." : "Couldn't load the link. Check it and try again."));
-      setIcsLinkBusy(false);
-      return;
-    }
-    const counts = {};
-    const scan = icsScanTypes(text);
-    for (const [tp, n] of Object.entries(scan.counts)) counts[tp] = (counts[tp] || 0) + n;
-    keepScroll(anchor, () => {
-      setIcsFiles([{ name: url, text }]);
-      setIcsScan({ counts, untyped: scan.untyped, fromTaskit: Object.keys(counts).length > 0 });
-      setIcsLink("");
-      setIcsLinkOpen(false);
-    });
-    setIcsLinkBusy(false);
-  };
-  const runIcsImport = () => {
+  const runIcsImport = ev => {
     const type = icsType.trim().toLowerCase();
     // Events that carry their own type need nothing chosen; a type is only
     // required for the ones that don't.
@@ -18806,34 +18798,48 @@ const SettingsModal = ({
       setIcsMsg(isHe ? "‘calendar’ שמור לחגים, בחר שם אחר" : "'calendar' is reserved for holidays, pick another name");
       return;
     }
-    const importAnchor = document.activeElement;
+    // iOS doesn't focus a tapped button, so the button itself is the anchor.
+    const importAnchor = (ev && ev.currentTarget) || document.activeElement;
     setIcsBusy(true);
     try {
       const existing = new Set((tasks || []).map(tk => tk.id));
-      let added = [], skipped = 0, total = 0, expanded = 0, repeated = 0;
+      const existingMap = new Map((tasks || []).map(tk => [tk.id, tk]));
+      let added = [], skipped = 0, total = 0, expanded = 0, repeated = 0, past = 0, allUpdates = [];
       const typesUsed = new Set();
       for (const f of icsFiles) {
-        const r = icsToTasks(f.text, type, existing);
+        const r = icsToTasks(f.text, type, existing, existingMap);
         added = added.concat(r.tasks);
         skipped += r.skipped;
         total += r.total;
         expanded += r.expanded;
         repeated += r.repeated || 0;
+        past += r.past || 0;
+        allUpdates = allUpdates.concat(r.updates || []);
         (r.types || []).forEach(tp => typesUsed.add(tp));
       }
-      if (!added.length) {
+      if (!added.length && !allUpdates.length) {
         setIcsMsg(total === 0
           ? (isHe ? "לא נמצאו אירועים בקובץ" : "No events found in that file")
-          : (isHe ? "כל האירועים כבר מיובאים" : "All of those events are already imported"));
+          : past > 0 && past >= total - skipped
+            ? (isHe ? "כל האירועים כבר בעבר" : "All of those events are already in the past")
+            : (isHe ? "כל האירועים כבר מיובאים" : "All of those events are already imported"));
       } else {
-        onImportIcs && onImportIcs(added);
+        onImportIcs && onImportIcs(added, allUpdates);
         // One type for everything reads better as "as work"; a file that
         // restored several of its own types lists them instead.
         const typeList = [...typesUsed].sort();
         const asLabel = typeList.length === 1 ? `“${typeList[0]}”` : typeList.map(tp => `“${tp}”`).join(", ");
-        setIcsMsg(isHe
-          ? `נוצרו ${added.length} משימות כ־${asLabel} מתוך ${total} אירועים${repeated > 0 ? ` · ${repeated} כחוזרות` : ""}${expanded > 0 ? ` · ${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : ""}${skipped > 0 ? ` · ${skipped} דולגו` : ""}`
-          : `Created ${added.length} tasks as ${asLabel} from ${total} events${repeated > 0 ? ` · ${repeated} imported as repeating` : ""}${expanded > 0 ? ` · ${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates` : ""}${skipped > 0 ? ` · ${skipped} skipped` : ""}`);
+        const parts = [];
+        if (added.length) parts.push(isHe
+          ? `נוצרו ${added.length} משימות כ־${asLabel} מתוך ${total} אירועים`
+          : `Created ${added.length} tasks as ${asLabel} from ${total} events`);
+        else parts.push(isHe ? "לא נוספו משימות חדשות" : "No new tasks");
+        if (allUpdates.length) parts.push(isHe ? `${allUpdates.length} עודכנו עם מיקום` : `${allUpdates.length} updated with a location`);
+        if (repeated > 0) parts.push(isHe ? `${repeated} כחוזרות` : `${repeated} imported as repeating`);
+        if (expanded > 0) parts.push(isHe ? `${expanded} אירועים חוזרים פוצלו לתאריכים נפרדים` : `${expanded} recurring event${expanded > 1 ? "s" : ""} split into separate dates`);
+        if (past > 0) parts.push(isHe ? `${past} שכבר עברו דולגו` : `${past} already past, left out`);
+        if (skipped > 0) parts.push(isHe ? `${skipped} דולגו` : `${skipped} skipped`);
+        setIcsMsg(parts.join(" · "));
         keepScroll(importAnchor, () => {
           setIcsFiles([]);
           setIcsScan(null);
@@ -19586,77 +19592,7 @@ const SettingsModal = ({
       flexShrink: 0,
       transition: "all 0.15s"
     }
-  }, isHe ? "בחר קובץ" : "Choose file")), /*#__PURE__*/React.createElement(Row, {
-    icon: "🔗",
-    label: isHe ? "ייבוא iCalendar מקישור" : "Import iCalendar from link",
-    sub: isHe ? "הדבק קישור ל-.ics או webcal" : "Paste an .ics or webcal link"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: e => keepScroll(e.currentTarget, () => { setIcsLinkOpen(o => !o); setIcsMsg(""); }),
-    style: {
-      padding: "6px 14px",
-      borderRadius: 20,
-      border: `1.5px solid ${C.blueBorder}`,
-      background: C.blueBg,
-      color: C.blue,
-      fontSize: 13,
-      fontWeight: 700,
-      cursor: "pointer",
-      flexShrink: 0,
-      transition: "all 0.15s"
-    }
-  }, icsLinkOpen ? (isHe ? "סגור" : "Close") : (isHe ? "הזן קישור" : "Enter link"))), icsLinkOpen && /*#__PURE__*/React.createElement("div", {
-    style: {
-      margin: "10px 0 0",
-      padding: "12px",
-      borderRadius: 12,
-      background: C.card2,
-      border: `1px solid ${C.border2}`,
-      direction: isHe ? "rtl" : "ltr"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    value: icsLink,
-    onChange: e => setIcsLink(e.target.value),
-    onKeyDown: e => { if (e.key === "Enter" && !icsLinkBusy) loadIcsLink(); },
-    placeholder: "https://…/calendar.ics",
-    inputMode: "url",
-    autoCapitalize: "off",
-    autoCorrect: "off",
-    spellCheck: false,
-    style: {
-      width: "100%",
-      boxSizing: "border-box",
-      padding: "8px 10px",
-      borderRadius: 9,
-      border: `1px solid ${C.border2}`,
-      background: C.card,
-      color: C.text,
-      fontSize: 13,
-      fontWeight: 600,
-      outline: "none",
-      direction: "ltr",
-      textAlign: "left"
-    }
-  }), /*#__PURE__*/React.createElement("div", {
-    style: { display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => loadIcsLink(),
-    disabled: icsLinkBusy || !icsLink.trim(),
-    style: {
-      padding: "7px 16px",
-      borderRadius: 20,
-      border: `1.5px solid ${C.blueBorder}`,
-      background: C.blueBg,
-      color: C.blue,
-      fontSize: 13,
-      fontWeight: 700,
-      cursor: icsLinkBusy || !icsLink.trim() ? "default" : "pointer",
-      opacity: icsLinkBusy || !icsLink.trim() ? 0.6 : 1
-    }
-  }, icsLinkBusy ? (isHe ? "טוען…" : "Loading…") : (isHe ? "טען" : "Load"))), /*#__PURE__*/React.createElement("div", {
-    style: { fontSize: 11, color: C.text4, marginTop: 8, lineHeight: 1.6 }
-  }, isHe
-    ? "אם האתר חוסם גישה מהדפדפן, הקישור נטען דרך שרת מתווך ציבורי — עדיף לא להשתמש בקישור פרטי/סודי."
-    : "If the site blocks browsers, the link is loaded through a public relay, so avoid private or secret links.")), icsFiles.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, isHe ? "בחר קובץ" : "Choose file")), icsFiles.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       margin: "10px 0 0",
       padding: "12px",
@@ -19727,7 +19663,7 @@ const SettingsModal = ({
   })), /*#__PURE__*/React.createElement("div", {
     style: { display: "flex", gap: 8, marginTop: 10 }
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: runIcsImport,
+    onClick: e => runIcsImport(e),
     disabled: icsBusy,
     style: {
       padding: "7px 16px",
@@ -28577,12 +28513,16 @@ function App() {
     },
     onCleanDelays: handleCleanDelays,
     cleanDelaysMsg: cleanDelaysMsg,
-    onImportIcs: newTasks => {
-      if (!newTasks || !newTasks.length) return;
+    onImportIcs: (newTasks, updates) => {
+      const hasNew = !!(newTasks && newTasks.length);
+      const hasUpd = !!(updates && updates.length);
+      if (!hasNew && !hasUpd) return;
       setTasks(prev => {
+        const byId = new Map((updates || []).map(u => [u.id, u]));
+        let next = hasUpd ? prev.map(t => byId.has(t.id) ? { ...t, location: byId.get(t.id).location } : t) : prev;
         const have = new Set(prev.map(t => t.id));
-        const fresh = newTasks.filter(t => !have.has(t.id));
-        return fresh.length ? [...prev, ...fresh] : prev;
+        const fresh = hasNew ? newTasks.filter(t => !have.has(t.id)) : [];
+        return fresh.length ? [...next, ...fresh] : next;
       });
     },
   }), (selectMode || bulkBarClosing) && /*#__PURE__*/React.createElement(BulkActionBar, {
