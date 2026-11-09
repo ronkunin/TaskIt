@@ -17024,14 +17024,31 @@ const parseICS = text => {
     if (trimmed.toUpperCase() === "BEGIN:VEVENT") { cur = {}; continue; }
     if (trimmed.toUpperCase() === "END:VEVENT") { if (cur) events.push(cur); cur = null; continue; }
     if (!cur) continue;
-    const ci = ln.indexOf(":");
+    // The first ':' outside double quotes ends the property name/params --
+    // a quoted parameter (ALTREP="https://...", X-TITLE="a: b") can hold one.
+    let ci = -1;
+    for (let i = 0, q = false; i < ln.length; i++) {
+      const ch = ln[i];
+      if (ch === '"') q = !q;
+      else if (ch === ":" && !q) { ci = i; break; }
+    }
     if (ci < 0) continue;
     const left = ln.slice(0, ci);
     const val = ln.slice(ci + 1);
-    const parts = left.split(";");
+    // Split params on ';' outside quotes only.
+    const parts = [];
+    {
+      let buf = "", q = false;
+      for (const ch of left) {
+        if (ch === '"') q = !q;
+        if (ch === ";" && !q) { parts.push(buf); buf = ""; } else buf += ch;
+      }
+      parts.push(buf);
+    }
     const name = (parts[0] || "").trim().toUpperCase();
     const params = {};
     parts.slice(1).forEach(p => {
+      if (!p) return;
       const eq = p.indexOf("=");
       if (eq < 0) return;
       params[p.slice(0, eq).trim().toUpperCase()] = p.slice(eq + 1).replace(/"/g, "").trim();
@@ -17039,7 +17056,10 @@ const parseICS = text => {
     if (name === "UID") cur.uid = val.trim();
     else if (name === "SUMMARY") cur.summary = icsUnescape(val);
     else if (name === "DESCRIPTION") cur.description = icsUnescape(val);
-    else if (name === "LOCATION") cur.location = icsUnescape(val);
+    else if (name === "LOCATION") { const loc = icsUnescape(val); if (loc) cur.location = loc; }
+    // Apple Calendar can carry the place only here (title in X-TITLE); used
+    // when there's no plain LOCATION line.
+    else if (name === "X-APPLE-STRUCTURED-LOCATION") { if (params["X-TITLE"]) cur.appleLocation = icsUnescape(params["X-TITLE"]); }
     else if (name === "STATUS") cur.status = val.trim().toUpperCase();
     else if (name === "DTSTART") { cur.start = val.trim(); cur.startParams = params; }
     else if (name === "DTEND") { cur.end = val.trim(); cur.endParams = params; }
@@ -17057,6 +17077,7 @@ const parseICS = text => {
       });
     }
   }
+  for (const ev of events) if (!ev.location && ev.appleLocation) ev.location = ev.appleLocation;
   return events;
 };
 
@@ -22261,7 +22282,10 @@ const GCal = (() => {
       ...(rr ? [rr.join("\n")] : []),
       // Only for multi-day tasks: every other task's signature stays exactly
       // what it was, so nothing re-syncs just because this was added.
-      ...(isMultiDay(t) ? ["finish:" + t.finishDate] : [])
+      ...(isMultiDay(t) ? ["finish:" + t.finishDate] : []),
+      // Same idea for the location: only tasks that have one get the extra
+      // entry, so only they re-push (once) to put it on their Google event.
+      ...(t.location && String(t.location).trim() ? ["loc:" + String(t.location).trim()] : [])
     ]);
   }
 
@@ -22303,6 +22327,14 @@ const GCal = (() => {
         }
       }
     };
+    // The location has to live on the Google event itself: in cloud mode
+    // Google IS the storage, and every pull rebuilds the task from the event
+    // (see eventToTaskPatch). Leaving it out meant a location that came from
+    // an .ics import, or that was carried onto the next occurrence of a
+    // repeating task, was wiped by the very next pull. Only written when the
+    // task has one, so a task without a location never clears whatever
+    // Google holds.
+    if (task.location && String(task.location).trim()) body.location = String(task.location).trim().slice(0, 1000);
     // Explicit either way, same reasoning as transparency below: a task with
     // no reminder set has to actively clear Google's reminders (an empty
     // overrides array, not useDefault) or a task that previously had one
@@ -22398,9 +22430,8 @@ const GCal = (() => {
       done: p.done === "1",
       cancelled: p.cancelled === "1",
       length: p.length ? Number(p.length) : null,
-      // Read-only mirror of whatever Google's own "location" field holds --
-      // TaskIt never writes to this (see taskToEventBody, which omits it
-      // entirely so a PATCH never touches it), only displays it.
+      // Mirror of Google's own "location" field. TaskIt writes it back only
+      // when the task has one (see taskToEventBody), so this round-trips.
       location: event.location || null,
       updated: event.updated ? new Date(event.updated).getTime() : Date.now()
     };
@@ -23937,6 +23968,9 @@ function App() {
   // long and it disarms on its own instead of sitting there waiting.
   const [armedBulk, setArmedBulk] = useState(null); // null | {kind, value?, valueLabel?}
   const [bulkNotice, setBulkNotice] = useState("");
+  // Tasks a bulk Delete just removed: hidden from every screen at once, while
+  // the real delete (and its Google sync) runs right after the screen updates.
+  const [bulkHiddenIds, setBulkHiddenIds] = useState(() => new Set());
   const exitSelectMode = () => {
     if (!selectMode) return;
     // Play the bar's exit animation with its current content still showing,
@@ -26348,7 +26382,13 @@ function App() {
     setBulkPickerKind(null);
     if (ids.size === 0 || !kind) return;
     if (kind === "delete") {
-      handleBulkDelete(ids);
+      // Hide them first so they're gone the moment Delete is tapped; the
+      // actual delete waits until that frame has been drawn.
+      setBulkHiddenIds(new Set(ids));
+      requestAnimationFrame(() => setTimeout(() => {
+        handleBulkDelete(ids);
+        setBulkHiddenIds(new Set());
+      }, 0));
       setBulkNotice(t("bulkDone", ids.size));
       // The selection is gone with the tasks, so there's nothing left to act
       // on -- leave select mode rather than sitting in it with an empty bar.
@@ -26765,8 +26805,14 @@ function App() {
   // every screen, but still kept and synced. Everything shown on screen comes
   // from shownTasks/shownArchive; the full lists stay the real data.
   const holidayHidden = t => !!t && (t.hebcal && !t.intl && prefIL !== "yes" || t.intl && prefIntl !== "yes");
-  const shownTasks = tasks.filter(t => !holidayHidden(t));
-  const shownArchive = archiveTasks.filter(t => !holidayHidden(t));
+  const shownTasks = tasks.filter(t => !holidayHidden(t) && !bulkHiddenIds.has(t.id));
+  const shownArchive = archiveTasks.filter(t => !holidayHidden(t) && !bulkHiddenIds.has(t.id));
+  // Built once per real change. A fresh array on every render made select
+  // mode re-render the whole app nonstop (each screen's quick-pick effect
+  // saw a "new" list and re-registered, which re-rendered App again).
+  const displayTasks = React.useMemo(() => withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [tasks, archiveTasks, prefIL, prefIntl, prefGcalReal, bulkHiddenIds]);
   // A hidden holiday that has passed is cancelled automatically (it was never
   // on screen to be marked done). The cancel syncs to Google like any status
   // change. Waits for the first real sync when connected, so it acts on what
@@ -28311,7 +28357,7 @@ function App() {
       animation: slideDir === "left" ? "slideInLeft 0.22s cubic-bezier(0.25,1,0.5,1) both" : slideDir === "right" ? "slideInRight 0.22s cubic-bezier(0.25,1,0.5,1) both" : undefined
     }
   }, view === "home" && /*#__PURE__*/React.createElement(Dashboard, {
-    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
+    tasks: displayTasks,
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -28330,7 +28376,7 @@ function App() {
     onSetSelected: setTasksSelected,
     onQuickPicksReady: registerBulkQuickPicks
   }), view === "month" && /*#__PURE__*/React.createElement(MonthView, {
-    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
+    tasks: displayTasks,
     curDate: calDate,
     onNav: handleMonthNav,
     onDayClick: ds => {
@@ -28349,7 +28395,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "week" && /*#__PURE__*/React.createElement(WeekView, {
-    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
+    tasks: displayTasks,
     curDate: calDate,
     onWideToggleRef: weekWideToggleRef,
     onNav: handleWeekNav,
@@ -28364,7 +28410,7 @@ function App() {
     onQuickPicksReady: registerBulkQuickPicks,
     prefLookahead: prefLookahead
   }), view === "all-tasks" && /*#__PURE__*/React.createElement(AllTasksView, {
-    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
+    tasks: displayTasks,
     onToggle: handleToggle,
     onEdit: openEdit,
     onCancel: handleCancelFromList,
@@ -28418,7 +28464,7 @@ function App() {
     collapseAllRef: collapseAllTypesRef,
     singleColumnLists: singleColumnLists
   }), view === "search" && /*#__PURE__*/React.createElement(SearchView, {
-    tasks: withRealGoogleTypes(dedupeForDisplay(mergeUniqueTasks(shownTasks, shownArchive)), prefGcalReal),
+    tasks: displayTasks,
     onEdit: openEdit,
     onShareReady: registerShareAction,
     selectMode: selectMode,
@@ -28519,7 +28565,8 @@ function App() {
       if (!hasNew && !hasUpd) return;
       setTasks(prev => {
         const byId = new Map((updates || []).map(u => [u.id, u]));
-        let next = hasUpd ? prev.map(t => byId.has(t.id) ? { ...t, location: byId.get(t.id).location } : t) : prev;
+        const now = Date.now();
+        let next = hasUpd ? prev.map(t => byId.has(t.id) ? { ...t, location: byId.get(t.id).location, updated: now } : t) : prev;
         const have = new Set(prev.map(t => t.id));
         const fresh = hasNew ? newTasks.filter(t => !have.has(t.id)) : [];
         return fresh.length ? [...next, ...fresh] : next;
